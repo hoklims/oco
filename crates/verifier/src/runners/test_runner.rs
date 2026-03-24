@@ -131,3 +131,86 @@ fn parse_failure_lines(stdout: &str, stderr: &str) -> Vec<String> {
     failures.truncate(50);
     failures
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_rust_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let (prog, args) = detect_test_command(dir.path().to_str().unwrap(), None).unwrap();
+        assert_eq!(prog, "cargo");
+        assert_eq!(args, vec!["test"]);
+    }
+
+    #[test]
+    fn detect_rust_project_with_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let (prog, args) =
+            detect_test_command(dir.path().to_str().unwrap(), Some("my_test")).unwrap();
+        assert_eq!(prog, "cargo");
+        assert_eq!(args, vec!["test", "my_test"]);
+    }
+
+    #[test]
+    fn detect_node_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let (prog, args) = detect_test_command(dir.path().to_str().unwrap(), None).unwrap();
+        assert_eq!(prog, "npm");
+        assert_eq!(args, vec!["test"]);
+    }
+
+    #[test]
+    fn detect_python_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "").unwrap();
+        let (prog, _) = detect_test_command(dir.path().to_str().unwrap(), None).unwrap();
+        assert_eq!(prog, "pytest");
+    }
+
+    #[test]
+    fn detect_go_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module test").unwrap();
+        let (prog, args) = detect_test_command(dir.path().to_str().unwrap(), None).unwrap();
+        assert_eq!(prog, "go");
+        assert_eq!(args, vec!["test", "./..."]);
+    }
+
+    #[test]
+    fn detect_unsupported_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = detect_test_command(dir.path().to_str().unwrap(), None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_failures_extracts_errors() {
+        let stdout = "test result: ok\ntest foo ... FAILED\nerror[E0308]: mismatched types\n";
+        let stderr = "panic at 'assertion failed'\n";
+        let failures = parse_failure_lines(stdout, stderr);
+        assert_eq!(failures.len(), 3);
+        assert!(failures[0].contains("FAILED"));
+        assert!(failures[1].contains("error"));
+        assert!(failures[2].contains("panic"));
+    }
+
+    #[test]
+    fn parse_failures_truncates_at_50() {
+        let stdout: String = (0..100)
+            .map(|i| format!("error: failure #{i}\n"))
+            .collect();
+        let failures = parse_failure_lines(&stdout, "");
+        assert_eq!(failures.len(), 50);
+    }
+
+    #[test]
+    fn parse_failures_empty_on_success() {
+        let failures = parse_failure_lines("all tests passed\n", "");
+        assert!(failures.is_empty());
+    }
+}

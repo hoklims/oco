@@ -130,3 +130,56 @@ fn parse_lint_warnings(stdout: &str, stderr: &str) -> Vec<String> {
     failures.truncate(50);
     failures
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_rust_lint() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let (prog, args) = detect_lint_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "cargo");
+        assert_eq!(args, vec!["clippy", "--", "-D", "warnings"]);
+    }
+
+    #[test]
+    fn detect_node_lint() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let (prog, args) = detect_lint_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "npm");
+        assert_eq!(args, vec!["run", "lint"]);
+    }
+
+    #[test]
+    fn detect_python_lint() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "").unwrap();
+        let (prog, args) = detect_lint_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "ruff");
+        assert_eq!(args, vec!["check", "."]);
+    }
+
+    #[test]
+    fn detect_go_lint() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module test").unwrap();
+        let (prog, _) = detect_lint_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "golangci-lint");
+    }
+
+    #[test]
+    fn detect_unsupported_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_lint_command(dir.path().to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn parse_warnings_extracts_both() {
+        let output = "warning: unused import\nerror: clippy violation\ninfo: checking\n";
+        let failures = parse_lint_warnings(output, "");
+        assert_eq!(failures.len(), 2);
+    }
+}

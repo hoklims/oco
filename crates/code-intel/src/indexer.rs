@@ -5,17 +5,19 @@ use std::fs;
 use std::path::Path;
 use tracing::warn;
 
+use crate::composite_parser::CompositeParser;
 use crate::error::CodeIntelError;
 use crate::languages::language_from_path;
 use crate::parser::CodeParser;
-use crate::parser::FallbackParser;
 use crate::symbols::SymbolInfo;
 
-/// In-memory symbol index built by parsing files with [`FallbackParser`].
+/// In-memory symbol index built by parsing files with [`CompositeParser`].
 ///
+/// Uses tree-sitter grammars for Rust, Python, TypeScript, JavaScript, Go,
+/// and Java, with a regex fallback for other languages.
 /// Stores symbols keyed by file path for cross-file lookup and reference search.
 pub struct SymbolIndexer {
-    parser: FallbackParser,
+    parser: Box<dyn CodeParser>,
     /// Map from file path to its extracted symbols.
     index: HashMap<String, Vec<SymbolInfo>>,
     /// Map from file path to its raw content (kept for reference search).
@@ -23,10 +25,19 @@ pub struct SymbolIndexer {
 }
 
 impl SymbolIndexer {
-    /// Create a new empty indexer.
+    /// Create a new empty indexer using the default [`CompositeParser`].
     pub fn new() -> Self {
         Self {
-            parser: FallbackParser::new(),
+            parser: Box::new(CompositeParser::new()),
+            index: HashMap::new(),
+            contents: HashMap::new(),
+        }
+    }
+
+    /// Create a new empty indexer with a custom parser.
+    pub fn with_parser(parser: impl CodeParser + 'static) -> Self {
+        Self {
+            parser: Box::new(parser),
             index: HashMap::new(),
             contents: HashMap::new(),
         }

@@ -497,6 +497,7 @@ impl OrchestrationLoop {
             risk_level: self.config.profile.risk_level,
             has_memory_errors,
             memory_active_count: state.memory.active_count(),
+            task_category: state.task_category(),
         }
     }
 

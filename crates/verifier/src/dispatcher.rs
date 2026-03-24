@@ -60,6 +60,72 @@ impl Default for VerificationDispatcher {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn custom_command_success() {
+        let dispatcher = VerificationDispatcher::new(30);
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = if cfg!(target_os = "windows") {
+            "cmd /C echo ok"
+        } else {
+            "echo ok"
+        };
+        let result = dispatcher
+            .dispatch(
+                VerificationStrategy::Custom {
+                    command: cmd.to_string(),
+                },
+                None,
+                dir.path().to_str().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(result.passed);
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout.contains("ok"));
+    }
+
+    #[tokio::test]
+    async fn custom_command_failure() {
+        let dispatcher = VerificationDispatcher::new(30);
+        let dir = tempfile::tempdir().unwrap();
+        let cmd = if cfg!(target_os = "windows") {
+            "cmd /C exit 1"
+        } else {
+            "exit 1"
+        };
+        let result = dispatcher
+            .dispatch(
+                VerificationStrategy::Custom {
+                    command: cmd.to_string(),
+                },
+                None,
+                dir.path().to_str().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.exit_code, 1);
+    }
+
+    #[tokio::test]
+    async fn dispatch_unsupported_project_errors() {
+        let dispatcher = VerificationDispatcher::new(30);
+        let dir = tempfile::tempdir().unwrap();
+        let result = dispatcher
+            .dispatch(
+                VerificationStrategy::RunTests,
+                None,
+                dir.path().to_str().unwrap(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+}
+
 async fn run_custom_command(
     command: &str,
     working_dir: &str,

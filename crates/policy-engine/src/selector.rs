@@ -1,6 +1,6 @@
 use oco_shared_types::{
     Budget, Observation, ObservationKind, ObservationSource, OrchestratorAction, RetrievalSource,
-    RiskLevel, StopReason, TaskComplexity, VerificationStrategy,
+    RiskLevel, StopReason, TaskCategory, TaskComplexity, VerificationStrategy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +42,9 @@ pub struct PolicyState {
     /// v2: Number of active working memory entries.
     #[serde(default)]
     pub memory_active_count: usize,
+    /// v2: Task category for skill recommendation routing.
+    #[serde(default)]
+    pub task_category: TaskCategory,
 }
 
 /// A scored action alternative considered during selection.
@@ -63,6 +66,9 @@ pub struct ActionDecision {
     pub reason: String,
     /// Other actions that were considered with their scores.
     pub alternatives: Vec<ScoredAlternative>,
+    /// Optional skill recommendation based on task category and complexity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_recommendation: Option<String>,
 }
 
 /// Trait for action selection policies.
@@ -317,6 +323,28 @@ impl DefaultActionSelector {
         (score.min(1.0), reason)
     }
 
+    /// Determine a skill recommendation based on task category and complexity.
+    fn recommend_skill(category: TaskCategory, complexity: TaskComplexity) -> Option<String> {
+        match (category, complexity) {
+            (TaskCategory::Bug, TaskComplexity::High | TaskComplexity::Critical) => {
+                Some("oco-investigate-bug".to_string())
+            }
+            (TaskCategory::Bug, TaskComplexity::Medium) => {
+                Some("oco-trace-stack".to_string())
+            }
+            (TaskCategory::Refactor, TaskComplexity::Medium | TaskComplexity::High | TaskComplexity::Critical) => {
+                Some("oco-safe-refactor".to_string())
+            }
+            (TaskCategory::Security, _) => Some("security-review".to_string()),
+            (TaskCategory::Frontend, TaskComplexity::Medium | TaskComplexity::High | TaskComplexity::Critical) => {
+                Some("ultimate-design-system".to_string())
+            }
+            (TaskCategory::Testing, _) => Some("test-driven-development".to_string()),
+            (TaskCategory::Review, _) => Some("code-review".to_string()),
+            _ => None,
+        }
+    }
+
     fn score_stop(state: &PolicyState) -> (f64, String) {
         let mut score: f64 = 0.0;
         let mut reasons = Vec::new();
@@ -345,6 +373,8 @@ impl ActionSelector for DefaultActionSelector {
         let budget_report = self.enforcer.check(&state.budget);
 
         // Hard stops: budget exhausted or too many errors
+        let skill = Self::recommend_skill(state.task_category, state.task_complexity);
+
         if budget_report.status == BudgetStatus::Exhausted {
             return ActionDecision {
                 action: OrchestratorAction::Stop {
@@ -356,6 +386,7 @@ impl ActionSelector for DefaultActionSelector {
                     budget_report.limiting_factors.join(", ")
                 ),
                 alternatives: vec![],
+                skill_recommendation: None,
             };
         }
 
@@ -372,6 +403,7 @@ impl ActionSelector for DefaultActionSelector {
                 score: 1.0,
                 reason: "too many consecutive errors".to_string(),
                 alternatives: vec![],
+                skill_recommendation: None,
             };
         }
 
@@ -383,6 +415,7 @@ impl ActionSelector for DefaultActionSelector {
                 score: 1.0,
                 reason: "max steps reached".to_string(),
                 alternatives: vec![],
+                skill_recommendation: None,
             };
         }
 
@@ -404,6 +437,7 @@ impl ActionSelector for DefaultActionSelector {
                     score: 0.7,
                     reason: "could also stop to conserve budget".to_string(),
                 }],
+                skill_recommendation: skill.clone(),
             };
         }
 
@@ -474,6 +508,7 @@ impl ActionSelector for DefaultActionSelector {
             score: best_score,
             reason: best_reason,
             alternatives,
+            skill_recommendation: skill,
         }
     }
 }
@@ -499,6 +534,7 @@ mod tests {
             risk_level: RiskLevel::Standard,
             has_memory_errors: false,
             memory_active_count: 0,
+            task_category: TaskCategory::General,
         }
     }
 
@@ -644,6 +680,93 @@ mod tests {
             verify_score_critical > verify_score_standard || is_verify,
             "critical risk should boost verify score"
         );
+    }
+
+    // --- Skill recommendation tests ---
+
+    #[test]
+    fn skill_bug_high_recommends_investigate() {
+        let selector = DefaultActionSelector::new(BudgetEnforcer::new());
+        let mut state = default_state();
+        state.task_category = TaskCategory::Bug;
+        state.task_complexity = TaskComplexity::High;
+        let decision = selector.select_action(&state);
+        assert_eq!(
+            decision.skill_recommendation.as_deref(),
+            Some("oco-investigate-bug")
+        );
+    }
+
+    #[test]
+    fn skill_bug_medium_recommends_trace() {
+        let selector = DefaultActionSelector::new(BudgetEnforcer::new());
+        let mut state = default_state();
+        state.task_category = TaskCategory::Bug;
+        state.task_complexity = TaskComplexity::Medium;
+        let decision = selector.select_action(&state);
+        assert_eq!(
+            decision.skill_recommendation.as_deref(),
+            Some("oco-trace-stack")
+        );
+    }
+
+    #[test]
+    fn skill_refactor_high_recommends_safe_refactor() {
+        let selector = DefaultActionSelector::new(BudgetEnforcer::new());
+        let mut state = default_state();
+        state.task_category = TaskCategory::Refactor;
+        state.task_complexity = TaskComplexity::High;
+        let decision = selector.select_action(&state);
+        assert_eq!(
+            decision.skill_recommendation.as_deref(),
+            Some("oco-safe-refactor")
+        );
+    }
+
+    #[test]
+    fn skill_security_any_complexity_recommends_review() {
+        let selector = DefaultActionSelector::new(BudgetEnforcer::new());
+        let mut state = default_state();
+        state.task_category = TaskCategory::Security;
+        state.task_complexity = TaskComplexity::Low;
+        let decision = selector.select_action(&state);
+        assert_eq!(
+            decision.skill_recommendation.as_deref(),
+            Some("security-review")
+        );
+    }
+
+    #[test]
+    fn skill_frontend_medium_recommends_design_system() {
+        let selector = DefaultActionSelector::new(BudgetEnforcer::new());
+        let mut state = default_state();
+        state.task_category = TaskCategory::Frontend;
+        state.task_complexity = TaskComplexity::Medium;
+        let decision = selector.select_action(&state);
+        assert_eq!(
+            decision.skill_recommendation.as_deref(),
+            Some("ultimate-design-system")
+        );
+    }
+
+    #[test]
+    fn skill_testing_recommends_tdd() {
+        let selector = DefaultActionSelector::new(BudgetEnforcer::new());
+        let mut state = default_state();
+        state.task_category = TaskCategory::Testing;
+        let decision = selector.select_action(&state);
+        assert_eq!(
+            decision.skill_recommendation.as_deref(),
+            Some("test-driven-development")
+        );
+    }
+
+    #[test]
+    fn skill_general_no_recommendation() {
+        let selector = DefaultActionSelector::new(BudgetEnforcer::new());
+        let state = default_state();
+        let decision = selector.select_action(&state);
+        assert_eq!(decision.skill_recommendation, None);
     }
 
     #[test]

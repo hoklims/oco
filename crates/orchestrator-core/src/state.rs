@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use oco_shared_types::{
     ActionCandidate, AssembledContext, BudgetSnapshot, DecisionTrace, Observation,
-    OrchestratorAction, Session, TaskComplexity, VerificationState, WorkingMemory,
+    OrchestratorAction, Session, TaskCategory, TaskComplexity, VerificationState, WorkingMemory,
 };
 use std::collections::VecDeque;
 use uuid::Uuid;
@@ -121,5 +121,12 @@ impl OrchestrationState {
 
     pub fn elapsed_secs(&self) -> u64 {
         (Utc::now() - self.started_at).num_seconds() as u64
+    }
+
+    /// Classify the task category from the user request.
+    pub fn task_category(&self) -> TaskCategory {
+        oco_policy_engine::classifier::TaskClassifier::classify_category(
+            &self.session.user_request,
+        )
     }
 }

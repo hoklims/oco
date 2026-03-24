@@ -475,25 +475,25 @@ impl OrchestratorRuntime {
 
         // v2: Override with profile-specific commands when set.
         let effective_strategy = match strategy {
-            VerificationStrategy::RunTests if self.config.profile.test_command.is_some() => {
-                VerificationStrategy::Custom {
-                    command: self.config.profile.test_command.clone().unwrap(),
-                }
+            VerificationStrategy::RunTests
+                if let Some(cmd) = self.config.profile.test_command.clone() =>
+            {
+                VerificationStrategy::Custom { command: cmd }
             }
-            VerificationStrategy::Build if self.config.profile.build_command.is_some() => {
-                VerificationStrategy::Custom {
-                    command: self.config.profile.build_command.clone().unwrap(),
-                }
+            VerificationStrategy::Build
+                if let Some(cmd) = self.config.profile.build_command.clone() =>
+            {
+                VerificationStrategy::Custom { command: cmd }
             }
-            VerificationStrategy::Lint if self.config.profile.lint_command.is_some() => {
-                VerificationStrategy::Custom {
-                    command: self.config.profile.lint_command.clone().unwrap(),
-                }
+            VerificationStrategy::Lint
+                if let Some(cmd) = self.config.profile.lint_command.clone() =>
+            {
+                VerificationStrategy::Custom { command: cmd }
             }
-            VerificationStrategy::TypeCheck if self.config.profile.typecheck_command.is_some() => {
-                VerificationStrategy::Custom {
-                    command: self.config.profile.typecheck_command.clone().unwrap(),
-                }
+            VerificationStrategy::TypeCheck
+                if let Some(cmd) = self.config.profile.typecheck_command.clone() =>
+            {
+                VerificationStrategy::Custom { command: cmd }
             }
             other => other.clone(),
         };

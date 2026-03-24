@@ -1,4 +1,4 @@
-use oco_shared_types::TaskComplexity;
+use oco_shared_types::{TaskCategory, TaskComplexity};
 
 /// Deterministic task classifier using keyword heuristics.
 ///
@@ -160,6 +160,121 @@ impl TaskClassifier {
         boost
     }
 
+    /// Classify the category (domain/type) of a task using keyword heuristics.
+    ///
+    /// Categories are checked in priority order: more specific categories
+    /// (Security, Frontend) are checked before broader ones (NewFeature, General).
+    pub fn classify_category(request: &str) -> TaskCategory {
+        let lower = request.to_lowercase();
+
+        // Priority-ordered keyword lists. Earlier matches win.
+        const SECURITY_KEYWORDS: &[&str] = &[
+            "security",
+            "vulnerab",
+            "auth",
+            "permission",
+            "xss",
+            "injection",
+            "csrf",
+            "encrypt",
+            "credential",
+        ];
+        const FRONTEND_KEYWORDS: &[&str] = &[
+            "ui",
+            "ux",
+            "component",
+            "css",
+            "style",
+            "layout",
+            "responsive",
+            "design",
+            "frontend",
+            "button",
+            "modal",
+            "form",
+            "page",
+            "dashboard",
+            "tailwind",
+            "react",
+            "svelte",
+            "vue",
+        ];
+        const BUG_KEYWORDS: &[&str] = &[
+            "bug",
+            "fix",
+            "crash",
+            "error",
+            "broken",
+            "issue",
+            "debug",
+            "regression",
+        ];
+        const REFACTOR_KEYWORDS: &[&str] = &[
+            "refactor",
+            "rename",
+            "restructure",
+            "extract",
+            "cleanup",
+            "simplify",
+            "deduplicate",
+        ];
+        const TESTING_KEYWORDS: &[&str] = &[
+            "test", "coverage", "spec", "assert", "mock", "fixture", "tdd",
+        ];
+        const REVIEW_KEYWORDS: &[&str] = &["review", "audit", "inspect", "check"];
+        const DEVOPS_KEYWORDS: &[&str] = &[
+            "deploy",
+            "ci",
+            "cd",
+            "docker",
+            "kubernetes",
+            "pipeline",
+            "infra",
+            "terraform",
+        ];
+        const EXPLANATION_KEYWORDS: &[&str] = &[
+            "explain",
+            "what",
+            "how",
+            "why",
+            "understand",
+            "document",
+        ];
+        const NEW_FEATURE_KEYWORDS: &[&str] = &[
+            "add",
+            "create",
+            "implement",
+            "build",
+            "new feature",
+            "scaffold",
+        ];
+
+        // Score each category; highest score wins. Ties broken by priority order.
+        let scores: Vec<(TaskCategory, u32)> = vec![
+            (TaskCategory::Security, Self::keyword_score(&lower, SECURITY_KEYWORDS)),
+            (TaskCategory::Frontend, Self::keyword_score(&lower, FRONTEND_KEYWORDS)),
+            (TaskCategory::Bug, Self::keyword_score(&lower, BUG_KEYWORDS)),
+            (TaskCategory::Refactor, Self::keyword_score(&lower, REFACTOR_KEYWORDS)),
+            (TaskCategory::Testing, Self::keyword_score(&lower, TESTING_KEYWORDS)),
+            (TaskCategory::Review, Self::keyword_score(&lower, REVIEW_KEYWORDS)),
+            (TaskCategory::DevOps, Self::keyword_score(&lower, DEVOPS_KEYWORDS)),
+            (TaskCategory::Explanation, Self::keyword_score(&lower, EXPLANATION_KEYWORDS)),
+            (TaskCategory::NewFeature, Self::keyword_score(&lower, NEW_FEATURE_KEYWORDS)),
+        ];
+
+        // Return the category with the highest score.
+        // On tie, the category earlier in the list wins (higher priority).
+        scores
+            .into_iter()
+            .enumerate()
+            .filter(|(_, (_, score))| *score > 0)
+            .max_by(|(idx_a, (_, score_a)), (idx_b, (_, score_b))| {
+                score_a.cmp(score_b).then(idx_b.cmp(idx_a))
+            })
+            .map(|(_, (cat, _))| cat)
+            .unwrap_or(TaskCategory::General)
+    }
+
     /// Count likely file paths in the text (heuristic: contains `/` or `\` with an extension).
     fn count_file_paths(text: &str) -> u32 {
         text.split_whitespace()
@@ -222,5 +337,74 @@ mod tests {
     fn unknown_defaults_to_medium() {
         let result = TaskClassifier::classify("do the thing", &[]);
         assert_eq!(result, TaskComplexity::Medium);
+    }
+
+    // --- TaskCategory classification tests ---
+
+    #[test]
+    fn category_bug() {
+        assert_eq!(
+            TaskClassifier::classify_category("fix the login bug"),
+            TaskCategory::Bug
+        );
+    }
+
+    #[test]
+    fn category_refactor() {
+        assert_eq!(
+            TaskClassifier::classify_category("refactor the database layer"),
+            TaskCategory::Refactor
+        );
+    }
+
+    #[test]
+    fn category_frontend_dashboard() {
+        let cat = TaskClassifier::classify_category("add a new dashboard page");
+        assert!(
+            cat == TaskCategory::Frontend || cat == TaskCategory::NewFeature,
+            "expected Frontend or NewFeature, got {:?}",
+            cat
+        );
+    }
+
+    #[test]
+    fn category_security_overrides_review() {
+        // "review" + "vulnerabilities" + "authentication" → Security wins
+        assert_eq!(
+            TaskClassifier::classify_category("review the authentication code for vulnerabilities"),
+            TaskCategory::Security
+        );
+    }
+
+    #[test]
+    fn category_explanation() {
+        assert_eq!(
+            TaskClassifier::classify_category("explain how the context engine works"),
+            TaskCategory::Explanation
+        );
+    }
+
+    #[test]
+    fn category_testing() {
+        assert_eq!(
+            TaskClassifier::classify_category("create unit tests for the parser"),
+            TaskCategory::Testing
+        );
+    }
+
+    #[test]
+    fn category_devops() {
+        assert_eq!(
+            TaskClassifier::classify_category("deploy to production"),
+            TaskCategory::DevOps
+        );
+    }
+
+    #[test]
+    fn category_general_fallback() {
+        assert_eq!(
+            TaskClassifier::classify_category("do something"),
+            TaskCategory::General
+        );
     }
 }
