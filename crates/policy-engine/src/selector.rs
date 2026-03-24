@@ -329,16 +329,16 @@ impl DefaultActionSelector {
             (TaskCategory::Bug, TaskComplexity::High | TaskComplexity::Critical) => {
                 Some("oco-investigate-bug".to_string())
             }
-            (TaskCategory::Bug, TaskComplexity::Medium) => {
-                Some("oco-trace-stack".to_string())
-            }
-            (TaskCategory::Refactor, TaskComplexity::Medium | TaskComplexity::High | TaskComplexity::Critical) => {
-                Some("oco-safe-refactor".to_string())
-            }
+            (TaskCategory::Bug, TaskComplexity::Medium) => Some("oco-trace-stack".to_string()),
+            (
+                TaskCategory::Refactor,
+                TaskComplexity::Medium | TaskComplexity::High | TaskComplexity::Critical,
+            ) => Some("oco-safe-refactor".to_string()),
             (TaskCategory::Security, _) => Some("security-review".to_string()),
-            (TaskCategory::Frontend, TaskComplexity::Medium | TaskComplexity::High | TaskComplexity::Critical) => {
-                Some("ultimate-design-system".to_string())
-            }
+            (
+                TaskCategory::Frontend,
+                TaskComplexity::Medium | TaskComplexity::High | TaskComplexity::Critical,
+            ) => Some("ultimate-design-system".to_string()),
             (TaskCategory::Testing, _) => Some("test-driven-development".to_string()),
             (TaskCategory::Review, _) => Some("code-review".to_string()),
             _ => None,

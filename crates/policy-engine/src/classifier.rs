@@ -232,14 +232,8 @@ impl TaskClassifier {
             "infra",
             "terraform",
         ];
-        const EXPLANATION_KEYWORDS: &[&str] = &[
-            "explain",
-            "what",
-            "how",
-            "why",
-            "understand",
-            "document",
-        ];
+        const EXPLANATION_KEYWORDS: &[&str] =
+            &["explain", "what", "how", "why", "understand", "document"];
         const NEW_FEATURE_KEYWORDS: &[&str] = &[
             "add",
             "create",
@@ -251,15 +245,39 @@ impl TaskClassifier {
 
         // Score each category; highest score wins. Ties broken by priority order.
         let scores: Vec<(TaskCategory, u32)> = vec![
-            (TaskCategory::Security, Self::keyword_score(&lower, SECURITY_KEYWORDS)),
-            (TaskCategory::Frontend, Self::keyword_score(&lower, FRONTEND_KEYWORDS)),
+            (
+                TaskCategory::Security,
+                Self::keyword_score(&lower, SECURITY_KEYWORDS),
+            ),
+            (
+                TaskCategory::Frontend,
+                Self::keyword_score(&lower, FRONTEND_KEYWORDS),
+            ),
             (TaskCategory::Bug, Self::keyword_score(&lower, BUG_KEYWORDS)),
-            (TaskCategory::Refactor, Self::keyword_score(&lower, REFACTOR_KEYWORDS)),
-            (TaskCategory::Testing, Self::keyword_score(&lower, TESTING_KEYWORDS)),
-            (TaskCategory::Review, Self::keyword_score(&lower, REVIEW_KEYWORDS)),
-            (TaskCategory::DevOps, Self::keyword_score(&lower, DEVOPS_KEYWORDS)),
-            (TaskCategory::Explanation, Self::keyword_score(&lower, EXPLANATION_KEYWORDS)),
-            (TaskCategory::NewFeature, Self::keyword_score(&lower, NEW_FEATURE_KEYWORDS)),
+            (
+                TaskCategory::Refactor,
+                Self::keyword_score(&lower, REFACTOR_KEYWORDS),
+            ),
+            (
+                TaskCategory::Testing,
+                Self::keyword_score(&lower, TESTING_KEYWORDS),
+            ),
+            (
+                TaskCategory::Review,
+                Self::keyword_score(&lower, REVIEW_KEYWORDS),
+            ),
+            (
+                TaskCategory::DevOps,
+                Self::keyword_score(&lower, DEVOPS_KEYWORDS),
+            ),
+            (
+                TaskCategory::Explanation,
+                Self::keyword_score(&lower, EXPLANATION_KEYWORDS),
+            ),
+            (
+                TaskCategory::NewFeature,
+                Self::keyword_score(&lower, NEW_FEATURE_KEYWORDS),
+            ),
         ];
 
         // Return the category with the highest score.

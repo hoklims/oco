@@ -125,8 +125,6 @@ impl OrchestrationState {
 
     /// Classify the task category from the user request.
     pub fn task_category(&self) -> TaskCategory {
-        oco_policy_engine::classifier::TaskClassifier::classify_category(
-            &self.session.user_request,
-        )
+        oco_policy_engine::classifier::TaskClassifier::classify_category(&self.session.user_request)
     }
 }

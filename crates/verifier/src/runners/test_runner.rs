@@ -201,9 +201,7 @@ mod tests {
 
     #[test]
     fn parse_failures_truncates_at_50() {
-        let stdout: String = (0..100)
-            .map(|i| format!("error: failure #{i}\n"))
-            .collect();
+        let stdout: String = (0..100).map(|i| format!("error: failure #{i}\n")).collect();
         let failures = parse_failure_lines(&stdout, "");
         assert_eq!(failures.len(), 50);
     }

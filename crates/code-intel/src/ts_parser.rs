@@ -118,7 +118,8 @@ fn end_line(node: Node) -> u32 {
 
 /// Find a named child by field name and return its text.
 fn field_text<'a>(node: Node, field: &str, source: &'a [u8]) -> Option<&'a str> {
-    node.child_by_field_name(field).map(|n| node_text(n, source))
+    node.child_by_field_name(field)
+        .map(|n| node_text(n, source))
 }
 
 /// Walk all descendants, calling `callback` on each node.
@@ -256,9 +257,7 @@ fn extract_rust(tree: &Tree, source: &str) -> (Vec<SymbolInfo>, Vec<ImportInfo>)
                     .trim();
 
                 let (clean_path, items) = if let Some(brace_start) = path_str.find('{') {
-                    let prefix = path_str[..brace_start]
-                        .trim_end_matches("::")
-                        .to_string();
+                    let prefix = path_str[..brace_start].trim_end_matches("::").to_string();
                     let items_str = &path_str[brace_start + 1..];
                     let items_str = items_str.trim_end_matches('}');
                     let items: Vec<String> = items_str
@@ -399,9 +398,11 @@ fn extract_python(tree: &Tree, source: &str) -> (Vec<SymbolInfo>, Vec<ImportInfo
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     if child.kind() == "dotted_name"
-                        && child.start_byte() > node.child_by_field_name("module_name")
-                            .map(|n| n.end_byte())
-                            .unwrap_or(0)
+                        && child.start_byte()
+                            > node
+                                .child_by_field_name("module_name")
+                                .map(|n| n.end_byte())
+                                .unwrap_or(0)
                     {
                         items.push(node_text(child, src).to_string());
                     }
@@ -798,9 +799,7 @@ fn extract_go(tree: &Tree, source: &str) -> (Vec<SymbolInfo>, Vec<ImportInfo>) {
                     if child.kind() == "import_spec"
                         && let Some(path_node) = child.child_by_field_name("path")
                     {
-                        let path = node_text(path_node, src)
-                            .trim_matches('"')
-                            .to_string();
+                        let path = node_text(path_node, src).trim_matches('"').to_string();
                         imports.push(ImportInfo {
                             path,
                             items: Vec::new(),
@@ -825,12 +824,7 @@ fn extract_go(tree: &Tree, source: &str) -> (Vec<SymbolInfo>, Vec<ImportInfo>) {
     (symbols, imports)
 }
 
-fn go_extract_names(
-    node: Node,
-    source: &[u8],
-    kind: SymbolKind,
-    symbols: &mut Vec<SymbolInfo>,
-) {
+fn go_extract_names(node: Node, source: &[u8], kind: SymbolKind, symbols: &mut Vec<SymbolInfo>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if (child.kind() == "const_spec" || child.kind() == "var_spec")
@@ -844,9 +838,7 @@ fn go_extract_names(
                 line: start_line(child),
                 end_line: Some(end_line(child)),
                 signature: first_line_signature(child, source),
-                visibility: Some(
-                    if is_exported { "public" } else { "private" }.to_string(),
-                ),
+                visibility: Some(if is_exported { "public" } else { "private" }.to_string()),
             });
         }
     }
@@ -921,9 +913,7 @@ fn extract_java(tree: &Tree, source: &str) -> (Vec<SymbolInfo>, Vec<ImportInfo>)
                     .strip_prefix("import ")
                     .unwrap_or(&text)
                     .strip_prefix("static ")
-                    .unwrap_or(
-                        text.strip_prefix("import ").unwrap_or(&text),
-                    )
+                    .unwrap_or(text.strip_prefix("import ").unwrap_or(&text))
                     .trim_end_matches(';')
                     .trim()
                     .to_string();
@@ -1051,13 +1041,29 @@ impl Server {
         let result = ts_parser().parse(source, "rust").unwrap();
 
         let helper = result.symbols.iter().find(|s| s.name == "helper").unwrap();
-        assert_eq!(helper.kind, SymbolKind::Function, "free fn in mod should be Function");
+        assert_eq!(
+            helper.kind,
+            SymbolKind::Function,
+            "free fn in mod should be Function"
+        );
 
-        let internal = result.symbols.iter().find(|s| s.name == "internal").unwrap();
-        assert_eq!(internal.kind, SymbolKind::Function, "private fn in mod should be Function");
+        let internal = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "internal")
+            .unwrap();
+        assert_eq!(
+            internal.kind,
+            SymbolKind::Function,
+            "private fn in mod should be Function"
+        );
 
         let start = result.symbols.iter().find(|s| s.name == "start").unwrap();
-        assert_eq!(start.kind, SymbolKind::Method, "fn in impl should be Method");
+        assert_eq!(
+            start.kind,
+            SymbolKind::Method,
+            "fn in impl should be Method"
+        );
     }
 
     // -- Python --
