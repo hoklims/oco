@@ -2,7 +2,7 @@
   "name": "oco-vscode",
   "displayName": "Open Context Orchestrator",
   "description": "Intelligent orchestration middleware for coding assistants",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "oco",
   "license": "Apache-2.0",
   "engines": {
