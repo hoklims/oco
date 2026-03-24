@@ -48,7 +48,6 @@ prost-build = "0.13"
 # Telemetry
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-opentelemetry = "0.27"
 
 # Error handling
 anyhow = "1"
@@ -59,18 +58,14 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 dashmap = "6"
-bytes = "1"
-futures = "0.3"
 reqwest = { version = "0.12", features = ["json"] }
 clap = { version = "4", features = ["derive"] }
 
 # Testing
 tempfile = "3"
-assert_matches = "1.5"
 
 # Internal crates
 oco-shared-types = { path = "crates/shared-types" }
-oco-shared-proto = { path = "crates/shared-proto" }
 oco-orchestrator-core = { path = "crates/orchestrator-core" }
 oco-policy-engine = { path = "crates/policy-engine" }
 oco-context-engine = { path = "crates/context-engine" }

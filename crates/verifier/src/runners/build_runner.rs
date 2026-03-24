@@ -122,3 +122,63 @@ fn parse_build_errors(stdout: &str, stderr: &str) -> Vec<String> {
     failures.truncate(50);
     failures
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_rust_build() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let (prog, args) = detect_build_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "cargo");
+        assert_eq!(args, vec!["build"]);
+    }
+
+    #[test]
+    fn detect_node_build() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let (prog, args) = detect_build_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "npm");
+        assert_eq!(args, vec!["run", "build"]);
+    }
+
+    #[test]
+    fn detect_python_build() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "").unwrap();
+        let (prog, _) = detect_build_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "python");
+    }
+
+    #[test]
+    fn detect_go_build() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module test").unwrap();
+        let (prog, args) = detect_build_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "go");
+        assert_eq!(args, vec!["build", "./..."]);
+    }
+
+    #[test]
+    fn detect_unsupported_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_build_command(dir.path().to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn parse_errors_extracts_error_lines() {
+        let stderr = "error[E0308]: mismatched types\nwarning: unused variable\n";
+        let failures = parse_build_errors("", stderr);
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("error"));
+    }
+
+    #[test]
+    fn parse_errors_empty_on_clean_build() {
+        let failures = parse_build_errors("Compiling foo v0.1.0\n", "");
+        assert!(failures.is_empty());
+    }
+}

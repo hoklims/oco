@@ -102,3 +102,33 @@ pub enum TaskComplexity {
     /// Architectural changes, large-scale refactors.
     Critical,
 }
+
+/// Category classification for incoming tasks.
+///
+/// Determines the domain/type of the task, orthogonal to complexity.
+/// Used for skill recommendation routing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskCategory {
+    /// Bug investigation and fixing.
+    Bug,
+    /// Code restructuring and cleanup.
+    Refactor,
+    /// Building new functionality.
+    NewFeature,
+    /// Understanding or documenting code.
+    Explanation,
+    /// Code review and auditing.
+    Review,
+    /// Security analysis and hardening.
+    Security,
+    /// UI/UX and frontend work.
+    Frontend,
+    /// Writing or improving tests.
+    Testing,
+    /// Deployment, CI/CD, and infrastructure.
+    DevOps,
+    /// Uncategorized or mixed tasks.
+    #[default]
+    General,
+}

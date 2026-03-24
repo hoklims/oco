@@ -52,12 +52,47 @@ impl Default for OrchestratorConfig {
 }
 
 impl OrchestratorConfig {
+    /// Validate semantic constraints beyond TOML parsing.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.port == 0 {
+            return Err(ConfigError::ValidationError("port must be > 0".into()));
+        }
+        if self.max_concurrent_sessions == 0 {
+            return Err(ConfigError::ValidationError(
+                "max_concurrent_sessions must be > 0".into(),
+            ));
+        }
+        let valid_providers = ["anthropic", "ollama", "stub"];
+        if !valid_providers.contains(&self.llm.provider.as_str()) {
+            return Err(ConfigError::ValidationError(format!(
+                "unknown LLM provider '{}', expected one of: {}",
+                self.llm.provider,
+                valid_providers.join(", ")
+            )));
+        }
+        if self.llm.timeout_secs == 0 {
+            return Err(ConfigError::ValidationError(
+                "llm.timeout_secs must be > 0".into(),
+            ));
+        }
+        if self.llm.provider == "anthropic"
+            && self.llm.api_key.is_none()
+            && self.llm.api_key_env.is_empty()
+        {
+            return Err(ConfigError::ValidationError(
+                "anthropic provider requires api_key or api_key_env".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Load configuration from a TOML file, falling back to defaults for missing fields.
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| ConfigError::IoError(path.display().to_string(), e.to_string()))?;
         let config: Self = toml::from_str(&content)
             .map_err(|e| ConfigError::ParseError(path.display().to_string(), e.to_string()))?;
+        config.validate()?;
         Ok(config)
     }
 
@@ -142,4 +177,6 @@ pub enum ConfigError {
     ParseError(String, String),
     #[error("failed to serialize config: {0}")]
     SerializeError(String),
+    #[error("config validation error: {0}")]
+    ValidationError(String),
 }

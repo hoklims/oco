@@ -24,7 +24,13 @@ fn main() {
             println!("cargo:warning=proto compilation succeeded");
         }
         Err(e) => {
-            eprintln!("proto compilation failed ({e}), generating stubs");
+            if std::env::var("CI").is_ok() || std::env::var("OCO_REQUIRE_PROTO").is_ok() {
+                panic!("proto compilation required but failed: {e}");
+            }
+            println!(
+                "cargo:warning=proto compilation failed ({e}), using stubs — \
+                 set OCO_REQUIRE_PROTO=1 to hard-fail"
+            );
             generate_stubs();
         }
     }

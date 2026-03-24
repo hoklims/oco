@@ -107,7 +107,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
-        "version": "0.1.0",
+        "version": env!("CARGO_PKG_VERSION"),
         "service": "oco-core"
     }))
 }
@@ -156,7 +156,10 @@ async fn get_session(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     match state.session_manager.get_session(&session_id).await {
-        Some(info) => (StatusCode::OK, Json(serde_json::to_value(info).unwrap())),
+        Some(info) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(info).expect("SessionInfo serialization")),
+        ),
         None => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": format!("session not found: {session_id}") })),
@@ -235,7 +238,7 @@ async fn index_workspace(Json(req): Json<IndexRequest>) -> impl IntoResponse {
                     files_indexed: idx.file_count,
                     symbols_indexed: idx.symbol_count,
                 })
-                .unwrap(),
+                .expect("IndexResponse serialization"),
             ),
         ),
         Ok(Err(e)) => (
@@ -275,7 +278,10 @@ async fn search_workspace(Json(req): Json<SearchRequest>) -> impl IntoResponse {
                 .collect();
             (
                 StatusCode::OK,
-                Json(serde_json::to_value(SearchResponse { results }).unwrap()),
+                Json(
+                    serde_json::to_value(SearchResponse { results })
+                        .expect("SearchResponse serialization"),
+                ),
             )
         }
         Ok(Err(e)) => (
@@ -450,5 +456,196 @@ async fn handle_mcp_tool_call(
             -32601,
             format!("Unknown tool: {tool_name}"),
         ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::JsonRpcResponse;
+    use crate::session_manager::SessionManager;
+
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    /// Build a minimal `Arc<AppState>` suitable for testing.
+    fn test_state() -> Arc<AppState> {
+        let config = oco_orchestrator_core::OrchestratorConfig::default();
+        let session_manager = Arc::new(SessionManager::new(config.clone(), None));
+        Arc::new(AppState {
+            config,
+            session_manager,
+        })
+    }
+
+    /// Helper: collect the response body bytes.
+    async fn body_bytes(body: Body) -> Vec<u8> {
+        body.collect().await.unwrap().to_bytes().to_vec()
+    }
+
+    // -- 1. GET /health -------------------------------------------------------
+
+    #[tokio::test]
+    async fn health_returns_200_with_status_ok() {
+        let app = create_router(test_state());
+
+        let req = axum::http::Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(json["status"], "ok");
+        assert!(json["version"].is_string());
+        assert!(!json["version"].as_str().unwrap().is_empty());
+    }
+
+    // -- 2. GET /api/v1/status ------------------------------------------------
+
+    #[tokio::test]
+    async fn status_returns_200_with_expected_fields() {
+        let app = create_router(test_state());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(json["status"].is_string());
+        assert_eq!(json["active_sessions"], 0);
+        assert_eq!(json["max_sessions"], 5);
+        assert!(json["version"].is_string());
+    }
+
+    // -- 3. POST /api/v1/mcp — initialize ------------------------------------
+
+    #[tokio::test]
+    async fn mcp_initialize_returns_well_formed_response() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/mcp")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let rpc: JsonRpcResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(rpc.jsonrpc, "2.0");
+        assert_eq!(rpc.id, serde_json::json!(1));
+        assert!(rpc.error.is_none());
+
+        let result = rpc.result.unwrap();
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert_eq!(result["serverInfo"]["name"], "oco-mcp-server");
+        assert!(result["capabilities"]["tools"].is_object());
+    }
+
+    // -- 4. POST /api/v1/mcp — tools/list ------------------------------------
+
+    #[tokio::test]
+    async fn mcp_tools_list_returns_known_tools() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/mcp")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let rpc: JsonRpcResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(rpc.error.is_none());
+
+        let tools = rpc.result.unwrap()["tools"].clone();
+        let tool_names: Vec<String> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+
+        assert!(tool_names.contains(&"oco_orchestrate".to_string()));
+        assert!(tool_names.contains(&"oco_status".to_string()));
+        assert!(tool_names.contains(&"oco_trace".to_string()));
+        assert!(tool_names.contains(&"oco_search".to_string()));
+    }
+
+    // -- 5. POST /api/v1/mcp — unknown method → -32601 -----------------------
+
+    #[tokio::test]
+    async fn mcp_unknown_method_returns_error_32601() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "nonexistent/method",
+            "params": {}
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/mcp")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let rpc: JsonRpcResponse = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(rpc.result.is_none());
+
+        let err = rpc.error.unwrap();
+        assert_eq!(err.code, -32601);
+        assert!(err.message.contains("nonexistent/method"));
     }
 }

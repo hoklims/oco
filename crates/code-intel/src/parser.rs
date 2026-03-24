@@ -148,7 +148,7 @@ impl FallbackParser {
         let mut imports = Vec::new();
 
         for cap in RE_RUST_SYMBOL.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let visibility = cap.get(1).map(|m| m.as_str().trim().to_string());
             let keyword = &cap[2];
@@ -187,7 +187,7 @@ impl FallbackParser {
         }
 
         for cap in RE_RUST_IMPORT.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let path = cap[1].to_string();
 
@@ -221,7 +221,7 @@ impl FallbackParser {
         let mut imports = Vec::new();
 
         for cap in RE_TS_SYMBOL.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let exported = cap.get(1).is_some();
             let keyword = &cap[4];
@@ -260,7 +260,7 @@ impl FallbackParser {
         }
 
         for cap in RE_TS_IMPORT.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let items: Vec<String> = cap
                 .get(1)
@@ -286,7 +286,7 @@ impl FallbackParser {
         let lines: Vec<&str> = source.lines().collect();
 
         for cap in RE_PY_SYMBOL.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let is_async = cap.get(1).is_some();
             let keyword = &cap[2];
@@ -327,7 +327,7 @@ impl FallbackParser {
         }
 
         for cap in RE_PY_IMPORT.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
 
             if let Some(from_path) = cap.get(1) {
@@ -368,7 +368,7 @@ impl FallbackParser {
         let mut imports = Vec::new();
 
         for cap in RE_GO_SYMBOL.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
 
             if let Some(func_name) = cap.get(1) {
@@ -436,7 +436,7 @@ impl FallbackParser {
         }
 
         for cap in RE_GO_IMPORT.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let path = cap
                 .get(1)
@@ -461,7 +461,7 @@ impl FallbackParser {
         let mut imports = Vec::new();
 
         for cap in RE_JAVA_SYMBOL.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let visibility = cap.get(1).map(|m| m.as_str().to_string());
             let keyword = &cap[2];
@@ -508,7 +508,7 @@ impl FallbackParser {
             if java_keywords.contains(&name.as_str()) {
                 continue;
             }
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let visibility = cap.get(1).map(|m| m.as_str().to_string());
 
@@ -526,7 +526,7 @@ impl FallbackParser {
         }
 
         for cap in RE_JAVA_IMPORT.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let path = cap[1].to_string();
             imports.push(ImportInfo {
@@ -544,7 +544,7 @@ impl FallbackParser {
         let mut imports = Vec::new();
 
         for cap in RE_GENERIC_FUNC.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let name = cap[1].to_string();
             symbols.push(SymbolInfo {
@@ -561,7 +561,7 @@ impl FallbackParser {
         }
 
         for cap in RE_GENERIC_TYPE.captures_iter(source) {
-            let full_match = cap.get(0).unwrap();
+            let full_match = cap.get(0).expect("regex group 0");
             let line = line_number(source, full_match.start());
             let name = cap[1].to_string();
             symbols.push(SymbolInfo {

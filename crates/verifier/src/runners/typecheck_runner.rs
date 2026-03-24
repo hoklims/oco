@@ -119,3 +119,66 @@ fn parse_typecheck_errors(stdout: &str, stderr: &str) -> Vec<String> {
     failures.truncate(50);
     failures
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_rust_typecheck() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let (prog, args) = detect_typecheck_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "cargo");
+        assert_eq!(args, vec!["check"]);
+    }
+
+    #[test]
+    fn detect_ts_typecheck() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tsconfig.json"), "{}").unwrap();
+        let (prog, args) = detect_typecheck_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "npx");
+        assert_eq!(args, vec!["tsc", "--noEmit"]);
+    }
+
+    #[test]
+    fn detect_node_typecheck_via_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let (prog, _) = detect_typecheck_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "npx");
+    }
+
+    #[test]
+    fn detect_python_typecheck() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "").unwrap();
+        let (prog, args) = detect_typecheck_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "mypy");
+        assert_eq!(args, vec!["."]);
+    }
+
+    #[test]
+    fn detect_go_typecheck() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module test").unwrap();
+        let (prog, args) = detect_typecheck_command(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(prog, "go");
+        assert_eq!(args, vec!["vet", "./..."]);
+    }
+
+    #[test]
+    fn detect_unsupported_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_typecheck_command(dir.path().to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn parse_errors_extracts_error_lines() {
+        let stderr = "src/main.ts(5,3): error TS2322: Type 'string' is not assignable\n";
+        let failures = parse_typecheck_errors("", stderr);
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("error"));
+    }
+}
