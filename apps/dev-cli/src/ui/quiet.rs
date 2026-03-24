@@ -35,10 +35,8 @@ impl Renderer for QuietRenderer {
                 // Final response always goes to stdout
                 println!("{content}");
             }
-            UiEvent::DoctorSummary { issues } => {
-                if issues > 0 {
-                    let _ = self.term.write_line(&format!("{issues} issue(s)"));
-                }
+            UiEvent::DoctorSummary { issues } if issues > 0 => {
+                let _ = self.term.write_line(&format!("{issues} issue(s)"));
             }
             UiEvent::IndexCompleted {
                 files,
