@@ -92,6 +92,8 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - **Edition 2024**, workspace dependencies in root `Cargo.toml`
 - **No `unwrap()` in production code** — use `?`, `anyhow::Result`, or `thiserror`
 - **Clippy clean** — `cargo clippy -- -D warnings`
+- **Clippy covers tests** — CI runs `cargo clippy --tests -- -D warnings`, not just lib
+- **Format check** — CI runs `cargo fmt --check`; always run `cargo fmt` before pushing
 - Errors: typed with `thiserror` per crate, `anyhow` at binary boundaries
 - Imports: workspace crate aliases (`oco-shared-types`, etc.)
 
@@ -116,6 +118,14 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - Never push directly to `main`
 
 ## Testing
+
+### Pre-push checklist (CI mirrors this)
+
+```bash
+cargo fmt                                # Format first
+cargo clippy --tests -- -D warnings      # Lint including test code
+cargo test                               # Full suite
+```
 
 ```bash
 cargo test                               # All tests (352+)
