@@ -53,6 +53,7 @@ Works immediately with Node.js only. No API key required. Enhanced features avai
 - **Bounded** — explicit token, time, and tool-call budgets
 - **Graceful degradation** — works without ML components via heuristic fallbacks
 - **Deterministic policy** — no LLM calls for routing decisions
+- **Event-driven UI** — core emits structured events, CLI renders via pluggable renderers (Terminal/JSONL/Quiet)
 
 ## Stack
 
@@ -84,7 +85,7 @@ cd oco
 # Build all Rust crates
 cargo build
 
-# Run the test suite (110+ tests)
+# Run the test suite (226+ tests)
 cargo test
 
 # Run the CLI
@@ -106,10 +107,20 @@ cd apps/vscode-extension && pnpm install
 ```bash
 oco index ./my-project                    # Index a workspace
 oco search "auth handler" --workspace .   # Full-text search
-oco run "fix the login bug" --workspace . # Orchestrate
+oco run "fix the login bug" --workspace . # Orchestrate (live trace)
 oco serve --port 3000                     # Start HTTP/MCP server
 oco doctor --workspace .                  # Check health
 oco eval scenarios.jsonl                  # Run evaluations
+oco runs list                             # List past runs
+oco runs show last                        # Replay last run's trace
+```
+
+### Output modes
+
+```bash
+oco doctor                                # Human: colors, spinners, icons
+oco --format jsonl doctor                 # Machine: 1 JSON event per line
+oco --quiet doctor                        # Quiet: only final result/errors
 ```
 
 ## Configuration
