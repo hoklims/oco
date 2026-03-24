@@ -405,14 +405,14 @@ pub enum TeamTopologyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{AgentRole, PlanStrategy, StepExecution};
+    use crate::plan::{AgentRole, PlanStrategy};
 
     fn team_plan() -> (ExecutionPlan, TeamConfig) {
         let root = PlanStep::new("setup", "Initialize");
-        let mut impl_step = PlanStep::new("implement", "Write code")
+        let impl_step = PlanStep::new("implement", "Write code")
             .with_role(AgentRole::new("coder").with_capabilities(vec!["file_edit".into()]))
             .with_depends_on(vec![root.id]);
-        let mut test_step = PlanStep::new("test", "Write tests")
+        let test_step = PlanStep::new("test", "Write tests")
             .with_role(AgentRole::new("tester").with_capabilities(vec!["shell_exec".into()]))
             .with_depends_on(vec![root.id]);
 

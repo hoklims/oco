@@ -732,7 +732,7 @@ mod tests {
 
         let result = runner.execute(plan, &ctx()).await.unwrap();
         // After replan, there should be new steps
-        assert!(result.steps.len() >= 1);
+        assert!(!result.steps.is_empty());
         // The original step should be Failed or Replanned
         assert!(
             result
@@ -922,8 +922,7 @@ mod tests {
         let stuck =
             PlanStep::new("stuck", "Blocked forever").with_depends_on(vec![root.id, ghost_dep]);
         // Note: validate() would catch this, but GraphRunner should still handle it
-        let mut plan = make_plan(vec![root, stuck]);
-        // Manually skip validation by not calling validate()
+        let plan = make_plan(vec![root, stuck]);
 
         let executor = Arc::new(StubStepExecutor::all_pass());
         let planner = Arc::new(DirectPlanner);
