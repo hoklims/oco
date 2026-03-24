@@ -60,6 +60,14 @@ pub async fn run_scenario(
                 format!("memory:{operation:?}")
             }
             OrchestratorAction::Stop { reason } => format!("stop:{reason:?}"),
+            OrchestratorAction::Plan { .. } => "plan".into(),
+            OrchestratorAction::Delegate { agent_role, .. } => {
+                format!("delegate:{}", agent_role.name)
+            }
+            OrchestratorAction::Message { to_agent, .. } => {
+                format!("message:{to_agent}")
+            }
+            OrchestratorAction::Replan { .. } => "replan".into(),
         })
         .collect();
 

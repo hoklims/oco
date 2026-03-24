@@ -463,6 +463,11 @@ impl OrchestrationLoop {
                     }
                 }
                 OrchestratorAction::Stop { .. } => break,
+                // v2 actions: no-op in flat loop (handled by GraphRunner)
+                OrchestratorAction::Plan { .. }
+                | OrchestratorAction::Delegate { .. }
+                | OrchestratorAction::Message { .. }
+                | OrchestratorAction::Replan { .. } => {}
             }
 
             // v2: Update working memory based on observations.
@@ -606,6 +611,54 @@ impl OrchestrationLoop {
                 ObservationSource::System,
                 ObservationKind::Text {
                     content: "Session stopped".into(),
+                    metadata: None,
+                },
+                10,
+            )),
+            // Orchestration v2 actions — handled by GraphRunner, not the flat loop.
+            // In the flat loop these are no-ops that return a stub observation.
+            OrchestratorAction::Plan { request } => Ok(Observation::new(
+                ObservationSource::System,
+                ObservationKind::Text {
+                    content: format!("Plan requested (not yet wired to GraphRunner): {request}"),
+                    metadata: None,
+                },
+                10,
+            )),
+            OrchestratorAction::Delegate {
+                step_id,
+                agent_role,
+                ..
+            } => Ok(Observation::new(
+                ObservationSource::System,
+                ObservationKind::Text {
+                    content: format!(
+                        "Delegate step {step_id} to {} (not yet wired to GraphRunner)",
+                        agent_role.name
+                    ),
+                    metadata: None,
+                },
+                10,
+            )),
+            OrchestratorAction::Message {
+                to_agent, content, ..
+            } => Ok(Observation::new(
+                ObservationSource::System,
+                ObservationKind::Text {
+                    content: format!("Message to {to_agent}: {content}"),
+                    metadata: None,
+                },
+                10,
+            )),
+            OrchestratorAction::Replan {
+                failed_step_id,
+                error_context,
+            } => Ok(Observation::new(
+                ObservationSource::System,
+                ObservationKind::Text {
+                    content: format!(
+                        "Replan step {failed_step_id}: {error_context} (not yet wired)"
+                    ),
                     metadata: None,
                 },
                 10,

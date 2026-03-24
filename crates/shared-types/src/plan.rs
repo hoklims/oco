@@ -166,7 +166,7 @@ pub enum StepStatus {
 // ---------------------------------------------------------------------------
 
 /// Describes the agent profile needed for a step.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentRole {
     /// Role name (e.g., "investigator", "coder", "reviewer", "tester").
     pub name: String,
