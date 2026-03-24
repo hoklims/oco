@@ -7,6 +7,7 @@ description = "Protobuf-generated types for OCO IPC"
 
 [dependencies]
 prost = { workspace = true }
+prost-types = "0.13"
 tonic = { workspace = true }
 
 [build-dependencies]
