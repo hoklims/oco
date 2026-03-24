@@ -608,14 +608,14 @@ async fn main() -> Result<()> {
             if claude_dir.exists() {
                 println!("  [PASS] .claude/ directory exists");
 
-                // Check hooks
-                let hooks_dir = claude_dir.join("hooks").join("scripts");
+                // Check hooks (Node.js-based, as declared in settings.json)
+                let hooks_dir = claude_dir.join("hooks");
                 if hooks_dir.exists() {
                     let hook_files = [
-                        "pre-tool-use.sh",
-                        "post-tool-use.sh",
-                        "user-prompt-submit.sh",
-                        "stop.sh",
+                        "pre-tool-use.mjs",
+                        "post-tool-use.mjs",
+                        "user-prompt-submit.cjs",
+                        "stop.mjs",
                     ];
                     for hook in &hook_files {
                         if hooks_dir.join(hook).exists() {
@@ -625,7 +625,7 @@ async fn main() -> Result<()> {
                         }
                     }
                 } else {
-                    println!("  [WARN] .claude/hooks/scripts/ not found");
+                    println!("  [WARN] .claude/hooks/ not found");
                 }
 
                 // Check settings.json

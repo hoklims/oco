@@ -39,6 +39,12 @@ pub struct ScenarioConfig {
     pub subagents: Option<bool>,
     /// Max token budget override.
     pub max_total_tokens: Option<u64>,
+    /// Max retrievals override.
+    pub max_retrievals: Option<u32>,
+    /// Max duration in seconds override.
+    pub max_duration_secs: Option<u64>,
+    /// Max verify cycles override.
+    pub max_verify_cycles: Option<u32>,
 }
 
 /// Result of running a replay scenario.
@@ -62,6 +68,9 @@ pub struct ScenarioResult {
     pub errors: Vec<String>,
     /// Whether the expected action sequence was matched.
     pub expected_match: bool,
+    /// Whether a non-empty Respond action was generated.
+    #[serde(default)]
+    pub response_generated: bool,
 }
 
 impl ScenarioResult {
@@ -117,6 +126,7 @@ mod tests {
             actions: vec!["retrieve".into(), "respond".into()],
             errors: vec![],
             expected_match: true,
+            response_generated: true,
         };
 
         let metrics = result.metrics();

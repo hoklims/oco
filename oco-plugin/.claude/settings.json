@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/scripts/user-prompt-submit.sh"
+            "command": "node .claude/hooks/user-prompt-submit.cjs",
+            "timeout": 10
           }
         ]
       }
@@ -17,7 +18,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/scripts/pre-tool-use.sh"
+            "command": "node .claude/hooks/pre-tool-use.mjs",
+            "timeout": 10
           }
         ]
       }
@@ -28,7 +30,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/scripts/post-tool-use.sh"
+            "command": "node .claude/hooks/post-tool-use.mjs",
+            "timeout": 10
           }
         ]
       }
@@ -39,7 +42,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/scripts/stop.sh"
+            "command": "node .claude/hooks/stop.mjs",
+            "timeout": 10
           }
         ]
       }

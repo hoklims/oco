@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use oco_shared_types::{
-    ActionCandidate, MemoryEntry, Observation, ObservationKind, ObservationSource,
+    ActionCandidate, MemoryEntry, MemorySeverity, Observation, ObservationKind, ObservationSource,
     OrchestratorAction, Session, StopReason, TelemetryEventType, ToolGateDecision, WorkingMemory,
 };
 use tracing::{debug, info, warn};
@@ -139,12 +139,15 @@ impl OrchestrationLoop {
         // Initialize session metrics
         self.metrics = Some(oco_telemetry::SessionMetrics::new(state.session.id));
 
-        // Classify task complexity
+        // Classify task complexity and adapt budget.
         state.task_complexity = oco_policy_engine::TaskClassifier::classify(&user_request, &[]);
+        state.session.budget = oco_shared_types::Budget::for_complexity(state.task_complexity);
         info!(
             session_id = %state.session.id.0,
             complexity = ?state.task_complexity,
-            "Starting orchestration"
+            max_tokens = state.session.budget.max_total_tokens,
+            max_tool_calls = state.session.budget.max_tool_calls,
+            "Starting orchestration with task-adapted budget"
         );
 
         // Main loop
@@ -398,11 +401,7 @@ impl OrchestrationLoop {
         }
 
         // v2: Check for unresolved errors in working memory.
-        let has_memory_errors = state
-            .memory
-            .findings
-            .iter()
-            .any(|f| f.tags.iter().any(|t| t == "error"));
+        let has_memory_errors = !state.memory.unresolved_errors().is_empty();
 
         oco_policy_engine::PolicyState {
             current_step: state.session.step_count,
@@ -464,12 +463,13 @@ impl OrchestrationLoop {
         // Build context from observations
         let observations: Vec<Observation> = state.observations.iter().cloned().collect();
         let context = if let Some(ref rt) = self.runtime {
-            rt.build_context(
+            rt.build_context_with_complexity(
                 &state.session.user_request,
                 &observations,
                 &pinned,
                 state.session.budget.max_context_tokens,
                 state.session.step_count,
+                Some(state.task_complexity),
             )
         } else {
             // Minimal context without runtime
@@ -691,13 +691,15 @@ fn update_working_memory(
         } => {
             if *passed {
                 let entry = MemoryEntry::new(format!("Verification passed: {action:?}"), 1.0)
-                    .with_source("verification".into());
+                    .with_source("verification".into())
+                    .with_severity(MemorySeverity::Info);
                 memory.add_finding(entry);
             } else {
                 for failure in failures {
                     let entry = MemoryEntry::new(format!("Verification failure: {failure}"), 0.9)
                         .with_source("verification".into())
-                        .with_tags(vec!["failure".into()]);
+                        .with_tags(vec!["failure".into()])
+                        .with_severity(MemorySeverity::Error);
                     memory.add_finding(entry);
                 }
             }
@@ -706,10 +708,15 @@ fn update_working_memory(
             message,
             recoverable,
         } => {
-            let confidence = if *recoverable { 0.7 } else { 0.9 };
+            let (confidence, severity) = if *recoverable {
+                (0.7, MemorySeverity::Warning)
+            } else {
+                (0.9, MemorySeverity::Critical)
+            };
             let entry = MemoryEntry::new(format!("Error: {message}"), confidence)
                 .with_source("error".into())
-                .with_tags(vec!["error".into()]);
+                .with_tags(vec!["error".into()])
+                .with_severity(severity);
             memory.add_finding(entry);
         }
         ObservationKind::Symbol {
@@ -719,7 +726,8 @@ fn update_working_memory(
             ..
         } => {
             let entry = MemoryEntry::new(format!("Found {kind} `{name}` in {file_path}"), 0.8)
-                .with_source(file_path.clone());
+                .with_source(file_path.clone())
+                .with_severity(MemorySeverity::Info);
             memory.add_finding(entry);
         }
         _ => {

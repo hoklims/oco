@@ -16,6 +16,44 @@ pub struct CategoryBudgets {
     pub verification: Option<u32>,
 }
 
+impl CategoryBudgets {
+    /// Create category budgets tuned for the given task complexity.
+    ///
+    /// Simpler tasks get tighter per-category caps to stay focused.
+    /// Complex tasks get generous caps for deeper exploration.
+    pub fn for_complexity(complexity: oco_shared_types::TaskComplexity) -> Self {
+        use oco_shared_types::TaskComplexity;
+        match complexity {
+            TaskComplexity::Trivial => Self {
+                search_results: Some(4_000),
+                tool_outputs: Some(2_000),
+                verification: Some(1_000),
+            },
+            TaskComplexity::Low => Self {
+                search_results: Some(12_000),
+                tool_outputs: Some(8_000),
+                verification: Some(4_000),
+            },
+            TaskComplexity::Medium => Self {
+                search_results: Some(32_000),
+                tool_outputs: Some(24_000),
+                verification: Some(12_000),
+            },
+            TaskComplexity::High => Self {
+                search_results: Some(64_000),
+                tool_outputs: Some(48_000),
+                verification: Some(24_000),
+            },
+            TaskComplexity::Critical => Self {
+                // No caps — let global budget be the only constraint.
+                search_results: None,
+                tool_outputs: None,
+                verification: None,
+            },
+        }
+    }
+}
+
 /// Assembles a set of [`ContextItem`]s into a budget-respecting context window.
 pub struct ContextAssembler {
     budget_tokens: u32,
