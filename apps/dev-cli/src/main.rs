@@ -234,6 +234,7 @@ async fn main() -> Result<()> {
                         oco_shared_types::OrchestratorAction::Retrieve { .. } => "RETRIEVE",
                         oco_shared_types::OrchestratorAction::ToolCall { .. } => "TOOL_CALL",
                         oco_shared_types::OrchestratorAction::Verify { .. } => "VERIFY",
+                        oco_shared_types::OrchestratorAction::UpdateMemory { .. } => "MEMORY",
                         oco_shared_types::OrchestratorAction::Stop { .. } => "STOP",
                     };
                     println!(

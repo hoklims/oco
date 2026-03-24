@@ -336,6 +336,50 @@ impl OrchestrationLoop {
                     }
                     // On failure, let the policy engine decide the next action
                 }
+                OrchestratorAction::UpdateMemory { operation } => {
+                    // Memory ops are always local — no external execution needed.
+                    use oco_shared_types::MemoryOperation;
+                    match operation {
+                        MemoryOperation::PromoteToFact { entry_id } => {
+                            state.memory.promote_to_fact(*entry_id);
+                        }
+                        MemoryOperation::Invalidate { entry_id, reason } => {
+                            state.memory.invalidate(*entry_id, reason);
+                        }
+                        MemoryOperation::Supersede { old_id, new_id } => {
+                            state.memory.supersede(*old_id, *new_id);
+                        }
+                        MemoryOperation::LinkEvidence {
+                            target_id,
+                            evidence_id,
+                            supports,
+                        } => {
+                            state
+                                .memory
+                                .add_evidence_link(*target_id, *evidence_id, *supports);
+                        }
+                        MemoryOperation::AddHypothesis {
+                            content,
+                            confidence,
+                        } => {
+                            state.memory.add_hypothesis(MemoryEntry::new(
+                                content.clone(),
+                                *confidence,
+                            ));
+                        }
+                        MemoryOperation::AddQuestion { content } => {
+                            state
+                                .memory
+                                .add_question(MemoryEntry::new(content.clone(), 0.5));
+                        }
+                        MemoryOperation::ResolveQuestion { question_id } => {
+                            state.memory.resolve_question(*question_id);
+                        }
+                        MemoryOperation::UpdatePlan { steps } => {
+                            state.memory.update_plan(steps.clone());
+                        }
+                    }
+                }
                 OrchestratorAction::Stop { .. } => break,
             }
 
@@ -439,6 +483,14 @@ impl OrchestrationLoop {
             OrchestratorAction::Verify { strategy, target } => {
                 self.execute_verify(strategy, target.as_deref()).await
             }
+            OrchestratorAction::UpdateMemory { operation } => Ok(Observation::new(
+                ObservationSource::System,
+                ObservationKind::Text {
+                    content: format!("Memory updated: {operation:?}"),
+                    metadata: None,
+                },
+                5,
+            )),
             OrchestratorAction::Stop { .. } => Ok(Observation::new(
                 ObservationSource::System,
                 ObservationKind::Text {
@@ -730,9 +782,49 @@ fn update_working_memory(
                 .with_severity(MemorySeverity::Info);
             memory.add_finding(entry);
         }
-        _ => {
-            // Text, CodeSnippet, Structured — no automatic memory update.
-            // The LLM or future heuristics can promote these.
+        ObservationKind::CodeSnippet {
+            file_path,
+            start_line,
+            language,
+            ..
+        } => {
+            let lang = language.as_deref().unwrap_or("unknown");
+            let entry = MemoryEntry::new(
+                format!("Code snippet from {file_path}:{start_line} ({lang})"),
+                0.6,
+            )
+            .with_source(file_path.clone())
+            .with_tags(vec!["code_snippet".into()]);
+            memory.add_finding(entry);
+        }
+        ObservationKind::Structured { data } => {
+            // Extract key fields from structured data as findings.
+            if let Some(obj) = data.as_object()
+                && let Some(status) = obj.get("status").and_then(|v| v.as_str())
+            {
+                let severity = if status == "error" || status == "fail" {
+                    MemorySeverity::Error
+                } else {
+                    MemorySeverity::Info
+                };
+                let summary = obj
+                    .get("message")
+                    .or_else(|| obj.get("summary"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(status);
+                let entry = MemoryEntry::new(
+                    format!("Structured result: {summary}"),
+                    0.7,
+                )
+                .with_source("structured".into())
+                .with_tags(vec!["structured".into()])
+                .with_severity(severity);
+                memory.add_finding(entry);
+            }
+        }
+        ObservationKind::Text { .. } => {
+            // Plain text observations are too noisy for automatic memory.
+            // The LLM can promote relevant text via UpdateMemory actions.
         }
     }
 }

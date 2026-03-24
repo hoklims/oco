@@ -56,6 +56,9 @@ pub async fn run_scenario(
             OrchestratorAction::Verify { strategy, .. } => {
                 format!("verify:{strategy:?}")
             }
+            OrchestratorAction::UpdateMemory { operation } => {
+                format!("memory:{operation:?}")
+            }
             OrchestratorAction::Stop { reason } => format!("stop:{reason:?}"),
         })
         .collect();
