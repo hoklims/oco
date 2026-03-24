@@ -193,7 +193,7 @@ fn apply_overrides(config: &mut OrchestratorConfig, overrides: &ScenarioConfig) 
         config.llm.provider = provider.clone();
     }
     if let Some(max_steps) = overrides.max_steps {
-        config.default_budget.max_tool_calls = max_steps;
+        config.max_steps = max_steps;
     }
     if let Some(max_tokens) = overrides.max_total_tokens {
         config.default_budget.max_total_tokens = max_tokens;

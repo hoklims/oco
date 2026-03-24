@@ -136,12 +136,33 @@ impl OrchestrationLoop {
         let session = Session::new(user_request.clone(), workspace_root);
         let mut state = OrchestrationState::new(session);
 
+        // Apply max_steps override from config (e.g. eval scenario overrides).
+        if self.config.max_steps > 0 {
+            state.session.max_steps = self.config.max_steps;
+        }
+
         // Initialize session metrics
         self.metrics = Some(oco_telemetry::SessionMetrics::new(state.session.id));
 
         // Classify task complexity and adapt budget.
+        // Start from configured budget, then apply complexity-based limits as caps.
         state.task_complexity = oco_policy_engine::TaskClassifier::classify(&user_request, &[]);
-        state.session.budget = oco_shared_types::Budget::for_complexity(state.task_complexity);
+        let complexity_budget = oco_shared_types::Budget::for_complexity(state.task_complexity);
+        let configured = &self.config.default_budget;
+        state.session.budget = oco_shared_types::Budget {
+            max_context_tokens: configured.max_context_tokens.min(complexity_budget.max_context_tokens),
+            max_output_tokens: configured.max_output_tokens.min(complexity_budget.max_output_tokens),
+            max_total_tokens: configured.max_total_tokens.min(complexity_budget.max_total_tokens),
+            max_tool_calls: configured.max_tool_calls.min(complexity_budget.max_tool_calls),
+            max_retrievals: configured.max_retrievals.min(complexity_budget.max_retrievals),
+            max_duration_secs: configured.max_duration_secs.min(complexity_budget.max_duration_secs),
+            max_verify_cycles: configured.max_verify_cycles.min(complexity_budget.max_verify_cycles),
+            // Counters start at zero.
+            tokens_used: 0,
+            tool_calls_used: 0,
+            retrievals_used: 0,
+            verify_cycles_used: 0,
+        };
         info!(
             session_id = %state.session.id.0,
             complexity = ?state.task_complexity,
@@ -161,7 +182,7 @@ impl OrchestrationLoop {
             }
 
             // Check budget duration
-            if state.elapsed_secs() > self.config.default_budget.max_duration_secs {
+            if state.elapsed_secs() > state.session.budget.max_duration_secs {
                 let stop_action = OrchestratorAction::Stop {
                     reason: StopReason::BudgetExhausted,
                 };

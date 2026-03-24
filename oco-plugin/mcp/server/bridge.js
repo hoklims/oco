@@ -333,7 +333,12 @@ async function collectFindings(id, args) {
 
   let trace = [];
   try { trace = JSON.parse(result.stdout); } catch { /* keep empty */ }
-  const traceEntries = Array.isArray(trace) ? trace : [trace];
+  // Unwrap { traces: [...] } envelope if present.
+  const traceEntries = Array.isArray(trace)
+    ? trace
+    : Array.isArray(trace?.traces)
+      ? trace.traces
+      : [trace];
   const errors = traceEntries.filter((t) => t.decision_type === "error" || t.error);
   const decisions = traceEntries.filter((t) => t.reasoning);
 

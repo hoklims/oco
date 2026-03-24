@@ -290,7 +290,9 @@ async fn main() -> Result<()> {
 
             let results = runtime.search(&query, limit)?;
 
-            if results.is_empty() {
+            if cli.format == "json" {
+                println!("{}", serde_json::to_string(&results)?);
+            } else if results.is_empty() {
                 println!("No results for \"{query}\"");
             } else {
                 for (i, r) in results.iter().enumerate() {

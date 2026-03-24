@@ -28,6 +28,9 @@ pub struct OrchestratorConfig {
     /// v2: Per-repo profile (stack commands, sensitive paths, risk level).
     #[serde(default)]
     pub profile: RepoProfile,
+    /// Override for session max_steps (0 = use session default).
+    #[serde(default)]
+    pub max_steps: u32,
 }
 
 impl Default for OrchestratorConfig {
@@ -43,6 +46,7 @@ impl Default for OrchestratorConfig {
             enable_traces: true,
             system_prompt: None,
             profile: RepoProfile::default(),
+            max_steps: 0,
         }
     }
 }
