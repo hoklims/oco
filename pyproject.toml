@@ -1,0 +1,21 @@
+[project]
+name = "oco-workspace"
+version = "0.1.0"
+description = "Open Context Orchestrator — Python workspace root"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = [
+    "py/ml-worker",
+    "py/eval-harness",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B", "A", "C4", "SIM", "TCH", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"

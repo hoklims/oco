@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oco.dev/schemas/config.schema.json",
+  "title": "OCO Configuration",
+  "description": "Top-level configuration for Open Context Orchestrator.",
+  "type": "object",
+  "properties": {
+    "budget": {
+      "description": "Budget and rate-limit settings.",
+      "type": "object",
+      "properties": {
+        "max_cost_usd": {
+          "description": "Hard cap on total LLM spend per session (USD).",
+          "type": "number",
+          "minimum": 0,
+          "default": 1.0
+        },
+        "max_steps": {
+          "description": "Maximum orchestration steps per session.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 50
+        },
+        "max_tokens_per_request": {
+          "description": "Max tokens sent in a single LLM request.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 128000
+        },
+        "warn_at_pct": {
+          "description": "Emit a warning when this percentage of the budget is consumed.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 80
+        }
+      },
+      "additionalProperties": false
+    },
+    "providers": {
+      "description": "LLM / embedding provider configuration.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Provider"
+      }
+    },
+    "tool_registry": {
+      "description": "Tool discovery and sandboxing settings.",
+      "type": "object",
+      "properties": {
+        "allowed_tools": {
+          "description": "Glob patterns for tools the orchestrator may invoke.",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["*"]
+        },
+        "denied_tools": {
+          "description": "Glob patterns for tools that are always blocked.",
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "sandbox": {
+          "description": "Sandbox mode for tool execution.",
+          "type": "string",
+          "enum": ["none", "container", "wasm"],
+          "default": "none"
+        },
+        "timeout_ms": {
+          "description": "Default per-tool execution timeout in milliseconds.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 30000
+        },
+        "mcp_servers": {
+          "description": "List of MCP server endpoints to register.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "url": { "type": "string", "format": "uri" },
+              "transport": {
+                "type": "string",
+                "enum": ["stdio", "sse", "streamable-http"],
+                "default": "stdio"
+              }
+            },
+            "required": ["name", "url"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "telemetry": {
+      "description": "Observability settings.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "otlp_endpoint": { "type": "string", "format": "uri" },
+        "log_level": {
+          "type": "string",
+          "enum": ["trace", "debug", "info", "warn", "error"],
+          "default": "info"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Provider": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Unique provider identifier (e.g. 'anthropic', 'openai').",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Provider capability.",
+          "type": "string",
+          "enum": ["llm", "embedding", "rerank"]
+        },
+        "api_base": {
+          "description": "Base URL for the provider API.",
+          "type": "string",
+          "format": "uri"
+        },
+        "api_key_env": {
+          "description": "Environment variable that holds the API key.",
+          "type": "string"
+        },
+        "default_model": {
+          "description": "Model identifier used when none is specified.",
+          "type": "string"
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 3
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 60000
+        }
+      },
+      "required": ["name", "kind"],
+      "additionalProperties": false
+    }
+  }
+}

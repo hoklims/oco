@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package oco.orchestrator;
+
+option java_package = "dev.oco.orchestrator";
+option go_package = "oco/orchestrator";
+
+import "google/protobuf/timestamp.proto";
+
+// ── Session ──────────────────────────────────────────────────────────
+
+message SessionState {
+  string session_id = 1;
+  string goal = 2;
+  repeated StepResult steps = 3;
+  SessionStatus status = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  map<string, string> metadata = 7;
+
+  enum SessionStatus {
+    PENDING = 0;
+    RUNNING = 1;
+    PAUSED = 2;
+    COMPLETED = 3;
+    FAILED = 4;
+    CANCELLED = 5;
+  }
+}
+
+// ── Step ─────────────────────────────────────────────────────────────
+
+message StepResult {
+  string step_id = 1;
+  uint32 index = 2;
+  ActionRequest action = 3;
+  ObservationMessage observation = 4;
+  StepStatus status = 5;
+  uint64 duration_ms = 6;
+  google.protobuf.Timestamp timestamp = 7;
+
+  enum StepStatus {
+    STEP_PENDING = 0;
+    STEP_RUNNING = 1;
+    STEP_SUCCEEDED = 2;
+    STEP_FAILED = 3;
+    STEP_SKIPPED = 4;
+  }
+}
+
+// ── Action ───────────────────────────────────────────────────────────
+
+message ActionRequest {
+  string action_id = 1;
+  string tool_name = 2;
+  string input_json = 3;       // JSON-encoded tool input
+  string reasoning = 4;        // LLM reasoning behind the action
+  int32 confidence = 5;        // 0-100
+  map<string, string> labels = 6;
+}
+
+// ── Observation ──────────────────────────────────────────────────────
+
+message ObservationMessage {
+  string observation_id = 1;
+  string source = 2;           // tool name or "system"
+  string content = 3;          // raw output
+  ObservationType type = 4;
+  bool is_error = 5;
+  uint64 duration_ms = 6;
+  map<string, string> metadata = 7;
+
+  enum ObservationType {
+    TEXT = 0;
+    JSON = 1;
+    BINARY = 2;
+    ERROR = 3;
+  }
+}

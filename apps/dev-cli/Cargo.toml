@@ -1,0 +1,28 @@
+[package]
+name = "oco-dev-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Development CLI for interacting with the OCO orchestrator"
+
+[[bin]]
+name = "oco"
+path = "src/main.rs"
+
+[dependencies]
+oco-shared-types = { workspace = true }
+oco-orchestrator-core = { workspace = true }
+oco-telemetry = { workspace = true }
+oco-mcp-server = { workspace = true }
+oco-policy-engine = { workspace = true }
+oco-verifier = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }

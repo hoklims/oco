@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package oco.ml;
+
+option java_package = "dev.oco.ml";
+option go_package = "oco/ml";
+
+// OcoMlService — IPC bridge between Rust core and Python ML worker.
+service OcoMlService {
+  // Generate embeddings for a batch of texts.
+  rpc Embed(EmbedRequest) returns (EmbedResponse);
+
+  // Rerank documents against a query.
+  rpc Rerank(RerankRequest) returns (RerankResponse);
+
+  // Liveness / readiness probe.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// ── Embed ────────────────────────────────────────────────────────────
+
+message EmbedRequest {
+  repeated string texts = 1;
+  string model_name = 2;
+}
+
+message EmbedResponse {
+  repeated FloatVector embeddings = 1;
+  string model_name = 2;
+  uint64 duration_ms = 3;
+}
+
+message FloatVector {
+  repeated float values = 1;
+}
+
+// ── Rerank ───────────────────────────────────────────────────────────
+
+message RerankRequest {
+  string query = 1;
+  repeated string documents = 2;
+  int32 top_k = 3;
+}
+
+message RerankResponse {
+  repeated RerankScore scores = 1;
+}
+
+message RerankScore {
+  int32 index = 1;
+  float score = 2;
+  string document = 3;
+}
+
+// ── HealthCheck ──────────────────────────────────────────────────────
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  ServingStatus status = 1;
+
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+}

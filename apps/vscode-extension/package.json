@@ -1,0 +1,82 @@
+{
+  "name": "oco-vscode",
+  "displayName": "Open Context Orchestrator",
+  "description": "Intelligent orchestration middleware for coding assistants",
+  "version": "0.1.0",
+  "publisher": "oco",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "oco.startSession",
+        "title": "OCO: Start Orchestration Session"
+      },
+      {
+        "command": "oco.stopSession",
+        "title": "OCO: Stop Current Session"
+      },
+      {
+        "command": "oco.showTrace",
+        "title": "OCO: Show Decision Trace"
+      },
+      {
+        "command": "oco.showStatus",
+        "title": "OCO: Show Status"
+      },
+      {
+        "command": "oco.indexWorkspace",
+        "title": "OCO: Index Current Workspace"
+      }
+    ],
+    "configuration": {
+      "title": "Open Context Orchestrator",
+      "properties": {
+        "oco.coreUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:3000",
+          "description": "URL of the OCO core server"
+        },
+        "oco.mlWorkerUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:50052",
+          "description": "URL of the ML worker server"
+        },
+        "oco.maxContextTokens": {
+          "type": "number",
+          "default": 128000,
+          "description": "Maximum tokens for context assembly"
+        },
+        "oco.autoIndex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically index workspace on activation"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "pnpm build --watch",
+    "lint": "biome check src/",
+    "format": "biome format --write src/",
+    "package": "pnpm build && vsce package"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.5",
+    "@types/node": "^20",
+    "@types/vscode": "^1.85",
+    "esbuild": "^0.20",
+    "typescript": "^5.3"
+  }
+}

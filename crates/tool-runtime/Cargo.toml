@@ -1,0 +1,17 @@
+[package]
+name = "oco-tool-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tool registry, execution, and observation normalization"
+
+[dependencies]
+oco-shared-types = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+dashmap = { workspace = true }

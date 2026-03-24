@@ -1,0 +1,51 @@
+# Rust
+target/
+Cargo.lock
+
+# Node
+node_modules/
+*.vsix
+dist/
+.vscode-test/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+*.so
+*.dylib
+*.dll
+
+# SQLite databases (runtime)
+*.db
+*.db-journal
+*.db-wal
+
+# Telemetry exports
+*.otlp
+traces/
+
+# OCO runtime data
+.oco/

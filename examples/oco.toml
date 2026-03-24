@@ -1,0 +1,35 @@
+# OCO Configuration
+# Place this file as `oco.toml` in your project root.
+
+bind_address = "127.0.0.1"
+port = 3000
+db_path = ".oco/oco.db"
+enable_traces = true
+max_concurrent_sessions = 5
+
+[default_budget]
+max_context_tokens = 128000
+max_output_tokens = 16000
+max_total_tokens = 1000000
+max_tool_calls = 50
+max_retrievals = 30
+max_duration_secs = 300
+max_verify_cycles = 10
+
+[llm]
+provider = "anthropic"              # "anthropic", "ollama", or "stub"
+base_url = "https://api.anthropic.com"
+model = "claude-sonnet-4-6"
+api_key_env = "ANTHROPIC_API_KEY"   # Env var name for the API key
+max_retries = 3
+timeout_secs = 60
+
+# Uncomment for Ollama (local):
+# [llm]
+# provider = "ollama"
+# base_url = "http://localhost:11434"
+# model = "llama3.2"
+# timeout_secs = 300
+
+# ML worker (optional — system degrades gracefully without it)
+ml_worker_url = "http://127.0.0.1:50052"

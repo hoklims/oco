@@ -1,0 +1,13 @@
+[package]
+name = "oco-shared-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core domain types for Open Context Orchestrator"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "oco-shared-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Protobuf-generated types for OCO IPC"
+
+[dependencies]
+prost = { workspace = true }
+tonic = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+prost-build = { workspace = true }

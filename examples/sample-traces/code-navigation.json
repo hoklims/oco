@@ -1,0 +1,83 @@
+{
+  "scenario": "code_navigation",
+  "description": "Explain how auth tokens are refreshed in this repo",
+  "session": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "status": "completed",
+    "steps": 4,
+    "complexity": "medium",
+    "total_tokens": 45200
+  },
+  "traces": [
+    {
+      "step": 1,
+      "action": {
+        "type": "retrieve",
+        "query": "auth token refresh",
+        "sources": ["code_search", "full_text_search"],
+        "max_results": 10
+      },
+      "reason": "no context retrieved yet for complex task",
+      "knowledge_confidence": 0.3,
+      "budget_snapshot": {
+        "tokens_used": 0,
+        "tokens_remaining": 1000000,
+        "tool_calls_used": 0
+      },
+      "alternatives": [
+        { "action_type": "respond", "score": 0.2, "reason": "not enough information" }
+      ]
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "retrieve",
+        "query": "TokenRefresher class implementation",
+        "sources": ["symbol_lookup"],
+        "max_results": 5
+      },
+      "reason": "initial retrieval found references, need symbol details",
+      "knowledge_confidence": 0.5,
+      "budget_snapshot": {
+        "tokens_used": 12000,
+        "tokens_remaining": 988000,
+        "tool_calls_used": 0
+      },
+      "alternatives": [
+        { "action_type": "respond", "score": 0.4, "reason": "some context available" }
+      ]
+    },
+    {
+      "step": 3,
+      "action": {
+        "type": "respond",
+        "content": "The auth token refresh mechanism works as follows..."
+      },
+      "reason": "high confidence with sufficient context",
+      "knowledge_confidence": 0.85,
+      "budget_snapshot": {
+        "tokens_used": 24000,
+        "tokens_remaining": 976000,
+        "tool_calls_used": 0
+      },
+      "alternatives": [
+        { "action_type": "retrieve", "score": 0.2, "reason": "could gather more context" }
+      ]
+    },
+    {
+      "step": 4,
+      "action": {
+        "type": "stop",
+        "reason": "task_complete"
+      },
+      "reason": "task appears complete with verification",
+      "knowledge_confidence": 0.9,
+      "budget_snapshot": {
+        "tokens_used": 45200,
+        "tokens_remaining": 954800,
+        "tool_calls_used": 0
+      },
+      "alternatives": []
+    }
+  ]
+}

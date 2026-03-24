@@ -1,0 +1,20 @@
+[package]
+name = "oco-retrieval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Retrieval engine with FTS5 lexical search and vector abstraction"
+
+[dependencies]
+oco-shared-types = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

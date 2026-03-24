@@ -1,0 +1,87 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/orchestrator-core",
+    "crates/policy-engine",
+    "crates/context-engine",
+    "crates/code-intel",
+    "crates/tool-runtime",
+    "crates/retrieval",
+    "crates/verifier",
+    "crates/telemetry",
+    "crates/mcp-server",
+    "crates/shared-types",
+    "crates/shared-proto",
+    "apps/dev-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/open-context-orchestrator/oco"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+
+# Web / API
+axum = { version = "0.8", features = ["json", "ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled", "vtab"] }
+
+# gRPC / Proto
+tonic = "0.12"
+prost = "0.13"
+tonic-build = "0.12"
+prost-build = "0.13"
+
+# Telemetry
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry = "0.27"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+dashmap = "6"
+bytes = "1"
+futures = "0.3"
+reqwest = { version = "0.12", features = ["json"] }
+clap = { version = "4", features = ["derive"] }
+
+# Testing
+tempfile = "3"
+assert_matches = "1.5"
+
+# Internal crates
+oco-shared-types = { path = "crates/shared-types" }
+oco-shared-proto = { path = "crates/shared-proto" }
+oco-orchestrator-core = { path = "crates/orchestrator-core" }
+oco-policy-engine = { path = "crates/policy-engine" }
+oco-context-engine = { path = "crates/context-engine" }
+oco-code-intel = { path = "crates/code-intel" }
+oco-tool-runtime = { path = "crates/tool-runtime" }
+oco-retrieval = { path = "crates/retrieval" }
+oco-verifier = { path = "crates/verifier" }
+oco-telemetry = { path = "crates/telemetry" }
+oco-mcp-server = { path = "crates/mcp-server" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "symbols"

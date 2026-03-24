@@ -1,0 +1,27 @@
+bind_address = "127.0.0.1"
+port = 3000
+max_concurrent_sessions = 5
+ml_worker_url = "http://127.0.0.1:50052"
+db_path = "oco.db"
+enable_traces = true
+
+[default_budget]
+max_context_tokens = 128000
+max_output_tokens = 16000
+max_total_tokens = 1000000
+tokens_used = 0
+max_tool_calls = 50
+tool_calls_used = 0
+max_retrievals = 30
+retrievals_used = 0
+max_duration_secs = 300
+max_verify_cycles = 10
+verify_cycles_used = 0
+
+[llm]
+provider = "anthropic"
+base_url = "https://api.anthropic.com"
+model = "claude-sonnet-4-6"
+api_key_env = "ANTHROPIC_API_KEY"
+max_retries = 3
+timeout_secs = 60
