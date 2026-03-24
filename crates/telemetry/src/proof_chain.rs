@@ -40,7 +40,7 @@ pub struct ProofChain {
     envelopes: Vec<ProofEnvelope>,
 }
 
-/// Genesis hash: 64 zeros (SHA-256 of "nothing").
+/// Genesis hash: 64 zeros (sentinel value for the first envelope).
 const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 impl ProofChain {
@@ -162,16 +162,15 @@ impl ProofChain {
     /// Compute a SHA-256 hash of all non-signature fields of an envelope.
     /// This is the value used for `previous_envelope_hash` linkage.
     fn envelope_hash(envelope: &ProofEnvelope) -> String {
-        let canonical = format!(
-            "{}|{}|{}|{}|{}|{}",
-            envelope.sequence,
-            envelope.content_hash,
-            envelope.previous_envelope_hash,
-            envelope.timestamp,
-            envelope.tool_call_ids.join(","),
-            envelope.label.as_deref().unwrap_or(""),
-        );
-        sha256_hex(canonical.as_bytes())
+        let canonical = serde_json::json!({
+            "sequence": envelope.sequence,
+            "content_hash": envelope.content_hash,
+            "previous_envelope_hash": envelope.previous_envelope_hash,
+            "timestamp": envelope.timestamp,
+            "tool_call_ids": envelope.tool_call_ids,
+            "label": envelope.label,
+        });
+        sha256_hex(canonical.to_string().as_bytes())
     }
 
     /// Compute HMAC-SHA256 over all immutable fields of an envelope.
@@ -184,17 +183,16 @@ impl ProofChain {
         tool_call_ids: &[String],
         label: Option<&str>,
     ) -> String {
+        let canonical = serde_json::json!({
+            "sequence": sequence,
+            "content_hash": content_hash,
+            "previous_envelope_hash": previous_envelope_hash,
+            "timestamp": timestamp,
+            "tool_call_ids": tool_call_ids,
+            "label": label,
+        });
         let mut mac = HmacSha256::new_from_slice(&self.key).expect("HMAC accepts any key length");
-        mac.update(sequence.to_le_bytes().as_ref());
-        mac.update(content_hash.as_bytes());
-        mac.update(previous_envelope_hash.as_bytes());
-        mac.update(timestamp.as_bytes());
-        for id in tool_call_ids {
-            mac.update(id.as_bytes());
-        }
-        if let Some(lbl) = label {
-            mac.update(lbl.as_bytes());
-        }
+        mac.update(canonical.to_string().as_bytes());
         hex::encode(mac.finalize().into_bytes())
     }
 }

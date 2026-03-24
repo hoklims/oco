@@ -414,6 +414,11 @@ impl SharedMemoryEntry {
         self
     }
 
+    /// Grant explicit read access to the given agent.
+    ///
+    /// This works regardless of the `shareable` flag — explicit sharing via
+    /// `to_agents` is a separate access path from public shareability.
+    /// Non-shareable entries can still be shared with specific agents this way.
     pub fn share_with(mut self, agent_id: AgentId) -> Self {
         if !self.to_agents.contains(&agent_id) {
             self.to_agents.push(agent_id);
@@ -487,9 +492,10 @@ impl SharedMemoryBus {
                 return false;
             }
             let derived = SharedMemoryEntry {
-                key: source.key.replace(
+                key: source.key.replacen(
                     &format!("shared:{from_agent}:"),
                     &format!("shared:{to_agent}:"),
+                    1,
                 ),
                 value: source.value.clone(),
                 origin_agent: source.origin_agent, // preserve original creator

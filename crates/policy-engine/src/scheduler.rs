@@ -68,6 +68,8 @@ pub enum SchedulerError {
     CyclicDependency { actions: Vec<String> },
     #[error("unknown dependency '{dependency}' referenced by action '{action}'")]
     UnknownDependency { action: String, dependency: String },
+    #[error("duplicate action ID '{id}'")]
+    DuplicateActionId { id: String },
 }
 
 /// Build a parallel execution schedule from a set of actions with dependencies.
@@ -81,6 +83,18 @@ pub fn schedule(actions: &[SchedulableAction]) -> Result<Schedule, SchedulerErro
             total_duration_ms: 0,
             max_parallelism: 0,
         });
+    }
+
+    // Validate unique action IDs
+    {
+        let mut seen = std::collections::HashSet::new();
+        for action in actions {
+            if !seen.insert(&action.id) {
+                return Err(SchedulerError::DuplicateActionId {
+                    id: action.id.clone(),
+                });
+            }
+        }
     }
 
     // Build DAG
@@ -121,26 +135,33 @@ pub fn schedule(actions: &[SchedulableAction]) -> Result<Schedule, SchedulerErro
         );
     }
 
-    let mut queue: VecDeque<(NodeIndex, usize)> = VecDeque::new();
+    let mut queue: VecDeque<NodeIndex> = VecDeque::new();
+    let mut max_pred_level: HashMap<NodeIndex, usize> = HashMap::new();
     for (&node, &deg) in &in_degree {
         if deg == 0 {
-            queue.push_back((node, 0));
+            queue.push_back(node);
+            max_pred_level.insert(node, 0);
         }
     }
 
     let mut levels: HashMap<NodeIndex, usize> = HashMap::new();
     let mut processed = 0usize;
 
-    while let Some((node, level)) = queue.pop_front() {
+    while let Some(node) = queue.pop_front() {
+        let level = max_pred_level[&node];
         levels.insert(node, level);
         processed += 1;
 
         for edge in graph.edges(node) {
             let target = edge.target();
+            // Track the maximum predecessor level for each target
+            let entry = max_pred_level.entry(target).or_insert(0);
+            *entry = (*entry).max(level + 1);
+
             let deg = in_degree.get_mut(&target).expect("node in graph");
             *deg -= 1;
             if *deg == 0 {
-                queue.push_back((target, level + 1));
+                queue.push_back(target);
             }
         }
     }
@@ -160,11 +181,12 @@ pub fn schedule(actions: &[SchedulableAction]) -> Result<Schedule, SchedulerErro
     let mut waves: Vec<ExecutionWave> = Vec::with_capacity(max_level + 1);
 
     for level in 0..=max_level {
-        let wave_actions: Vec<String> = levels
+        let mut wave_actions: Vec<String> = levels
             .iter()
             .filter(|(_, l)| **l == level)
             .map(|(node, _)| node_to_id[node].to_string())
             .collect();
+        wave_actions.sort();
 
         let wave_duration = wave_actions
             .iter()

@@ -86,10 +86,9 @@ fn init_patterns() -> Vec<SecretPattern> {
     ];
 
     defs.iter()
-        .filter_map(|(name, pattern)| {
-            Regex::new(pattern)
-                .ok()
-                .map(|regex| SecretPattern { name, regex })
+        .map(|(name, pattern)| {
+            let regex = Regex::new(pattern).expect("failed to compile secret detection regex");
+            SecretPattern { name, regex }
         })
         .collect()
 }
