@@ -12,6 +12,7 @@
 pub mod config;
 pub mod error;
 pub mod eval;
+pub mod graph_runner;
 pub mod llm;
 pub mod loop_runner;
 pub mod ml_client;
@@ -20,6 +21,7 @@ pub mod state;
 
 pub use config::OrchestratorConfig;
 pub use error::OrchestratorError;
+pub use graph_runner::GraphRunner;
 pub use loop_runner::OrchestrationLoop;
 pub use runtime::OrchestratorRuntime;
 pub use state::OrchestrationState;

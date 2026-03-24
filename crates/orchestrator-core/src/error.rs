@@ -32,6 +32,9 @@ pub enum OrchestratorError {
     #[error("configuration error: {0}")]
     ConfigError(String),
 
+    #[error("planning failed: {0}")]
+    PlanningFailed(String),
+
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
