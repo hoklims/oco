@@ -104,9 +104,9 @@ pub async fn run_scenario(
     });
 
     // Check that at least one non-empty Respond was generated.
-    let response_generated = state.action_history.iter().any(|a| {
-        matches!(a, OrchestratorAction::Respond { content } if !content.trim().is_empty())
-    });
+    let response_generated = state.action_history.iter().any(
+        |a| matches!(a, OrchestratorAction::Respond { content } if !content.trim().is_empty()),
+    );
 
     // Success requires both task completion AND a meaningful response.
     let success = task_complete && response_generated;

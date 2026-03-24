@@ -533,7 +533,14 @@ impl OrchestratorRuntime {
         budget_tokens: u32,
         current_step: u32,
     ) -> AssembledContext {
-        self.build_context_with_complexity(user_request, observations, pinned, budget_tokens, current_step, None)
+        self.build_context_with_complexity(
+            user_request,
+            observations,
+            pinned,
+            budget_tokens,
+            current_step,
+            None,
+        )
     }
 
     /// Build context with task-complexity-aware category budgets.

@@ -150,13 +150,27 @@ impl OrchestrationLoop {
         let complexity_budget = oco_shared_types::Budget::for_complexity(state.task_complexity);
         let configured = &self.config.default_budget;
         state.session.budget = oco_shared_types::Budget {
-            max_context_tokens: configured.max_context_tokens.min(complexity_budget.max_context_tokens),
-            max_output_tokens: configured.max_output_tokens.min(complexity_budget.max_output_tokens),
-            max_total_tokens: configured.max_total_tokens.min(complexity_budget.max_total_tokens),
-            max_tool_calls: configured.max_tool_calls.min(complexity_budget.max_tool_calls),
-            max_retrievals: configured.max_retrievals.min(complexity_budget.max_retrievals),
-            max_duration_secs: configured.max_duration_secs.min(complexity_budget.max_duration_secs),
-            max_verify_cycles: configured.max_verify_cycles.min(complexity_budget.max_verify_cycles),
+            max_context_tokens: configured
+                .max_context_tokens
+                .min(complexity_budget.max_context_tokens),
+            max_output_tokens: configured
+                .max_output_tokens
+                .min(complexity_budget.max_output_tokens),
+            max_total_tokens: configured
+                .max_total_tokens
+                .min(complexity_budget.max_total_tokens),
+            max_tool_calls: configured
+                .max_tool_calls
+                .min(complexity_budget.max_tool_calls),
+            max_retrievals: configured
+                .max_retrievals
+                .min(complexity_budget.max_retrievals),
+            max_duration_secs: configured
+                .max_duration_secs
+                .min(complexity_budget.max_duration_secs),
+            max_verify_cycles: configured
+                .max_verify_cycles
+                .min(complexity_budget.max_verify_cycles),
             // Counters start at zero.
             tokens_used: 0,
             tool_calls_used: 0,
@@ -383,10 +397,9 @@ impl OrchestrationLoop {
                             content,
                             confidence,
                         } => {
-                            state.memory.add_hypothesis(MemoryEntry::new(
-                                content.clone(),
-                                *confidence,
-                            ));
+                            state
+                                .memory
+                                .add_hypothesis(MemoryEntry::new(content.clone(), *confidence));
                         }
                         MemoryOperation::AddQuestion { content } => {
                             state
@@ -833,13 +846,10 @@ fn update_working_memory(
                     .or_else(|| obj.get("summary"))
                     .and_then(|v| v.as_str())
                     .unwrap_or(status);
-                let entry = MemoryEntry::new(
-                    format!("Structured result: {summary}"),
-                    0.7,
-                )
-                .with_source("structured".into())
-                .with_tags(vec!["structured".into()])
-                .with_severity(severity);
+                let entry = MemoryEntry::new(format!("Structured result: {summary}"), 0.7)
+                    .with_source("structured".into())
+                    .with_tags(vec!["structured".into()])
+                    .with_severity(severity);
                 memory.add_finding(entry);
             }
         }

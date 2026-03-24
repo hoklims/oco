@@ -192,7 +192,9 @@ impl WorkingMemory {
 
     /// Mark an entry as superseded by a newer, more specific entry.
     pub fn supersede(&mut self, old_id: Uuid, new_id: Uuid) -> bool {
-        for entry in self.findings.iter_mut()
+        for entry in self
+            .findings
+            .iter_mut()
             .chain(self.hypotheses.iter_mut())
             .chain(self.verified_facts.iter_mut())
         {
@@ -208,7 +210,9 @@ impl WorkingMemory {
 
     /// Link two entries: `evidence_id` supports `target_id`.
     pub fn add_evidence_link(&mut self, target_id: Uuid, evidence_id: Uuid, supports: bool) {
-        for entry in self.findings.iter_mut()
+        for entry in self
+            .findings
+            .iter_mut()
             .chain(self.hypotheses.iter_mut())
             .chain(self.verified_facts.iter_mut())
             .chain(self.questions.iter_mut())
@@ -268,7 +272,9 @@ impl WorkingMemory {
 
     /// Check if any active finding has the given severity or higher.
     pub fn has_severity_at_least(&self, min_severity: MemorySeverity) -> bool {
-        self.active_entries().iter().any(|e| e.severity as u8 >= min_severity as u8)
+        self.active_entries()
+            .iter()
+            .any(|e| e.severity as u8 >= min_severity as u8)
     }
 
     /// Return active entries with errors or critical severity.
@@ -296,7 +302,9 @@ impl WorkingMemory {
         }
 
         if !self.findings.is_empty() {
-            let active_findings: Vec<_> = self.findings.iter()
+            let active_findings: Vec<_> = self
+                .findings
+                .iter()
                 .filter(|f| matches!(f.status, MemoryStatus::Active | MemoryStatus::Confirmed))
                 .collect();
             if !active_findings.is_empty() {
@@ -326,7 +334,9 @@ impl WorkingMemory {
         }
 
         if !self.hypotheses.is_empty() {
-            let active_hyp: Vec<_> = self.hypotheses.iter()
+            let active_hyp: Vec<_> = self
+                .hypotheses
+                .iter()
                 .filter(|h| matches!(h.status, MemoryStatus::Active))
                 .collect();
             if !active_hyp.is_empty() {
@@ -445,14 +455,8 @@ mod tests {
     #[test]
     fn severity_filter() {
         let mut mem = WorkingMemory::default();
-        mem.add_finding(
-            MemoryEntry::new("info".into(), 0.5)
-                .with_severity(MemorySeverity::Info),
-        );
-        mem.add_finding(
-            MemoryEntry::new("error".into(), 0.8)
-                .with_severity(MemorySeverity::Error),
-        );
+        mem.add_finding(MemoryEntry::new("info".into(), 0.5).with_severity(MemorySeverity::Info));
+        mem.add_finding(MemoryEntry::new("error".into(), 0.8).with_severity(MemorySeverity::Error));
 
         assert!(mem.has_severity_at_least(MemorySeverity::Error));
         assert_eq!(mem.unresolved_errors().len(), 1);
@@ -473,8 +477,7 @@ mod tests {
     fn summary_shows_severity() {
         let mut mem = WorkingMemory::default();
         mem.add_finding(
-            MemoryEntry::new("critical bug".into(), 0.9)
-                .with_severity(MemorySeverity::Critical),
+            MemoryEntry::new("critical bug".into(), 0.9).with_severity(MemorySeverity::Critical),
         );
         let summary = mem.summary();
         assert!(summary.contains("[CRITICAL]"));

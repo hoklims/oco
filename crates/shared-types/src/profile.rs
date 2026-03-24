@@ -219,7 +219,12 @@ impl RepoProfile {
                 TaskTypePolicy {
                     task_pattern: "security".into(),
                     risk_level: Some(RiskLevel::Critical),
-                    required_checks: vec!["build".into(), "test".into(), "lint".into(), "typecheck".into()],
+                    required_checks: vec![
+                        "build".into(),
+                        "test".into(),
+                        "lint".into(),
+                        "typecheck".into(),
+                    ],
                     max_steps: 0,
                     priority_paths: vec![".env".into(), "auth".into(), "crypto".into()],
                 },
