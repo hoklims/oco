@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -19,7 +19,7 @@ class Embedder:
 
     def __init__(self, config: ModelConfig) -> None:
         self._config = config
-        self._model = None
+        self._model: Any = None
         self._model_name: str | None = None
 
     def _ensure_loaded(self) -> None:
