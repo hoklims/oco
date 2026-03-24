@@ -4,15 +4,25 @@
 
 ```bash
 cargo build                              # Build all crates
-cargo test                               # Run full test suite (110+ tests)
+cargo test                               # Run full test suite (226+ tests)
 cargo run -p oco-dev-cli -- --help       # CLI help
 
 oco index ./path                         # Index a workspace
 oco search "query" --workspace ./path    # Full-text search
-oco run "request" --workspace ./path     # Orchestrate an action
+oco run "request" --workspace ./path     # Orchestrate an action (live trace)
 oco serve --port 3000                    # Start HTTP/MCP server
 oco doctor --workspace ./path            # Check plugin health
 oco eval scenarios.jsonl                 # Run evaluation scenarios
+oco runs list                            # List past runs
+oco runs show last                       # Replay last run's trace
+```
+
+### CLI Output Modes
+
+```bash
+oco doctor                               # Human: colors, icons, structured
+oco --format jsonl doctor                 # Machine: 1 JSON event per line
+oco --quiet doctor                        # Quiet: only final result/errors
 ```
 
 ## Architecture
@@ -23,18 +33,18 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 | # | Crate | Role |
 |---|-------|------|
-| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, ReplayScenario, TelemetryEvent |
+| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, ReplayScenario, TelemetryEvent, OrchestrationEvent |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
 | 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer |
-| 5 | `retrieval` | SQLite FTS5, in-memory vector search, hybrid RRF ranking |
+| 5 | `retrieval` | SQLite FTS5 (Mutex\<Connection\> for Send+Sync), in-memory vector search, hybrid RRF ranking |
 | 6 | `tool-runtime` | Shell/file executors, observation normalizer |
 | 7 | `verifier` | Test/build/lint/typecheck runners with auto-detection |
 | 8 | `telemetry` | Tracing init, decision trace collector, event recording |
 | 9 | `context-engine` | Context assembly, dedup, compression, staleness decay, category budgets |
 | 10 | `orchestrator-core` | State machine, action loop, LLM providers, runtime, eval runner, repo profiles |
 | 11 | `mcp-server` | Axum HTTP + MCP server, session management |
-| 12 | `dev-cli` | CLI binary (index, search, run, serve, eval, doctor) |
+| 12 | `dev-cli` | CLI binary (index, search, run, serve, eval, doctor, runs) — event-driven UI with Terminal/JSONL/Quiet renderers |
 
 ### Python (`py/`)
 
@@ -60,6 +70,8 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 - **Bounded loops** — max steps enforced via token/time/tool budgets
 - **Provider-agnostic** — works with Anthropic, Ollama, or stub provider
 - **Local-first** — no cloud dependencies required (ML worker optional)
+- **Event-driven UI** — core emits `OrchestrationEvent` via channel, CLI renders via `Renderer` trait (Terminal/JSONL/Quiet)
+- **Run artifacts** — every `oco run` persists `trace.jsonl` + `summary.json` to `.oco/runs/<id>/` for replay and debugging
 
 ### Git
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
@@ -69,14 +81,14 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 ## Testing
 
 ```bash
-cargo test                               # All tests
-cargo test -p oco-shared-types           # 14 tests — domain types, verification, memory, profiles
+cargo test                               # All tests (226+)
+cargo test -p oco-shared-types           # 29 tests — domain types, verification, memory, profiles
 cargo test -p oco-policy-engine          # 30 tests — classifier, selector, budget, gates
-cargo test -p oco-context-engine         # 15 tests — assembler, dedup, compression, staleness
+cargo test -p oco-context-engine         # 13 tests — assembler, dedup, compression, staleness
 cargo test -p oco-code-intel             # 16 tests — parser, indexer, language detection
 cargo test -p oco-retrieval              #  9 tests — FTS5, vector, hybrid ranking
-cargo test -p oco-telemetry              #  2 tests — event recording, JSONL export
-cargo test -p oco-orchestrator-core      #  8 tests — eval, integration
+cargo test -p oco-telemetry              #  5 tests — event recording, JSONL export
+cargo test -p oco-orchestrator-core      # 32 tests — eval, integration, loop runner
 ```
 
 ## LLM Providers
