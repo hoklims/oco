@@ -9,6 +9,7 @@ members = [
     "crates/retrieval",
     "crates/verifier",
     "crates/telemetry",
+    "crates/planner",
     "crates/mcp-server",
     "crates/shared-types",
     "crates/shared-proto",
@@ -81,6 +82,7 @@ oco-code-intel = { path = "crates/code-intel" }
 oco-tool-runtime = { path = "crates/tool-runtime" }
 oco-retrieval = { path = "crates/retrieval" }
 oco-verifier = { path = "crates/verifier" }
+oco-planner = { path = "crates/planner" }
 oco-telemetry = { path = "crates/telemetry" }
 oco-mcp-server = { path = "crates/mcp-server" }
 
