@@ -52,9 +52,8 @@ static RE_RUST_SYMBOL: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Rust: `use path::{items}` or `use path::item;` or `use path;`
-static RE_RUST_IMPORT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^[ \t]*use\s+([^\s;]+)\s*;").expect("rust import regex")
-});
+static RE_RUST_IMPORT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^[ \t]*use\s+([^\s;]+)\s*;").expect("rust import regex"));
 
 /// TypeScript/JavaScript: `(export)? (function|class|interface|type|enum|const|let|var) name`
 static RE_TS_SYMBOL: LazyLock<Regex> = LazyLock::new(|| {
@@ -175,9 +174,7 @@ impl FallbackParser {
                 _ => SymbolKind::Variable,
             };
 
-            let signature = lines
-                .get((line - 1) as usize)
-                .map(|l| l.trim().to_string());
+            let signature = lines.get((line - 1) as usize).map(|l| l.trim().to_string());
 
             symbols.push(SymbolInfo {
                 name,
@@ -309,9 +306,7 @@ impl FallbackParser {
                 _ => SymbolKind::Variable,
             };
 
-            let signature = lines
-                .get((line - 1) as usize)
-                .map(|l| l.trim().to_string());
+            let signature = lines.get((line - 1) as usize).map(|l| l.trim().to_string());
 
             let _ = is_async; // reflected in the signature already
 
@@ -398,9 +393,7 @@ impl FallbackParser {
                     line,
                     end_line: None,
                     signature,
-                    visibility: Some(
-                        if is_exported { "public" } else { "private" }.to_string(),
-                    ),
+                    visibility: Some(if is_exported { "public" } else { "private" }.to_string()),
                 });
             } else if let Some(type_name) = cap.get(2) {
                 let name = type_name.as_str().to_string();
@@ -417,9 +410,7 @@ impl FallbackParser {
                     line,
                     end_line: None,
                     signature: None,
-                    visibility: Some(
-                        if is_exported { "public" } else { "private" }.to_string(),
-                    ),
+                    visibility: Some(if is_exported { "public" } else { "private" }.to_string()),
                 });
             } else if let Some(const_name) = cap.get(4) {
                 let name = const_name.as_str().to_string();
@@ -498,8 +489,19 @@ impl FallbackParser {
 
         // Java methods — filter out keywords that look like methods but aren't
         let java_keywords: &[&str] = &[
-            "if", "for", "while", "switch", "catch", "return", "new", "throw", "class",
-            "interface", "enum", "import", "package",
+            "if",
+            "for",
+            "while",
+            "switch",
+            "catch",
+            "return",
+            "new",
+            "throw",
+            "class",
+            "interface",
+            "enum",
+            "import",
+            "package",
         ];
         for cap in RE_JAVA_METHOD.captures_iter(source) {
             let name = cap[2].to_string();
@@ -716,7 +718,7 @@ export const API_KEY = "abc";
         assert!(names.contains(&"UserService"));
         assert!(names.contains(&"Config"));
         assert!(names.contains(&"API_KEY"));
-        assert!(result.imports.len() >= 1);
+        assert!(!result.imports.is_empty());
     }
 
     #[test]

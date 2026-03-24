@@ -45,7 +45,10 @@ impl<V: VectorBackend> HybridRetriever<V> {
     /// * `fts_weight` — relative weight for the FTS5 component.
     /// * `vector_weight` — relative weight for the vector component.
     /// * `limit` — maximum number of results to return.
-    #[instrument(skip(self, query_embedding), fields(query, fts_weight, vector_weight, limit))]
+    #[instrument(
+        skip(self, query_embedding),
+        fields(query, fts_weight, vector_weight, limit)
+    )]
     pub async fn retrieve(
         &self,
         query: &str,
@@ -115,7 +118,11 @@ impl<V: VectorBackend> HybridRetriever<V> {
 
         // Sort by fused score descending and take top `limit`.
         let mut results: Vec<(String, RrfEntry)> = scores.into_iter().collect();
-        results.sort_by(|a, b| b.1.score.partial_cmp(&a.1.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.1.score
+                .partial_cmp(&a.1.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(limit as usize);
 
         let out: Vec<RetrievalResult> = results
@@ -142,11 +149,7 @@ impl<V: VectorBackend> HybridRetriever<V> {
     }
 
     /// Convenience: retrieve using only FTS (no embedding required).
-    pub fn retrieve_fts_only(
-        &self,
-        query: &str,
-        limit: u32,
-    ) -> Result<Vec<RetrievalResult>> {
+    pub fn retrieve_fts_only(&self, query: &str, limit: u32) -> Result<Vec<RetrievalResult>> {
         let fts_results = self.fts.search(query, limit)?;
         Ok(fts_results
             .into_iter()

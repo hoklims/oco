@@ -202,7 +202,11 @@ async fn get_trace(
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
     let active = state.session_manager.active_count().await;
     Json(StatusResponse {
-        status: if active > 0 { "busy".into() } else { "idle".into() },
+        status: if active > 0 {
+            "busy".into()
+        } else {
+            "idle".into()
+        },
         active_sessions: active,
         max_sessions: state.config.max_concurrent_sessions,
         version: "0.1.0".into(),
@@ -224,12 +228,15 @@ async fn index_workspace(Json(req): Json<IndexRequest>) -> impl IntoResponse {
     match result {
         Ok(Ok(idx)) => (
             StatusCode::OK,
-            Json(serde_json::to_value(IndexResponse {
-                status: "indexed".into(),
-                workspace: req.workspace_root,
-                files_indexed: idx.file_count,
-                symbols_indexed: idx.symbol_count,
-            }).unwrap()),
+            Json(
+                serde_json::to_value(IndexResponse {
+                    status: "indexed".into(),
+                    workspace: req.workspace_root,
+                    files_indexed: idx.file_count,
+                    symbols_indexed: idx.symbol_count,
+                })
+                .unwrap(),
+            ),
         ),
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -329,9 +336,7 @@ async fn handle_mcp_tool_call(
                 .get("request")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let workspace = arguments
-                .get("workspace_root")
-                .and_then(|v| v.as_str());
+            let workspace = arguments.get("workspace_root").and_then(|v| v.as_str());
 
             match state.session_manager.create_session(request, workspace) {
                 Ok(session_id) => crate::protocol::JsonRpcResponse::success(
@@ -381,7 +386,8 @@ async fn handle_mcp_tool_call(
                 .unwrap_or("");
             match state.session_manager.get_trace(session_id).await {
                 Ok(traces) => {
-                    let traces_json = serde_json::to_string(&traces).unwrap_or_else(|_| "[]".into());
+                    let traces_json =
+                        serde_json::to_string(&traces).unwrap_or_else(|_| "[]".into());
                     crate::protocol::JsonRpcResponse::success(
                         id,
                         serde_json::json!({
@@ -439,6 +445,10 @@ async fn handle_mcp_tool_call(
                 }),
             )
         }
-        _ => crate::protocol::JsonRpcResponse::error(id, -32601, format!("Unknown tool: {tool_name}")),
+        _ => crate::protocol::JsonRpcResponse::error(
+            id,
+            -32601,
+            format!("Unknown tool: {tool_name}"),
+        ),
     }
 }

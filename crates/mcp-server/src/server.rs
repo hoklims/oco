@@ -1,7 +1,7 @@
 //! MCP + HTTP server startup.
 
-use std::sync::Arc;
 use anyhow::Result;
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -39,10 +39,7 @@ impl McpServer {
     pub async fn run(self) -> Result<()> {
         let addr = format!("{}:{}", self.config.bind_address, self.config.port);
 
-        let session_manager = Arc::new(SessionManager::new(
-            self.config.clone(),
-            self.llm,
-        ));
+        let session_manager = Arc::new(SessionManager::new(self.config.clone(), self.llm));
 
         let state = Arc::new(AppState {
             config: self.config,

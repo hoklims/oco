@@ -148,10 +148,12 @@ impl FileToolExecutor {
                 })?
         } else {
             // For write_file the file may not exist yet – validate parent.
-            let parent = candidate.parent().ok_or(ToolRuntimeError::InvalidArguments {
-                tool_name: "file".to_string(),
-                reason: "no parent directory".to_string(),
-            })?;
+            let parent = candidate
+                .parent()
+                .ok_or(ToolRuntimeError::InvalidArguments {
+                    tool_name: "file".to_string(),
+                    reason: "no parent directory".to_string(),
+                })?;
             if !parent.exists() {
                 return Err(ToolRuntimeError::ExecutionFailed {
                     tool_name: "file".to_string(),
@@ -194,13 +196,12 @@ impl FileToolExecutor {
         let resolved = self.resolve_path(path)?;
         let start = Instant::now();
 
-        let content =
-            tokio::fs::read_to_string(&resolved)
-                .await
-                .map_err(|e| ToolRuntimeError::ExecutionFailed {
-                    tool_name: "read_file".to_string(),
-                    reason: e.to_string(),
-                })?;
+        let content = tokio::fs::read_to_string(&resolved).await.map_err(|e| {
+            ToolRuntimeError::ExecutionFailed {
+                tool_name: "read_file".to_string(),
+                reason: e.to_string(),
+            }
+        })?;
 
         Ok(ToolResult {
             tool_name: "read_file".to_string(),
@@ -219,12 +220,12 @@ impl FileToolExecutor {
         let resolved = self.resolve_path(path)?;
         let start = Instant::now();
 
-        tokio::fs::write(&resolved, content)
-            .await
-            .map_err(|e| ToolRuntimeError::ExecutionFailed {
+        tokio::fs::write(&resolved, content).await.map_err(|e| {
+            ToolRuntimeError::ExecutionFailed {
                 tool_name: "write_file".to_string(),
                 reason: e.to_string(),
-            })?;
+            }
+        })?;
 
         Ok(ToolResult {
             tool_name: "write_file".to_string(),
@@ -243,19 +244,21 @@ impl FileToolExecutor {
         let start = Instant::now();
 
         let mut entries = Vec::new();
-        let mut dir = tokio::fs::read_dir(&resolved)
-            .await
-            .map_err(|e| ToolRuntimeError::ExecutionFailed {
-                tool_name: "list_directory".to_string(),
-                reason: e.to_string(),
-            })?;
-
-        while let Some(entry) = dir.next_entry().await.map_err(|e| {
+        let mut dir = tokio::fs::read_dir(&resolved).await.map_err(|e| {
             ToolRuntimeError::ExecutionFailed {
                 tool_name: "list_directory".to_string(),
                 reason: e.to_string(),
             }
-        })? {
+        })?;
+
+        while let Some(entry) =
+            dir.next_entry()
+                .await
+                .map_err(|e| ToolRuntimeError::ExecutionFailed {
+                    tool_name: "list_directory".to_string(),
+                    reason: e.to_string(),
+                })?
+        {
             let meta = entry.metadata().await.ok();
             entries.push(serde_json::json!({
                 "name": entry.file_name().to_string_lossy(),

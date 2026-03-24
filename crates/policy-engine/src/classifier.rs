@@ -8,15 +8,7 @@ pub struct TaskClassifier;
 
 /// Keywords that signal trivial tasks (direct lookup / single fact).
 const TRIVIAL_KEYWORDS: &[&str] = &[
-    "what is",
-    "explain",
-    "describe",
-    "define",
-    "show me",
-    "list",
-    "print",
-    "display",
-    "version",
+    "what is", "explain", "describe", "define", "show me", "list", "print", "display", "version",
     "help",
 ];
 
@@ -145,10 +137,7 @@ impl TaskClassifier {
 
     /// Count how many keywords from the given list appear in the text.
     fn keyword_score(text: &str, keywords: &[&str]) -> u32 {
-        keywords
-            .iter()
-            .filter(|kw| text.contains(**kw))
-            .count() as u32
+        keywords.iter().filter(|kw| text.contains(**kw)).count() as u32
     }
 
     /// Analyze workspace signals for complexity indicators.
@@ -175,9 +164,7 @@ impl TaskClassifier {
     fn count_file_paths(text: &str) -> u32 {
         text.split_whitespace()
             .filter(|word| {
-                (word.contains('/') || word.contains('\\'))
-                    && word.contains('.')
-                    && word.len() > 3
+                (word.contains('/') || word.contains('\\')) && word.contains('.') && word.len() > 3
             })
             .count() as u32
     }

@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Configuration for telemetry initialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,8 +29,8 @@ impl Default for TelemetryConfig {
 ///
 /// If `trace_file` is set, a file appender layer is added alongside stdout.
 pub fn init_tracing(config: TelemetryConfig) -> Result<()> {
-    let env_filter = EnvFilter::try_new(&config.log_level)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter =
+        EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     if let Some(ref trace_path) = config.trace_file {
         let file = std::fs::OpenOptions::new()

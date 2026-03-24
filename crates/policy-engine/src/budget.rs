@@ -54,14 +54,10 @@ impl BudgetEnforcer {
     /// Check all budget dimensions and return a comprehensive report.
     pub fn check(&self, budget: &Budget) -> BudgetReport {
         let token_util = Self::utilization(budget.tokens_used, budget.max_total_tokens);
-        let tool_util = Self::utilization(
-            budget.tool_calls_used as u64,
-            budget.max_tool_calls as u64,
-        );
-        let retrieval_util = Self::utilization(
-            budget.retrievals_used as u64,
-            budget.max_retrievals as u64,
-        );
+        let tool_util =
+            Self::utilization(budget.tool_calls_used as u64, budget.max_tool_calls as u64);
+        let retrieval_util =
+            Self::utilization(budget.retrievals_used as u64, budget.max_retrievals as u64);
         let verify_util = Self::utilization(
             budget.verify_cycles_used as u64,
             budget.max_verify_cycles as u64,

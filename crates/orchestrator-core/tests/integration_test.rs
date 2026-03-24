@@ -153,21 +153,22 @@ fn default_config() -> OrchestratorConfig {
 
 /// Build a tight-budget config for exhaustion tests.
 fn tight_budget_config() -> OrchestratorConfig {
-    let mut config = OrchestratorConfig::default();
-    config.default_budget = Budget {
-        max_context_tokens: 500,
-        max_output_tokens: 100,
-        max_total_tokens: 100,
-        tokens_used: 0,
-        max_tool_calls: 1,
-        tool_calls_used: 0,
-        max_retrievals: 1,
-        retrievals_used: 0,
-        max_duration_secs: 300,
-        max_verify_cycles: 0,
-        verify_cycles_used: 0,
-    };
-    config
+    OrchestratorConfig {
+        default_budget: Budget {
+            max_context_tokens: 500,
+            max_output_tokens: 100,
+            max_total_tokens: 100,
+            tokens_used: 0,
+            max_tool_calls: 1,
+            tool_calls_used: 0,
+            max_retrievals: 1,
+            retrievals_used: 0,
+            max_duration_secs: 300,
+            max_verify_cycles: 0,
+            verify_cycles_used: 0,
+        },
+        ..Default::default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +193,9 @@ fn test_index_and_search() {
     assert!(runtime.indexed, "runtime should be marked as indexed");
 
     // Search for known content
-    let results = runtime.search("AuthManager", 5).expect("search should succeed");
+    let results = runtime
+        .search("AuthManager", 5)
+        .expect("search should succeed");
     assert!(
         !results.is_empty(),
         "search for 'AuthManager' should return results"
@@ -430,11 +433,7 @@ fn test_context_assembly_from_observations() {
     );
 
     // Pinned items should be present (system prompt, user request, and our explicit pin)
-    let pinned_items: Vec<_> = context
-        .items
-        .iter()
-        .filter(|item| item.pinned)
-        .collect();
+    let pinned_items: Vec<_> = context.items.iter().filter(|item| item.pinned).collect();
     assert!(
         !pinned_items.is_empty(),
         "pinned items should be included in context"
@@ -513,10 +512,7 @@ fn test_symbol_search() {
 
     // Search for Rust function
     let fn_matches = runtime.find_symbol("hash_password");
-    assert!(
-        !fn_matches.is_empty(),
-        "should find hash_password symbol"
-    );
+    assert!(!fn_matches.is_empty(), "should find hash_password symbol");
     let fn_sym = &fn_matches[0];
     assert_eq!(fn_sym.name, "hash_password");
     assert!(
@@ -527,10 +523,7 @@ fn test_symbol_search() {
 
     // Search for Python class
     let py_matches = runtime.find_symbol("DatabasePool");
-    assert!(
-        !py_matches.is_empty(),
-        "should find DatabasePool symbol"
-    );
+    assert!(!py_matches.is_empty(), "should find DatabasePool symbol");
     let py_sym = &py_matches[0];
     assert_eq!(py_sym.name, "DatabasePool");
     assert!(
@@ -541,10 +534,7 @@ fn test_symbol_search() {
 
     // Search for TypeScript interface
     let ts_matches = runtime.find_symbol("UserResponse");
-    assert!(
-        !ts_matches.is_empty(),
-        "should find UserResponse symbol"
-    );
+    assert!(!ts_matches.is_empty(), "should find UserResponse symbol");
     let ts_sym = &ts_matches[0];
     assert_eq!(ts_sym.name, "UserResponse");
     assert!(

@@ -1,6 +1,6 @@
 use oco_shared_types::{
-    Budget, OrchestratorAction, Observation, ObservationKind, ObservationSource,
-    RetrievalSource, RiskLevel, StopReason, TaskComplexity, VerificationStrategy,
+    Budget, Observation, ObservationKind, ObservationSource, OrchestratorAction, RetrievalSource,
+    RiskLevel, StopReason, TaskComplexity, VerificationStrategy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -100,13 +100,8 @@ impl DefaultActionSelector {
     /// Determine if the latest observation looks like a completed response.
     fn looks_complete(observations: &[Observation]) -> bool {
         if let Some(last) = observations.last() {
-            matches!(
-                last.source,
-                ObservationSource::LlmResponse
-            ) && matches!(
-                last.kind,
-                ObservationKind::Text { .. }
-            )
+            matches!(last.source, ObservationSource::LlmResponse)
+                && matches!(last.kind, ObservationKind::Text { .. })
         } else {
             false
         }
@@ -120,7 +115,10 @@ impl DefaultActionSelector {
                 ObservationKind::VerificationResult { passed: false, .. }
             ) || matches!(
                 &o.kind,
-                ObservationKind::Error { recoverable: true, .. }
+                ObservationKind::Error {
+                    recoverable: true,
+                    ..
+                }
             )
         })
     }

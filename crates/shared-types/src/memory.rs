@@ -165,7 +165,11 @@ impl WorkingMemory {
                 self.findings.len(),
                 self.findings
                     .iter()
-                    .map(|f| format!("  - {} (confidence: {:.0}%)", f.content, f.confidence * 100.0))
+                    .map(|f| format!(
+                        "  - {} (confidence: {:.0}%)",
+                        f.content,
+                        f.confidence * 100.0
+                    ))
                     .collect::<Vec<_>>()
                     .join("\n")
             ));

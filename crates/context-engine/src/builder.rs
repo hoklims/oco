@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn builder_with_staleness_activates_decay() {
-        let mut old_item = ContextItem {
+        let old_item = ContextItem {
             key: "old".to_string(),
             label: "old".to_string(),
             content: "old content".to_string(),
@@ -191,7 +191,7 @@ mod tests {
             added_at_step: 0, // Very old
         };
 
-        let mut new_item = ContextItem {
+        let new_item = ContextItem {
             key: "new".to_string(),
             label: "new".to_string(),
             content: "new content".to_string(),

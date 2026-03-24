@@ -58,9 +58,7 @@ pub enum ObservationKind {
         language: Option<String>,
     },
     /// Structured data (JSON output from tools).
-    Structured {
-        data: serde_json::Value,
-    },
+    Structured { data: serde_json::Value },
     /// Verification result (pass/fail with details).
     VerificationResult {
         passed: bool,
@@ -68,10 +66,7 @@ pub enum ObservationKind {
         failures: Vec<String>,
     },
     /// Error observation.
-    Error {
-        message: String,
-        recoverable: bool,
-    },
+    Error { message: String, recoverable: bool },
     /// Symbol information from code intelligence.
     Symbol {
         name: String,

@@ -92,8 +92,7 @@ impl OrchestratorConfig {
 
     /// Generate a default config file as TOML string.
     pub fn to_toml(&self) -> Result<String, ConfigError> {
-        toml::to_string_pretty(self)
-            .map_err(|e| ConfigError::SerializeError(e.to_string()))
+        toml::to_string_pretty(self).map_err(|e| ConfigError::SerializeError(e.to_string()))
     }
 }
 

@@ -9,11 +9,8 @@ use crate::estimator::TokenEstimator;
 #[async_trait]
 pub trait ContextCompressor: Send + Sync {
     /// Compress / shrink `items` so their total estimated tokens fit within `target_tokens`.
-    async fn compress(
-        &self,
-        items: &[ContextItem],
-        target_tokens: u32,
-    ) -> Result<Vec<ContextItem>>;
+    async fn compress(&self, items: &[ContextItem], target_tokens: u32)
+    -> Result<Vec<ContextItem>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +185,10 @@ mod tests {
     #[tokio::test]
     async fn truncation_fits_budget() {
         let compressor = TruncationCompressor::new(3);
-        let long_content = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let long_content = (0..100)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let items = vec![make_item("big", &long_content)];
 
         let result = compressor.compress(&items, 20).await.unwrap();

@@ -146,9 +146,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Serve { host, port } => {
-            let mut config = oco_orchestrator_core::OrchestratorConfig::load_from_dir(
-                &std::env::current_dir()?,
-            );
+            let mut config =
+                oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
             config.bind_address = host;
             config.port = port;
 
@@ -170,19 +169,14 @@ async fn main() -> Result<()> {
                 "anthropic" => {
                     let model_name = model.unwrap_or_else(|| config.llm.model.clone());
                     let anthropic_config =
-                        oco_orchestrator_core::llm::AnthropicConfig::from_env(
-                            &model_name,
-                            None,
-                        )?;
+                        oco_orchestrator_core::llm::AnthropicConfig::from_env(&model_name, None)?;
                     Arc::new(oco_orchestrator_core::llm::AnthropicProvider::new(
                         anthropic_config,
                     )?)
                 }
                 "ollama" => {
-                    let model_name =
-                        model.unwrap_or_else(|| "llama3.2".to_string());
-                    let ollama_config =
-                        oco_orchestrator_core::llm::OllamaConfig::new(&model_name);
+                    let model_name = model.unwrap_or_else(|| "llama3.2".to_string());
+                    let ollama_config = oco_orchestrator_core::llm::OllamaConfig::new(&model_name);
                     Arc::new(oco_orchestrator_core::llm::OllamaProvider::new(
                         ollama_config,
                     )?)
@@ -194,12 +188,13 @@ async fn main() -> Result<()> {
 
             println!("Provider: {} ({})", llm.provider_name(), llm.model_name());
 
-            let mut orchestrator =
-                oco_orchestrator_core::OrchestrationLoop::new(config, llm);
+            let mut orchestrator = oco_orchestrator_core::OrchestrationLoop::new(config, llm);
 
             // Index workspace if provided
             if let Some(ref ws) = workspace {
-                let ws_path = PathBuf::from(ws).canonicalize().unwrap_or_else(|_| PathBuf::from(ws));
+                let ws_path = PathBuf::from(ws)
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from(ws));
                 println!("Indexing workspace: {}", ws_path.display());
                 orchestrator.with_workspace(ws_path);
             }
@@ -215,8 +210,7 @@ async fn main() -> Result<()> {
             println!("Steps: {}", state.session.step_count);
             println!(
                 "Tokens used: {} / {}",
-                state.session.budget.tokens_used,
-                state.session.budget.max_total_tokens
+                state.session.budget.tokens_used, state.session.budget.max_total_tokens
             );
 
             if cli.format == "json" {
@@ -317,15 +311,16 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Trace { session_id, url } => {
-            let resp =
-                reqwest::get(format!("{url}/api/v1/sessions/{session_id}/trace")).await?;
+            let resp = reqwest::get(format!("{url}/api/v1/sessions/{session_id}/trace")).await?;
             let body: serde_json::Value = resp.json().await?;
             println!("{}", serde_json::to_string_pretty(&body)?);
         }
         Commands::Init { output } => {
             let path = PathBuf::from(&output);
             if path.exists() {
-                anyhow::bail!("{output} already exists. Remove it first or use --output to specify a different path.");
+                anyhow::bail!(
+                    "{output} already exists. Remove it first or use --output to specify a different path."
+                );
             }
             let config = oco_orchestrator_core::OrchestratorConfig::default();
             let toml_str = config.to_toml()?;
@@ -352,15 +347,25 @@ async fn main() -> Result<()> {
 
             // Determine task type from keywords
             let prompt_lower = prompt.to_lowercase();
-            let task_type = if prompt_lower.contains("refactor") || prompt_lower.contains("rename") {
+            let task_type = if prompt_lower.contains("refactor") || prompt_lower.contains("rename")
+            {
                 "refactor"
-            } else if prompt_lower.contains("bug") || prompt_lower.contains("fix") || prompt_lower.contains("debug") {
+            } else if prompt_lower.contains("bug")
+                || prompt_lower.contains("fix")
+                || prompt_lower.contains("debug")
+            {
                 "bugfix"
             } else if prompt_lower.contains("test") {
                 "testing"
-            } else if prompt_lower.contains("implement") || prompt_lower.contains("create") || prompt_lower.contains("add") {
+            } else if prompt_lower.contains("implement")
+                || prompt_lower.contains("create")
+                || prompt_lower.contains("add")
+            {
                 "feature"
-            } else if prompt_lower.contains("explain") || prompt_lower.contains("what") || prompt_lower.contains("how") {
+            } else if prompt_lower.contains("explain")
+                || prompt_lower.contains("what")
+                || prompt_lower.contains("how")
+            {
                 "exploration"
             } else {
                 "unknown"
@@ -441,8 +446,13 @@ async fn main() -> Result<()> {
                 let tool_lower = tool.to_lowercase();
                 let is_write = matches!(
                     tool_lower.as_str(),
-                    "edit" | "write" | "file_write" | "file_delete" | "directory_delete"
-                        | "notebookedit" | "multiedit"
+                    "edit"
+                        | "write"
+                        | "file_write"
+                        | "file_delete"
+                        | "directory_delete"
+                        | "notebookedit"
+                        | "multiedit"
                 );
                 let is_destructive = matches!(
                     tool_lower.as_str(),
@@ -452,8 +462,14 @@ async fn main() -> Result<()> {
                 // require confirmation
                 let known_read = matches!(
                     tool_lower.as_str(),
-                    "read" | "glob" | "grep" | "bash" | "shell" | "web_search"
-                        | "web_fetch" | "list_files"
+                    "read"
+                        | "glob"
+                        | "grep"
+                        | "bash"
+                        | "shell"
+                        | "web_search"
+                        | "web_fetch"
+                        | "list_files"
                 );
                 let requires_confirmation = is_destructive || (!is_write && !known_read);
 
@@ -508,17 +524,15 @@ async fn main() -> Result<()> {
             output,
             provider,
         } => {
-            let config = oco_orchestrator_core::OrchestratorConfig::load_from_dir(
-                &std::env::current_dir()?,
-            );
+            let config =
+                oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
 
             let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
                 "anthropic" => {
-                    let anthropic_config =
-                        oco_orchestrator_core::llm::AnthropicConfig::from_env(
-                            &config.llm.model,
-                            None,
-                        )?;
+                    let anthropic_config = oco_orchestrator_core::llm::AnthropicConfig::from_env(
+                        &config.llm.model,
+                        None,
+                    )?;
                     Arc::new(oco_orchestrator_core::llm::AnthropicProvider::new(
                         anthropic_config,
                     )?)
@@ -532,8 +546,7 @@ async fn main() -> Result<()> {
             let loaded = oco_orchestrator_core::eval::load_scenarios(&scenario_path)?;
             println!("Loaded {} scenarios from {scenarios}", loaded.len());
 
-            let results =
-                oco_orchestrator_core::eval::run_all(&loaded, llm, &config).await;
+            let results = oco_orchestrator_core::eval::run_all(&loaded, llm, &config).await;
 
             let metrics = oco_orchestrator_core::eval::aggregate_metrics(&results);
 
@@ -598,7 +611,12 @@ async fn main() -> Result<()> {
                 // Check hooks
                 let hooks_dir = claude_dir.join("hooks").join("scripts");
                 if hooks_dir.exists() {
-                    let hook_files = ["pre-tool-use.sh", "post-tool-use.sh", "user-prompt-submit.sh", "stop.sh"];
+                    let hook_files = [
+                        "pre-tool-use.sh",
+                        "post-tool-use.sh",
+                        "user-prompt-submit.sh",
+                        "stop.sh",
+                    ];
                     for hook in &hook_files {
                         if hooks_dir.join(hook).exists() {
                             println!("  [PASS] hook {hook}");

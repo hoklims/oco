@@ -161,8 +161,9 @@ mod tests {
 
     #[test]
     fn string_normalizes_to_text() {
-        let obs =
-            ObservationNormalizer::normalize(&success_result(serde_json::Value::String("hello".into())));
+        let obs = ObservationNormalizer::normalize(&success_result(serde_json::Value::String(
+            "hello".into(),
+        )));
         assert!(matches!(obs.kind, ObservationKind::Text { .. }));
     }
 

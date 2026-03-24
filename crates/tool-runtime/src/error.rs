@@ -7,7 +7,10 @@ pub enum ToolRuntimeError {
     ToolNotFound { name: String },
 
     #[error("execution timed out after {timeout_secs}s for tool: {tool_name}")]
-    ExecutionTimeout { tool_name: String, timeout_secs: u64 },
+    ExecutionTimeout {
+        tool_name: String,
+        timeout_secs: u64,
+    },
 
     #[error("execution failed for tool `{tool_name}`: {reason}")]
     ExecutionFailed { tool_name: String, reason: String },

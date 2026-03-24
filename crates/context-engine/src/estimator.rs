@@ -68,7 +68,7 @@ mod tests {
     fn short_english_text() {
         // "hello world" = 11 bytes -> ~3 tokens
         let tokens = TokenEstimator::estimate_tokens("hello world");
-        assert!(tokens >= 2 && tokens <= 5, "got {tokens}");
+        assert!((2..=5).contains(&tokens), "got {tokens}");
     }
 
     #[test]

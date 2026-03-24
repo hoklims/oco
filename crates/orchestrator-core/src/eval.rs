@@ -91,10 +91,14 @@ pub async fn run_scenario(
         current_expected.is_none()
     };
 
-    let success = state
-        .action_history
-        .iter()
-        .any(|a| matches!(a, OrchestratorAction::Stop { reason: oco_shared_types::StopReason::TaskComplete }));
+    let success = state.action_history.iter().any(|a| {
+        matches!(
+            a,
+            OrchestratorAction::Stop {
+                reason: oco_shared_types::StopReason::TaskComplete
+            }
+        )
+    });
 
     Ok(ScenarioResult {
         scenario_name: scenario.name.clone(),

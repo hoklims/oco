@@ -78,7 +78,10 @@ impl LlmProvider for StubLlmProvider {
             .unwrap_or_default();
 
         Ok(LlmResponse {
-            content: format!("[Stub response to: {}]", &last_message[..last_message.len().min(100)]),
+            content: format!(
+                "[Stub response to: {}]",
+                &last_message[..last_message.len().min(100)]
+            ),
             input_tokens: 100,
             output_tokens: 50,
             model: self.model.clone(),
@@ -168,7 +171,9 @@ impl AnthropicProvider {
         let client = Client::builder()
             .timeout(config.timeout)
             .build()
-            .map_err(|e| OrchestratorError::LlmError(format!("failed to build HTTP client: {e}")))?;
+            .map_err(|e| {
+                OrchestratorError::LlmError(format!("failed to build HTTP client: {e}"))
+            })?;
         Ok(Self { config, client })
     }
 }
@@ -395,7 +400,9 @@ impl OllamaProvider {
         let client = Client::builder()
             .timeout(config.timeout)
             .build()
-            .map_err(|e| OrchestratorError::LlmError(format!("failed to build HTTP client: {e}")))?;
+            .map_err(|e| {
+                OrchestratorError::LlmError(format!("failed to build HTTP client: {e}"))
+            })?;
         Ok(Self { config, client })
     }
 }
@@ -582,7 +589,10 @@ mod tests {
     #[test]
     fn anthropic_config_missing_env_returns_error() {
         // Use an env var name that is guaranteed to not exist.
-        let result = AnthropicConfig::from_env("claude-sonnet-4-20250514", Some("__NONEXISTENT_KEY_FOR_TEST__"));
+        let result = AnthropicConfig::from_env(
+            "claude-sonnet-4-20250514",
+            Some("__NONEXISTENT_KEY_FOR_TEST__"),
+        );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("__NONEXISTENT_KEY_FOR_TEST__"));
@@ -593,10 +603,11 @@ mod tests {
         // Temporarily set the env var for this test.
         // SAFETY: This test is single-threaded and the var is removed immediately after.
         unsafe { env::set_var("__TEST_ANTHROPIC_KEY__", "sk-test-key") };
-        let config = AnthropicConfig::from_env("claude-sonnet-4-20250514", Some("__TEST_ANTHROPIC_KEY__"))
-            .unwrap()
-            .with_base_url("https://custom.proxy.example.com")
-            .with_timeout(Duration::from_secs(30));
+        let config =
+            AnthropicConfig::from_env("claude-sonnet-4-20250514", Some("__TEST_ANTHROPIC_KEY__"))
+                .unwrap()
+                .with_base_url("https://custom.proxy.example.com")
+                .with_timeout(Duration::from_secs(30));
         assert_eq!(config.base_url, "https://custom.proxy.example.com");
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.model, "claude-sonnet-4-20250514");

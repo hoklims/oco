@@ -173,7 +173,10 @@ mod tests {
         state.record_modification("src/main.rs".into());
 
         let mut snapshot: HashMap<String, DateTime<Utc>> = HashMap::new();
-        snapshot.insert("src/main.rs".into(), mod_time + chrono::Duration::seconds(1));
+        snapshot.insert(
+            "src/main.rs".into(),
+            mod_time + chrono::Duration::seconds(1),
+        );
         state.modified_files.insert("src/main.rs".into(), mod_time);
 
         state.record_run(VerificationRun {

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument};
 
-use crate::error::{RetrievalError, Result};
+use crate::error::{Result, RetrievalError};
 
 /// A single full-text search result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,9 +70,8 @@ impl FtsIndex {
         let tx = self.conn.unchecked_transaction()?;
         {
             let mut delete_stmt = tx.prepare("DELETE FROM documents WHERE id = ?1")?;
-            let mut insert_stmt = tx.prepare(
-                "INSERT INTO documents (id, path, content) VALUES (?1, ?2, ?3)",
-            )?;
+            let mut insert_stmt =
+                tx.prepare("INSERT INTO documents (id, path, content) VALUES (?1, ?2, ?3)")?;
             for (id, path, content) in &docs {
                 delete_stmt.execute([id.as_str()])?;
                 insert_stmt.execute([id.as_str(), path.as_str(), content.as_str()])?;
@@ -93,8 +92,8 @@ impl FtsIndex {
         let sanitized: String = query
             .chars()
             .map(|c| match c {
-                '"' | '\'' | '*' | '+' | '-' | '(' | ')' | '{' | '}' | '[' | ']'
-                | '^' | '~' | '?' | ':' | '\\' => ' ',
+                '"' | '\'' | '*' | '+' | '-' | '(' | ')' | '{' | '}' | '[' | ']' | '^' | '~'
+                | '?' | ':' | '\\' => ' ',
                 _ => c,
             })
             .collect();
@@ -103,13 +102,16 @@ impl FtsIndex {
             return Ok(Vec::new());
         }
 
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path, snippet(documents, 2, '<b>', '</b>', '...', 48), rank
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, path, snippet(documents, 2, '<b>', '</b>', '...', 48), rank
              FROM documents
              WHERE documents MATCH ?1
              ORDER BY rank
              LIMIT ?2",
-        ).map_err(|e| RetrievalError::SearchError(e.to_string()))?;
+            )
+            .map_err(|e| RetrievalError::SearchError(e.to_string()))?;
 
         let rows = stmt
             .query_map(rusqlite::params![sanitized, limit], |row| {
@@ -141,8 +143,12 @@ mod tests {
     #[test]
     fn index_and_search() {
         let idx = FtsIndex::new(":memory:").unwrap();
-        idx.index_document("1", "src/main.rs", "fn main() { println!(\"hello world\"); }")
-            .unwrap();
+        idx.index_document(
+            "1",
+            "src/main.rs",
+            "fn main() { println!(\"hello world\"); }",
+        )
+        .unwrap();
         idx.index_document("2", "src/lib.rs", "pub mod utils; pub mod config;")
             .unwrap();
 

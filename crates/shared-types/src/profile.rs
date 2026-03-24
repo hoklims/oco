@@ -72,10 +72,18 @@ impl RepoProfile {
             } else {
                 "mixed".into()
             };
-            profile.build_command.get_or_insert_with(|| "cargo build".into());
-            profile.test_command.get_or_insert_with(|| "cargo test".into());
-            profile.lint_command.get_or_insert_with(|| "cargo clippy -- -D warnings".into());
-            profile.typecheck_command.get_or_insert_with(|| "cargo check".into());
+            profile
+                .build_command
+                .get_or_insert_with(|| "cargo build".into());
+            profile
+                .test_command
+                .get_or_insert_with(|| "cargo test".into());
+            profile
+                .lint_command
+                .get_or_insert_with(|| "cargo clippy -- -D warnings".into());
+            profile
+                .typecheck_command
+                .get_or_insert_with(|| "cargo check".into());
         }
 
         // Detect Node.js
@@ -85,10 +93,18 @@ impl RepoProfile {
             } else {
                 "mixed".into()
             };
-            profile.build_command.get_or_insert_with(|| "npm run build".into());
-            profile.test_command.get_or_insert_with(|| "npm test".into());
-            profile.lint_command.get_or_insert_with(|| "npm run lint".into());
-            profile.typecheck_command.get_or_insert_with(|| "npx tsc --noEmit".into());
+            profile
+                .build_command
+                .get_or_insert_with(|| "npm run build".into());
+            profile
+                .test_command
+                .get_or_insert_with(|| "npm test".into());
+            profile
+                .lint_command
+                .get_or_insert_with(|| "npm run lint".into());
+            profile
+                .typecheck_command
+                .get_or_insert_with(|| "npx tsc --noEmit".into());
         }
 
         // Detect Python
@@ -100,10 +116,16 @@ impl RepoProfile {
             } else {
                 "mixed".into()
             };
-            profile.build_command.get_or_insert_with(|| "python -m build".into());
+            profile
+                .build_command
+                .get_or_insert_with(|| "python -m build".into());
             profile.test_command.get_or_insert_with(|| "pytest".into());
-            profile.lint_command.get_or_insert_with(|| "ruff check .".into());
-            profile.typecheck_command.get_or_insert_with(|| "mypy --strict .".into());
+            profile
+                .lint_command
+                .get_or_insert_with(|| "ruff check .".into());
+            profile
+                .typecheck_command
+                .get_or_insert_with(|| "mypy --strict .".into());
         }
 
         // Detect Go
@@ -113,10 +135,18 @@ impl RepoProfile {
             } else {
                 "mixed".into()
             };
-            profile.build_command.get_or_insert_with(|| "go build ./...".into());
-            profile.test_command.get_or_insert_with(|| "go test ./...".into());
-            profile.lint_command.get_or_insert_with(|| "golangci-lint run".into());
-            profile.typecheck_command.get_or_insert_with(|| "go vet ./...".into());
+            profile
+                .build_command
+                .get_or_insert_with(|| "go build ./...".into());
+            profile
+                .test_command
+                .get_or_insert_with(|| "go test ./...".into());
+            profile
+                .lint_command
+                .get_or_insert_with(|| "golangci-lint run".into());
+            profile
+                .typecheck_command
+                .get_or_insert_with(|| "go vet ./...".into());
         }
 
         // Default sensitive paths
@@ -207,9 +237,11 @@ mod tests {
 
     #[test]
     fn merge_overrides_non_default() {
-        let mut base = RepoProfile::default();
-        base.stack = "rust".into();
-        base.build_command = Some("cargo build".into());
+        let mut base = RepoProfile {
+            stack: "rust".into(),
+            build_command: Some("cargo build".into()),
+            ..Default::default()
+        };
 
         let override_profile = RepoProfile {
             test_command: Some("cargo nextest run".into()),

@@ -1,8 +1,8 @@
 use std::sync::Mutex;
 
 use oco_shared_types::{
-    DecisionTrace, InterventionOutcome, InterventionSummary, SessionId,
-    TelemetryEvent, TelemetryEventType,
+    DecisionTrace, InterventionOutcome, InterventionSummary, SessionId, TelemetryEvent,
+    TelemetryEventType,
 };
 
 /// Thread-safe collector for decision traces and telemetry events.

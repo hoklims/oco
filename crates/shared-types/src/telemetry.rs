@@ -85,9 +85,7 @@ pub enum TelemetryEventType {
         tool_name: Option<String>,
     },
     /// A skill was invoked.
-    SkillInvoked {
-        skill_name: String,
-    },
+    SkillInvoked { skill_name: String },
     /// A subagent was launched.
     SubagentLaunched {
         agent_type: String,
@@ -112,9 +110,7 @@ pub enum TelemetryEventType {
         active_count: usize,
     },
     /// Verification staleness detected.
-    VerificationStale {
-        stale_files: Vec<String>,
-    },
+    VerificationStale { stale_files: Vec<String> },
     /// Budget threshold crossed.
     BudgetThreshold {
         resource: String,

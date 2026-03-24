@@ -74,10 +74,7 @@ impl VerificationRunner for TestRunner {
     }
 }
 
-fn detect_test_command(
-    working_dir: &str,
-    target: Option<&str>,
-) -> Result<(String, Vec<String>)> {
+fn detect_test_command(working_dir: &str, target: Option<&str>) -> Result<(String, Vec<String>)> {
     let dir = Path::new(working_dir);
 
     if dir.join("Cargo.toml").exists() {

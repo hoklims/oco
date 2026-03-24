@@ -7,8 +7,8 @@ use tracing::warn;
 
 use crate::error::CodeIntelError;
 use crate::languages::language_from_path;
-use crate::parser::FallbackParser;
 use crate::parser::CodeParser;
+use crate::parser::FallbackParser;
 use crate::symbols::SymbolInfo;
 
 /// In-memory symbol index built by parsing files with [`FallbackParser`].
@@ -130,10 +130,7 @@ impl SymbolIndexer {
 
             // Skip hidden directories and common non-source dirs
             if path.is_dir() {
-                let dir_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if dir_name.starts_with('.')
                     || dir_name == "node_modules"
                     || dir_name == "target"
@@ -149,10 +146,7 @@ impl SymbolIndexer {
             }
 
             // Check extension
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !extensions.contains(&ext) {
                 continue;
             }

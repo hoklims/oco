@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OrchestratorAction {
     /// Respond directly to the user with generated content.
-    Respond {
-        content: String,
-    },
+    Respond { content: String },
     /// Retrieve additional context (code, docs, search results).
     Retrieve {
         query: String,
@@ -25,9 +23,7 @@ pub enum OrchestratorAction {
         target: Option<String>,
     },
     /// Stop the current orchestration loop.
-    Stop {
-        reason: StopReason,
-    },
+    Stop { reason: StopReason },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

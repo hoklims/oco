@@ -246,8 +246,7 @@ mod tests {
 
     #[test]
     fn staleness_decay_reorders_items() {
-        let mut asm = ContextAssembler::new(1000)
-            .with_staleness(10, 5); // current_step=10, half_life=5
+        let mut asm = ContextAssembler::new(1000).with_staleness(10, 5); // current_step=10, half_life=5
 
         // Old item (step 0, staleness=10, decay = 0.5^2 = 0.25)
         let mut old = make_search_item("old", 10, 0);
@@ -272,8 +271,7 @@ mod tests {
             search_results: Some(50),
             ..Default::default()
         };
-        let mut asm = ContextAssembler::new(1000)
-            .with_category_budgets(budgets);
+        let mut asm = ContextAssembler::new(1000).with_category_budgets(budgets);
 
         asm.add_item(make_search_item("s1", 30, 0));
         asm.add_item(make_search_item("s2", 30, 0)); // exceeds category cap

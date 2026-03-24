@@ -47,10 +47,7 @@ impl ContextDeduplicator {
 
         for item in items {
             if let ContextSource::FileContent { ref path } = item.source {
-                file_items
-                    .entry(path.clone())
-                    .or_default()
-                    .push(item);
+                file_items.entry(path.clone()).or_default().push(item);
             } else {
                 other_items.push(item);
             }
@@ -92,8 +89,7 @@ impl ContextDeduplicator {
             for existing in &mut result {
                 let existing_lines: Vec<&str> = existing.content.lines().collect();
 
-                if let Some(merged_content) =
-                    Self::try_merge_lines(&existing_lines, &snippet_lines)
+                if let Some(merged_content) = Self::try_merge_lines(&existing_lines, &snippet_lines)
                 {
                     existing.content = merged_content;
                     existing.token_estimate = 0; // will be re-estimated

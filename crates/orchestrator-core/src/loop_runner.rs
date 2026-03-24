@@ -4,8 +4,7 @@ use std::time::Instant;
 
 use oco_shared_types::{
     ActionCandidate, MemoryEntry, Observation, ObservationKind, ObservationSource,
-    OrchestratorAction, Session, StopReason, TelemetryEventType, ToolGateDecision,
-    WorkingMemory,
+    OrchestratorAction, Session, StopReason, TelemetryEventType, ToolGateDecision, WorkingMemory,
 };
 use tracing::{debug, info, warn};
 
@@ -18,13 +17,11 @@ use crate::state::OrchestrationState;
 /// Extract the file path from a write tool call, if applicable.
 fn extract_write_path(tool_name: &str, arguments: &serde_json::Value) -> Option<String> {
     match tool_name {
-        "write_file" | "file_write" | "Edit" | "Write" | "MultiEdit" => {
-            arguments
-                .get("path")
-                .or_else(|| arguments.get("file_path"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        }
+        "write_file" | "file_write" | "Edit" | "Write" | "MultiEdit" => arguments
+            .get("path")
+            .or_else(|| arguments.get("file_path"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         "shell" | "bash" | "Bash" => {
             // Heuristic: check if command writes to a file
             if let Some(cmd) = arguments.get("command").and_then(|v| v.as_str()) {
@@ -43,9 +40,24 @@ fn extract_write_path(tool_name: &str, arguments: &serde_json::Value) -> Option<
 
 /// Keywords that indicate a write/mutating task.
 const WRITE_KEYWORDS: &[&str] = &[
-    "write", "delete", "remove", "rename", "refactor", "modify", "update",
-    "create", "add", "move", "replace", "overwrite", "drop", "reset",
-    "push", "deploy", "install", "uninstall",
+    "write",
+    "delete",
+    "remove",
+    "rename",
+    "refactor",
+    "modify",
+    "update",
+    "create",
+    "add",
+    "move",
+    "replace",
+    "overwrite",
+    "drop",
+    "reset",
+    "push",
+    "deploy",
+    "install",
+    "uninstall",
 ];
 
 /// Detect whether a user request describes a write/mutating task.
@@ -128,8 +140,7 @@ impl OrchestrationLoop {
         self.metrics = Some(oco_telemetry::SessionMetrics::new(state.session.id));
 
         // Classify task complexity
-        state.task_complexity =
-            oco_policy_engine::TaskClassifier::classify(&user_request, &[]);
+        state.task_complexity = oco_policy_engine::TaskClassifier::classify(&user_request, &[]);
         info!(
             session_id = %state.session.id.0,
             complexity = ?state.task_complexity,
@@ -168,13 +179,17 @@ impl OrchestrationLoop {
                 0.0
             };
             if token_util > 0.7 {
-                self.trace_collector.record_event(
-                    TelemetryEventType::BudgetThreshold {
+                self.trace_collector
+                    .record_event(TelemetryEventType::BudgetThreshold {
                         resource: "tokens".into(),
                         utilization: token_util,
-                        status: if token_util > 0.9 { "critical" } else { "warning" }.into(),
-                    },
-                );
+                        status: if token_util > 0.9 {
+                            "critical"
+                        } else {
+                            "warning"
+                        }
+                        .into(),
+                    });
             }
 
             // Select action via policy engine
@@ -256,7 +271,10 @@ impl OrchestrationLoop {
                     }
                     state.session.budget.record_retrieval();
                 }
-                OrchestratorAction::ToolCall { tool_name, arguments } => {
+                OrchestratorAction::ToolCall {
+                    tool_name,
+                    arguments,
+                } => {
                     if action_succeeded {
                         state.session.budget.record_tool_call();
                         if let Some(ref metrics) = self.metrics {
@@ -272,43 +290,37 @@ impl OrchestrationLoop {
                 OrchestratorAction::Verify { strategy, .. } => {
                     state.session.budget.record_verify_cycle();
                     // v2: Record verification run with modification snapshot.
-                    if action_succeeded
-                        && let Some(last_obs) = state.observations.back()
-                    {
-                            let passed = matches!(
-                                &last_obs.kind,
-                                ObservationKind::VerificationResult { passed: true, .. }
-                            );
-                            let failures = if let ObservationKind::VerificationResult {
-                                failures, ..
-                            } = &last_obs.kind
+                    if action_succeeded && let Some(last_obs) = state.observations.back() {
+                        let passed = matches!(
+                            &last_obs.kind,
+                            ObservationKind::VerificationResult { passed: true, .. }
+                        );
+                        let failures =
+                            if let ObservationKind::VerificationResult { failures, .. } =
+                                &last_obs.kind
                             {
                                 failures.clone()
                             } else {
                                 vec![]
                             };
-                            state.verification.record_run(
-                                oco_shared_types::VerificationRun {
-                                    strategy: format!("{strategy:?}"),
-                                    timestamp: chrono::Utc::now(),
-                                    passed,
-                                    covered_files: std::collections::HashSet::new(),
-                                    modifications_snapshot: state
-                                        .verification
-                                        .modified_files
-                                        .clone(),
-                                    duration_ms,
-                                    failures,
-                                },
-                            );
-                            // v2: Emit telemetry event for verification.
-                            self.trace_collector.record_event(
-                                TelemetryEventType::VerifyCompleted {
-                                    strategy: format!("{strategy:?}"),
-                                    passed,
-                                    duration_ms,
-                                },
-                            );
+                        state
+                            .verification
+                            .record_run(oco_shared_types::VerificationRun {
+                                strategy: format!("{strategy:?}"),
+                                timestamp: chrono::Utc::now(),
+                                passed,
+                                covered_files: std::collections::HashSet::new(),
+                                modifications_snapshot: state.verification.modified_files.clone(),
+                                duration_ms,
+                                failures,
+                            });
+                        // v2: Emit telemetry event for verification.
+                        self.trace_collector
+                            .record_event(TelemetryEventType::VerifyCompleted {
+                                strategy: format!("{strategy:?}"),
+                                passed,
+                                duration_ms,
+                            });
                     }
                 }
                 OrchestratorAction::Respond { .. } => {
@@ -325,49 +337,38 @@ impl OrchestrationLoop {
             }
 
             // v2: Update working memory based on observations.
-            if action_succeeded
-                && let Some(last_obs) = state.observations.back()
-            {
+            if action_succeeded && let Some(last_obs) = state.observations.back() {
                 let prev_count = state.memory.active_count();
                 update_working_memory(&mut state.memory, last_obs, &action);
                 let new_count = state.memory.active_count();
                 if new_count != prev_count {
-                    self.trace_collector.record_event(
-                        TelemetryEventType::MemoryUpdated {
+                    self.trace_collector
+                        .record_event(TelemetryEventType::MemoryUpdated {
                             operation: "auto_update".into(),
                             active_count: new_count,
-                        },
-                    );
+                        });
                 }
             }
 
             // Re-estimate knowledge confidence after every action using the
             // multi-signal estimator instead of a fixed increment.
-            let obs_snapshot: Vec<Observation> =
-                state.observations.iter().cloned().collect();
-            let workspace_signals: Vec<String> =
-                state.session.pinned_context.clone();
-            state.knowledge_confidence =
-                oco_policy_engine::KnowledgeBoundaryEstimator::estimate(
-                    state.task_complexity,
-                    &state.session.user_request,
-                    &obs_snapshot,
-                    state.has_retrieved,
-                    &workspace_signals,
-                );
+            let obs_snapshot: Vec<Observation> = state.observations.iter().cloned().collect();
+            let workspace_signals: Vec<String> = state.session.pinned_context.clone();
+            state.knowledge_confidence = oco_policy_engine::KnowledgeBoundaryEstimator::estimate(
+                state.task_complexity,
+                &state.session.user_request,
+                &obs_snapshot,
+                state.has_retrieved,
+                &workspace_signals,
+            );
         }
 
         Ok(state)
     }
 
     fn build_policy_state(&self, state: &OrchestrationState) -> oco_policy_engine::PolicyState {
-        let recent_obs: Vec<Observation> = state
-            .observations
-            .iter()
-            .rev()
-            .take(5)
-            .cloned()
-            .collect();
+        let recent_obs: Vec<Observation> =
+            state.observations.iter().rev().take(5).cloned().collect();
 
         let has_called_tools = state
             .action_history
@@ -386,28 +387,22 @@ impl OrchestrationLoop {
             oco_shared_types::VerificationFreshness::Stale
                 | oco_shared_types::VerificationFreshness::Partial
         ) || (!state.verification.modified_files.is_empty()
-            && matches!(
-                freshness,
-                oco_shared_types::VerificationFreshness::None
-            ));
+            && matches!(freshness, oco_shared_types::VerificationFreshness::None));
 
         // v2: Emit telemetry if verification is stale.
         if matches!(freshness, oco_shared_types::VerificationFreshness::Stale) {
-            let stale_files: Vec<String> = state
-                .verification
-                .modified_files
-                .keys()
-                .cloned()
-                .collect();
-            self.trace_collector.record_event(
-                TelemetryEventType::VerificationStale { stale_files },
-            );
+            let stale_files: Vec<String> =
+                state.verification.modified_files.keys().cloned().collect();
+            self.trace_collector
+                .record_event(TelemetryEventType::VerificationStale { stale_files });
         }
 
         // v2: Check for unresolved errors in working memory.
-        let has_memory_errors = state.memory.findings.iter().any(|f| {
-            f.tags.iter().any(|t| t == "error")
-        });
+        let has_memory_errors = state
+            .memory
+            .findings
+            .iter()
+            .any(|f| f.tags.iter().any(|t| t == "error"));
 
         oco_policy_engine::PolicyState {
             current_step: state.session.step_count,
@@ -434,28 +429,25 @@ impl OrchestrationLoop {
         state: &OrchestrationState,
     ) -> Result<Observation, OrchestratorError> {
         match action {
-            OrchestratorAction::Respond { .. } => {
-                self.execute_respond(state).await
-            }
-            OrchestratorAction::Retrieve { query, max_results, .. } => {
-                self.execute_retrieve(query, *max_results, state).await
-            }
-            OrchestratorAction::ToolCall { tool_name, arguments } => {
-                self.execute_tool_call(tool_name, arguments).await
-            }
+            OrchestratorAction::Respond { .. } => self.execute_respond(state).await,
+            OrchestratorAction::Retrieve {
+                query, max_results, ..
+            } => self.execute_retrieve(query, *max_results, state).await,
+            OrchestratorAction::ToolCall {
+                tool_name,
+                arguments,
+            } => self.execute_tool_call(tool_name, arguments).await,
             OrchestratorAction::Verify { strategy, target } => {
                 self.execute_verify(strategy, target.as_deref()).await
             }
-            OrchestratorAction::Stop { .. } => {
-                Ok(Observation::new(
-                    ObservationSource::System,
-                    ObservationKind::Text {
-                        content: "Session stopped".into(),
-                        metadata: None,
-                    },
-                    10,
-                ))
-            }
+            OrchestratorAction::Stop { .. } => Ok(Observation::new(
+                ObservationSource::System,
+                ObservationKind::Text {
+                    content: "Session stopped".into(),
+                    metadata: None,
+                },
+                10,
+            )),
         }
     }
 
@@ -466,10 +458,7 @@ impl OrchestrationLoop {
         // v2: Include working memory in pinned context if non-empty.
         let mut pinned = state.session.pinned_context.clone();
         if state.memory.active_count() > 0 {
-            pinned.push(format!(
-                "## Working Memory\n\n{}",
-                state.memory.summary()
-            ));
+            pinned.push(format!("## Working Memory\n\n{}", state.memory.summary()));
         }
 
         // Build context from observations
@@ -491,14 +480,13 @@ impl OrchestrationLoop {
         };
 
         // v2: Emit context assembly telemetry.
-        self.trace_collector.record_event(
-            TelemetryEventType::ContextAssembled {
+        self.trace_collector
+            .record_event(TelemetryEventType::ContextAssembled {
                 total_tokens: context.total_tokens,
                 item_count: context.items.len() as u32,
                 excluded_count: context.excluded_count,
                 utilization: context.utilization(),
-            },
-        );
+            });
 
         // Build LLM messages from assembled context
         let mut context_text = String::new();
@@ -571,7 +559,8 @@ impl OrchestrationLoop {
         if let Some(ref rt) = self.runtime
             && rt.indexed
         {
-            return rt.execute_retrieval(effective_query, max_results)
+            return rt
+                .execute_retrieval(effective_query, max_results)
                 .await
                 .map_err(|e| OrchestratorError::RetrievalFailed(e.to_string()));
         }
@@ -645,7 +634,9 @@ impl OrchestrationLoop {
         }
 
         if let Some(ref rt) = self.runtime {
-            return rt.execute_tool(tool_name, arguments).await
+            return rt
+                .execute_tool(tool_name, arguments)
+                .await
                 .map_err(|e| OrchestratorError::ToolExecutionFailed(e.to_string()));
         }
 
@@ -667,7 +658,9 @@ impl OrchestrationLoop {
         target: Option<&str>,
     ) -> Result<Observation, OrchestratorError> {
         if let Some(ref rt) = self.runtime {
-            return rt.execute_verification(strategy, target).await
+            return rt
+                .execute_verification(strategy, target)
+                .await
                 .map_err(|e| OrchestratorError::VerificationFailed(e.to_string()));
         }
 
@@ -694,25 +687,17 @@ fn update_working_memory(
 ) {
     match &obs.kind {
         ObservationKind::VerificationResult {
-            passed,
-            failures,
-            ..
+            passed, failures, ..
         } => {
             if *passed {
-                let entry = MemoryEntry::new(
-                    format!("Verification passed: {action:?}"),
-                    1.0,
-                )
-                .with_source("verification".into());
+                let entry = MemoryEntry::new(format!("Verification passed: {action:?}"), 1.0)
+                    .with_source("verification".into());
                 memory.add_finding(entry);
             } else {
                 for failure in failures {
-                    let entry = MemoryEntry::new(
-                        format!("Verification failure: {failure}"),
-                        0.9,
-                    )
-                    .with_source("verification".into())
-                    .with_tags(vec!["failure".into()]);
+                    let entry = MemoryEntry::new(format!("Verification failure: {failure}"), 0.9)
+                        .with_source("verification".into())
+                        .with_tags(vec!["failure".into()]);
                     memory.add_finding(entry);
                 }
             }
@@ -728,13 +713,13 @@ fn update_working_memory(
             memory.add_finding(entry);
         }
         ObservationKind::Symbol {
-            name, kind, file_path, ..
+            name,
+            kind,
+            file_path,
+            ..
         } => {
-            let entry = MemoryEntry::new(
-                format!("Found {kind} `{name}` in {file_path}"),
-                0.8,
-            )
-            .with_source(file_path.clone());
+            let entry = MemoryEntry::new(format!("Found {kind} `{name}` in {file_path}"), 0.8)
+                .with_source(file_path.clone());
             memory.add_finding(entry);
         }
         _ => {

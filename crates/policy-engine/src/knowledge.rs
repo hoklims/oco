@@ -51,18 +51,12 @@ impl KnowledgeBoundaryEstimator {
     /// Boost if the request or signals contain specific file paths.
     /// Specific paths mean we have grounded information to work with.
     fn file_path_boost(request: &str, signals: &[String]) -> f64 {
-        let combined = format!(
-            "{} {}",
-            request,
-            signals.join(" ")
-        );
+        let combined = format!("{} {}", request, signals.join(" "));
 
         let path_count = combined
             .split_whitespace()
             .filter(|word| {
-                (word.contains('/') || word.contains('\\'))
-                    && word.contains('.')
-                    && word.len() > 3
+                (word.contains('/') || word.contains('\\')) && word.contains('.') && word.len() > 3
             })
             .count();
 
@@ -154,11 +148,7 @@ impl KnowledgeBoundaryEstimator {
         // Contains line numbers (e.g. "line 42", "L42", ":42")
         let has_line_numbers = request
             .split_whitespace()
-            .any(|w| {
-                w.starts_with("line")
-                    || w.starts_with('L')
-                    || w.starts_with(':')
-            })
+            .any(|w| w.starts_with("line") || w.starts_with('L') || w.starts_with(':'))
             && request.chars().any(|c| c.is_ascii_digit());
 
         if has_line_numbers {

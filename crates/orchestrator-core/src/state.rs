@@ -1,8 +1,7 @@
 use chrono::{DateTime, Utc};
 use oco_shared_types::{
-    ActionCandidate, AssembledContext, BudgetSnapshot, DecisionTrace,
-    OrchestratorAction, Observation, Session, TaskComplexity,
-    VerificationState, WorkingMemory,
+    ActionCandidate, AssembledContext, BudgetSnapshot, DecisionTrace, Observation,
+    OrchestratorAction, Session, TaskComplexity, VerificationState, WorkingMemory,
 };
 use std::collections::VecDeque;
 use uuid::Uuid;

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument};
 
-use crate::error::{RetrievalError, Result};
+use crate::error::{Result, RetrievalError};
 
 /// A single vector search result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,11 +27,7 @@ pub trait VectorBackend: Send + Sync {
     ) -> Result<()>;
 
     /// Find the `top_k` nearest neighbours to `query_embedding`.
-    async fn search(
-        &self,
-        query_embedding: Vec<f32>,
-        top_k: u32,
-    ) -> Result<Vec<VectorResult>>;
+    async fn search(&self, query_embedding: Vec<f32>, top_k: u32) -> Result<Vec<VectorResult>>;
 
     /// Delete the vector with the given `id`.
     async fn delete(&self, id: &str) -> Result<()>;
@@ -94,11 +90,7 @@ impl VectorBackend for InMemoryVectorBackend {
     }
 
     #[instrument(skip(self, query_embedding), fields(top_k))]
-    async fn search(
-        &self,
-        query_embedding: Vec<f32>,
-        top_k: u32,
-    ) -> Result<Vec<VectorResult>> {
+    async fn search(&self, query_embedding: Vec<f32>, top_k: u32) -> Result<Vec<VectorResult>> {
         let store = self
             .store
             .read()
@@ -154,11 +146,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
         mag_b += y * y;
     }
     let denom = mag_a.sqrt() * mag_b.sqrt();
-    if denom == 0.0 {
-        0.0
-    } else {
-        dot / denom
-    }
+    if denom == 0.0 { 0.0 } else { dot / denom }
 }
 
 #[cfg(test)]
@@ -170,15 +158,27 @@ mod tests {
         let backend = InMemoryVectorBackend::new();
 
         backend
-            .upsert("a", vec![1.0, 0.0, 0.0], serde_json::json!({"path": "a.rs"}))
+            .upsert(
+                "a",
+                vec![1.0, 0.0, 0.0],
+                serde_json::json!({"path": "a.rs"}),
+            )
             .await
             .unwrap();
         backend
-            .upsert("b", vec![0.0, 1.0, 0.0], serde_json::json!({"path": "b.rs"}))
+            .upsert(
+                "b",
+                vec![0.0, 1.0, 0.0],
+                serde_json::json!({"path": "b.rs"}),
+            )
             .await
             .unwrap();
         backend
-            .upsert("c", vec![0.9, 0.1, 0.0], serde_json::json!({"path": "c.rs"}))
+            .upsert(
+                "c",
+                vec![0.9, 0.1, 0.0],
+                serde_json::json!({"path": "c.rs"}),
+            )
             .await
             .unwrap();
 

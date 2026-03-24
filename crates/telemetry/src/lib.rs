@@ -7,6 +7,6 @@ pub mod init;
 pub mod metrics;
 pub mod traces;
 
-pub use init::{init_tracing, TelemetryConfig};
+pub use init::{TelemetryConfig, init_tracing};
 pub use metrics::SessionMetrics;
 pub use traces::DecisionTraceCollector;

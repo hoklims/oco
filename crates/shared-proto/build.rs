@@ -17,10 +17,7 @@ fn main() {
         .build_server(true)
         .build_client(true)
         .out_dir(out_dir())
-        .compile_protos(
-            &[&oco_proto, &orchestrator_proto],
-            &[&proto_dir],
-        );
+        .compile_protos(&[&oco_proto, &orchestrator_proto], &[&proto_dir]);
 
     match compile_result {
         Ok(()) => {
@@ -38,7 +35,10 @@ fn generate_stubs() {
     let out = out_dir();
 
     let stubs = [
-        ("oco.ml.rs", "// stub: rebuild with protoc to get real types\n"),
+        (
+            "oco.ml.rs",
+            "// stub: rebuild with protoc to get real types\n",
+        ),
         (
             "oco.orchestrator.rs",
             "// stub: rebuild with protoc to get real types\n",

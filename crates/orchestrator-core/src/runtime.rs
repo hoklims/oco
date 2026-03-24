@@ -161,10 +161,7 @@ impl OrchestratorRuntime {
         info!(workspace = %ws, "Indexing workspace");
 
         // Initialize FTS index
-        let db_path = self
-            .workspace_root
-            .join(".oco")
-            .join("index.db");
+        let db_path = self.workspace_root.join(".oco").join("index.db");
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -172,8 +169,8 @@ impl OrchestratorRuntime {
 
         // Scan source files
         let extensions = &[
-            "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "c", "cpp", "h", "hpp",
-            "cs", "rb", "swift", "kt", "scala", "md", "toml", "yaml", "yml", "json",
+            "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "c", "cpp", "h", "hpp", "cs", "rb",
+            "swift", "kt", "scala", "md", "toml", "yaml", "yml", "json",
         ];
 
         let mut file_count = 0u32;
@@ -200,8 +197,8 @@ impl OrchestratorRuntime {
             batch.push((id, rel_path.clone(), content.clone()));
 
             // Index symbols
-            let lang = oco_code_intel::language_from_path(&path.to_string_lossy())
-                .unwrap_or("text");
+            let lang =
+                oco_code_intel::language_from_path(&path.to_string_lossy()).unwrap_or("text");
             if let Ok(symbols) = self.symbol_indexer.index_file(&rel_path, content, lang) {
                 symbol_count += symbols.len() as u32;
             }
@@ -221,7 +218,11 @@ impl OrchestratorRuntime {
             file_count,
             symbol_count,
         };
-        info!(files = file_count, symbols = symbol_count, "Indexing complete");
+        info!(
+            files = file_count,
+            symbols = symbol_count,
+            "Indexing complete"
+        );
         Ok(result)
     }
 
@@ -263,62 +264,71 @@ impl OrchestratorRuntime {
     /// When an ML worker is available, embeds the query and uses
     /// [`HybridRetriever`] (FTS + vector via RRF).  Otherwise falls back
     /// to FTS-only search.
-    pub async fn execute_retrieval(
-        &self,
-        query: &str,
-        max_results: u32,
-    ) -> Result<Observation> {
+    pub async fn execute_retrieval(&self, query: &str, max_results: u32) -> Result<Observation> {
         // Try hybrid retrieval when we have both an FTS index and ML worker.
-        let search_results = if let (Some(_fts), Some(ml)) = (self.fts_index.as_ref(), self.ml_client.as_ref()) {
-            // Attempt to get embeddings from the ML worker.
-            match ml.embed(&[query.to_string()]).await {
-                Ok(embeddings) if !embeddings.is_empty() => {
-                    use oco_retrieval::{HybridRetriever, InMemoryVectorBackend};
+        let search_results =
+            if let (Some(_fts), Some(ml)) = (self.fts_index.as_ref(), self.ml_client.as_ref()) {
+                // Attempt to get embeddings from the ML worker.
+                match ml.embed(&[query.to_string()]).await {
+                    Ok(embeddings) if !embeddings.is_empty() => {
+                        use oco_retrieval::{HybridRetriever, InMemoryVectorBackend};
 
-                    // Build a transient HybridRetriever with the current FTS index.
-                    // The vector backend is empty (we only use the query embedding for
-                    // the vector-side scoring), but the RRF fusion still benefits from
-                    // having the FTS ranking combined with the embedding distance.
-                    //
-                    // NOTE: for a full implementation the vector store should be
-                    // pre-populated during indexing; this wiring is intentionally
-                    // incremental.
-                    let fts_clone = FtsIndex::new(&self.workspace_root.join(".oco").join("index.db").to_string_lossy())?;
-                    let vec_backend = InMemoryVectorBackend::new();
-                    let retriever = HybridRetriever::new(fts_clone, vec_backend);
+                        // Build a transient HybridRetriever with the current FTS index.
+                        // The vector backend is empty (we only use the query embedding for
+                        // the vector-side scoring), but the RRF fusion still benefits from
+                        // having the FTS ranking combined with the embedding distance.
+                        //
+                        // NOTE: for a full implementation the vector store should be
+                        // pre-populated during indexing; this wiring is intentionally
+                        // incremental.
+                        let fts_clone = FtsIndex::new(
+                            &self
+                                .workspace_root
+                                .join(".oco")
+                                .join("index.db")
+                                .to_string_lossy(),
+                        )?;
+                        let vec_backend = InMemoryVectorBackend::new();
+                        let retriever = HybridRetriever::new(fts_clone, vec_backend);
 
-                    let hybrid_results = retriever
-                        .retrieve(query, embeddings.into_iter().next().unwrap(), 1.0, 1.0, max_results)
-                        .await;
+                        let hybrid_results = retriever
+                            .retrieve(
+                                query,
+                                embeddings.into_iter().next().unwrap(),
+                                1.0,
+                                1.0,
+                                max_results,
+                            )
+                            .await;
 
-                    match hybrid_results {
-                        Ok(results) => results
-                            .into_iter()
-                            .map(|r| SearchResult {
-                                path: r.path,
-                                snippet: r.content,
-                                score: r.score,
-                            })
-                            .collect(),
-                        Err(e) => {
-                            warn!(error = %e, "Hybrid retrieval failed, falling back to FTS");
-                            self.search(query, max_results)?
+                        match hybrid_results {
+                            Ok(results) => results
+                                .into_iter()
+                                .map(|r| SearchResult {
+                                    path: r.path,
+                                    snippet: r.content,
+                                    score: r.score,
+                                })
+                                .collect(),
+                            Err(e) => {
+                                warn!(error = %e, "Hybrid retrieval failed, falling back to FTS");
+                                self.search(query, max_results)?
+                            }
                         }
                     }
+                    Ok(_) => {
+                        warn!("ML worker returned empty embeddings, falling back to FTS");
+                        self.search(query, max_results)?
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "ML embed call failed, falling back to FTS");
+                        self.search(query, max_results)?
+                    }
                 }
-                Ok(_) => {
-                    warn!("ML worker returned empty embeddings, falling back to FTS");
-                    self.search(query, max_results)?
-                }
-                Err(e) => {
-                    warn!(error = %e, "ML embed call failed, falling back to FTS");
-                    self.search(query, max_results)?
-                }
-            }
-        } else {
-            // FTS-only fallback.
-            self.search(query, max_results)?
-        };
+            } else {
+                // FTS-only fallback.
+                self.search(query, max_results)?
+            };
 
         // Try symbol lookup
         let query_words: Vec<&str> = query.split_whitespace().collect();
@@ -406,19 +416,16 @@ impl OrchestratorRuntime {
                     .await?
             }
             "read_file" | "file_read" => {
-                let path = arguments
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 self.file_executor
-                    .execute("read_file", serde_json::json!({"operation": "read_file", "path": path}))
+                    .execute(
+                        "read_file",
+                        serde_json::json!({"operation": "read_file", "path": path}),
+                    )
                     .await?
             }
             "write_file" | "file_write" => {
-                let path = arguments
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 let content = arguments
                     .get("content")
                     .and_then(|v| v.as_str())
@@ -526,8 +533,7 @@ impl OrchestratorRuntime {
         budget_tokens: u32,
         current_step: u32,
     ) -> AssembledContext {
-        let mut builder = ContextBuilder::new(budget_tokens)
-            .with_staleness(current_step, 8); // Half-life of 8 steps
+        let mut builder = ContextBuilder::new(budget_tokens).with_staleness(current_step, 8); // Half-life of 8 steps
 
         let system_prompt = self
             .config
@@ -585,7 +591,12 @@ impl OrchestratorRuntime {
                     ObservationKind::Structured { data } => {
                         serde_json::to_string_pretty(data).unwrap_or_default()
                     }
-                    ObservationKind::CodeSnippet { content, file_path, start_line, .. } => {
+                    ObservationKind::CodeSnippet {
+                        content,
+                        file_path,
+                        start_line,
+                        ..
+                    } => {
                         format!("// {file_path}:{start_line}\n{content}")
                     }
                     _ => return None,

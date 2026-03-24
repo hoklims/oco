@@ -32,7 +32,10 @@ impl ToolRegistry {
 
     /// List all registered tool descriptors (unordered).
     pub fn list(&self) -> Vec<ToolDescriptor> {
-        self.tools.iter().map(|entry| entry.value().clone()).collect()
+        self.tools
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
     }
 
     /// Check whether a tool with the given name is registered.

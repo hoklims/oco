@@ -65,10 +65,7 @@ impl PolicyGate {
             WritePolicy::RequireConfirmation => {
                 if tool.requires_confirmation {
                     return ToolGateDecision::RequireConfirmation {
-                        reason: format!(
-                            "tool '{}' is marked as requiring confirmation",
-                            tool.name
-                        ),
+                        reason: format!("tool '{}' is marked as requiring confirmation", tool.name),
                     };
                 }
                 if tool.is_write {
@@ -112,8 +109,7 @@ impl PolicyGate {
                     ToolGateDecision::RequireConfirmation {
                         reason: format!(
                             "command contains destructive pattern: '{}'",
-                            Self::matching_destructive_pattern(command)
-                                .unwrap_or("unknown")
+                            Self::matching_destructive_pattern(command).unwrap_or("unknown")
                         ),
                     }
                 } else {
@@ -126,8 +122,7 @@ impl PolicyGate {
                     ToolGateDecision::Deny {
                         reason: format!(
                             "command contains destructive pattern: '{}' (denied by policy)",
-                            Self::matching_destructive_pattern(command)
-                                .unwrap_or("unknown")
+                            Self::matching_destructive_pattern(command).unwrap_or("unknown")
                         ),
                     }
                 } else {
@@ -152,10 +147,7 @@ impl PolicyGate {
         let name_lower = tool.name.to_lowercase();
 
         // Check against known destructive tool names
-        if DESTRUCTIVE_TOOLS
-            .iter()
-            .any(|dt| name_lower.contains(dt))
-        {
+        if DESTRUCTIVE_TOOLS.iter().any(|dt| name_lower.contains(dt)) {
             return true;
         }
 
@@ -238,8 +230,14 @@ mod tests {
     #[test]
     fn allow_all_allows_everything() {
         let gate = PolicyGate::new(WritePolicy::AllowAll);
-        assert!(matches!(gate.evaluate(&read_tool()), ToolGateDecision::Allow));
-        assert!(matches!(gate.evaluate(&write_tool()), ToolGateDecision::Allow));
+        assert!(matches!(
+            gate.evaluate(&read_tool()),
+            ToolGateDecision::Allow
+        ));
+        assert!(matches!(
+            gate.evaluate(&write_tool()),
+            ToolGateDecision::Allow
+        ));
         assert!(matches!(
             gate.evaluate(&destructive_tool()),
             ToolGateDecision::Allow
@@ -249,7 +247,10 @@ mod tests {
     #[test]
     fn require_confirmation_gates_writes() {
         let gate = PolicyGate::new(WritePolicy::RequireConfirmation);
-        assert!(matches!(gate.evaluate(&read_tool()), ToolGateDecision::Allow));
+        assert!(matches!(
+            gate.evaluate(&read_tool()),
+            ToolGateDecision::Allow
+        ));
         assert!(matches!(
             gate.evaluate(&write_tool()),
             ToolGateDecision::RequireConfirmation { .. }
@@ -263,7 +264,10 @@ mod tests {
     #[test]
     fn deny_destructive_blocks_destructive() {
         let gate = PolicyGate::new(WritePolicy::DenyDestructive);
-        assert!(matches!(gate.evaluate(&read_tool()), ToolGateDecision::Allow));
+        assert!(matches!(
+            gate.evaluate(&read_tool()),
+            ToolGateDecision::Allow
+        ));
         assert!(matches!(
             gate.evaluate(&write_tool()),
             ToolGateDecision::RequireConfirmation { .. }

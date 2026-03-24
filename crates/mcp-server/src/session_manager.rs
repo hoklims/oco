@@ -5,7 +5,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::Serialize;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tracing::{error, info};
 
 use oco_orchestrator_core::llm::{LlmProvider, StubLlmProvider};
@@ -83,11 +83,7 @@ impl SessionManager {
     /// The orchestration loop runs on a dedicated OS thread (with its own
     /// single-threaded tokio runtime) because `OrchestrationLoop` is `!Send`
     /// due to the underlying `rusqlite::Connection`.
-    pub fn create_session(
-        &self,
-        request: &str,
-        workspace: Option<&str>,
-    ) -> anyhow::Result<String> {
+    pub fn create_session(&self, request: &str, workspace: Option<&str>) -> anyhow::Result<String> {
         // Enforce concurrency limit (upper bound: total sessions count).
         let total = self.sessions.len();
         if total as u32 >= self.config.max_concurrent_sessions {
