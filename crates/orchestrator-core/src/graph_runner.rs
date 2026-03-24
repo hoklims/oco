@@ -61,8 +61,7 @@ impl CancellationToken {
 
     /// Check if cancellation was requested.
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.cancelled.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -140,16 +139,12 @@ impl StepExecutor for StubStepExecutor {
         _context: &[String],
         _constraints: &StepConstraints,
     ) -> Result<StepResult, OrchestratorError> {
-        let (success, output) = self
-            .overrides
-            .get(&step.name)
-            .cloned()
-            .unwrap_or_else(|| {
-                (
-                    self.default_success,
-                    format!("Executed step: {}", step.name),
-                )
-            });
+        let (success, output) = self.overrides.get(&step.name).cloned().unwrap_or_else(|| {
+            (
+                self.default_success,
+                format!("Executed step: {}", step.name),
+            )
+        });
 
         Ok(StepResult {
             step_id: step.id,
@@ -191,10 +186,7 @@ pub struct GraphRunner {
 }
 
 impl GraphRunner {
-    pub fn new(
-        executor: Arc<dyn StepExecutor>,
-        planner: Arc<dyn Planner>,
-    ) -> Self {
+    pub fn new(executor: Arc<dyn StepExecutor>, planner: Arc<dyn Planner>) -> Self {
         Self {
             executor,
             planner,
@@ -270,11 +262,7 @@ impl GraphRunner {
             }
 
             // No-progress guard: if completed count hasn't changed, we're stuck
-            let current_completed = plan
-                .steps
-                .iter()
-                .filter(|s| s.is_terminal())
-                .count();
+            let current_completed = plan.steps.iter().filter(|s| s.is_terminal()).count();
             if current_completed == last_completed_count && last_completed_count > 0 {
                 warn!("no progress detected: terminal step count unchanged");
                 break;
@@ -352,18 +340,42 @@ impl GraphRunner {
                         Ok(vr) if vr.success => {
                             let step_name = step.name.clone();
                             step.status = StepStatus::Completed;
-                            self.emit_step_completed(result.step_id, &step_name, true, result.duration_ms);
+                            self.emit_step_completed(
+                                result.step_id,
+                                &step_name,
+                                true,
+                                result.duration_ms,
+                            );
                         }
                         Ok(vr) => {
                             let step_name = step.name.clone();
-                            step.status = StepStatus::Failed { reason: vr.output.clone() };
-                            self.emit_step_completed(result.step_id, &step_name, false, result.duration_ms);
-                            self.emit_verify_gate_failed(result.step_id, &step_name, &vr.output, replan_count);
+                            step.status = StepStatus::Failed {
+                                reason: vr.output.clone(),
+                            };
+                            self.emit_step_completed(
+                                result.step_id,
+                                &step_name,
+                                false,
+                                result.duration_ms,
+                            );
+                            self.emit_verify_gate_failed(
+                                result.step_id,
+                                &step_name,
+                                &vr.output,
+                                replan_count,
+                            );
                         }
                         Err(e) => {
                             let step_name = step.name.clone();
-                            step.status = StepStatus::Failed { reason: e.to_string() };
-                            self.emit_step_completed(result.step_id, &step_name, false, result.duration_ms);
+                            step.status = StepStatus::Failed {
+                                reason: e.to_string(),
+                            };
+                            self.emit_step_completed(
+                                result.step_id,
+                                &step_name,
+                                false,
+                                result.duration_ms,
+                            );
                         }
                     }
                 } else {
@@ -373,18 +385,16 @@ impl GraphRunner {
                 }
             } else {
                 let step_name = step.name.clone();
-                step.status = StepStatus::Failed { reason: result.output.clone() };
+                step.status = StepStatus::Failed {
+                    reason: result.output.clone(),
+                };
                 self.emit_step_completed(result.step_id, &step_name, false, result.duration_ms);
             }
         }
     }
 
     /// Execute multiple steps in parallel.
-    async fn execute_parallel(
-        &self,
-        plan: &ExecutionPlan,
-        step_ids: &[Uuid],
-    ) -> Vec<StepResult> {
+    async fn execute_parallel(&self, plan: &ExecutionPlan, step_ids: &[Uuid]) -> Vec<StepResult> {
         if step_ids.len() == 1 {
             // Single step — no need for join overhead
             let step = plan.get_step(step_ids[0]).expect("step must exist");
@@ -539,13 +549,7 @@ impl GraphRunner {
         );
     }
 
-    fn emit_step_completed(
-        &self,
-        step_id: Uuid,
-        step_name: &str,
-        success: bool,
-        duration_ms: u64,
-    ) {
+    fn emit_step_completed(&self, step_id: Uuid, step_name: &str, success: bool, duration_ms: u64) {
         if success {
             info!(step_name, duration_ms, "step completed");
         } else {
@@ -569,7 +573,10 @@ impl GraphRunner {
             let _ = tx.send(OrchestrationEvent::StepCompleted {
                 step: 0, // TODO: track global step counter
                 action,
-                reason: format!("step {step_name}: {}", if success { "ok" } else { "failed" }),
+                reason: format!(
+                    "step {step_name}: {}",
+                    if success { "ok" } else { "failed" }
+                ),
                 duration_ms,
                 budget_snapshot: oco_shared_types::BudgetSnapshot {
                     tokens_used: self.tokens_used,
@@ -593,11 +600,7 @@ impl GraphRunner {
         _failures: &str,
         replan_attempt: u32,
     ) {
-        warn!(
-            step_name,
-            replan_attempt,
-            "verify gate failed"
-        );
+        warn!(step_name, replan_attempt, "verify gate failed");
         // TODO(#15): emit a dedicated VerifyGateFailed event
     }
 
@@ -667,7 +670,12 @@ mod tests {
 
         let result = runner.execute(plan, &ctx()).await.unwrap();
         assert!(result.is_complete());
-        assert!(result.steps.iter().all(|s| s.status == StepStatus::Completed));
+        assert!(
+            result
+                .steps
+                .iter()
+                .all(|s| s.status == StepStatus::Completed)
+        );
     }
 
     #[tokio::test]
@@ -685,7 +693,11 @@ mod tests {
         let result = runner.execute(plan, &ctx()).await.unwrap();
         assert!(result.is_complete());
         assert_eq!(
-            result.steps.iter().filter(|s| s.status == StepStatus::Completed).count(),
+            result
+                .steps
+                .iter()
+                .filter(|s| s.status == StepStatus::Completed)
+                .count(),
             4
         );
     }
@@ -713,8 +725,7 @@ mod tests {
 
         // Verification fails
         let executor = Arc::new(
-            StubStepExecutor::all_pass()
-                .with_failure("verify:implement", "2 tests failing"),
+            StubStepExecutor::all_pass().with_failure("verify:implement", "2 tests failing"),
         );
         let planner = Arc::new(DirectPlanner);
         let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
@@ -723,9 +734,12 @@ mod tests {
         // After replan, there should be new steps
         assert!(result.steps.len() >= 1);
         // The original step should be Failed or Replanned
-        assert!(result.steps.iter().any(|s| {
-            matches!(s.status, StepStatus::Failed { .. } | StepStatus::Replanned)
-        }));
+        assert!(
+            result
+                .steps
+                .iter()
+                .any(|s| { matches!(s.status, StepStatus::Failed { .. } | StepStatus::Replanned) })
+        );
     }
 
     // -- Step failure --
@@ -735,9 +749,8 @@ mod tests {
         let step = PlanStep::new("broken", "This will fail");
         let plan = make_plan(vec![step]);
 
-        let executor = Arc::new(
-            StubStepExecutor::all_pass().with_failure("broken", "runtime error"),
-        );
+        let executor =
+            Arc::new(StubStepExecutor::all_pass().with_failure("broken", "runtime error"));
         let planner = Arc::new(DirectPlanner);
         let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
 
@@ -760,7 +773,12 @@ mod tests {
 
         let result = runner.execute(plan, &ctx()).await.unwrap();
         // First step should complete, second should still be pending
-        assert!(result.steps.iter().any(|s| s.status == StepStatus::Completed));
+        assert!(
+            result
+                .steps
+                .iter()
+                .any(|s| s.status == StepStatus::Completed)
+        );
         assert!(result.steps.iter().any(|s| s.status == StepStatus::Pending));
     }
 
@@ -785,7 +803,11 @@ mod tests {
         while let Ok(e) = rx.try_recv() {
             events.push(e);
         }
-        assert!(events.len() >= 2, "expected >= 2 events, got {}", events.len());
+        assert!(
+            events.len() >= 2,
+            "expected >= 2 events, got {}",
+            events.len()
+        );
     }
 
     // -- Diamond DAG --
@@ -884,7 +906,12 @@ mod tests {
             matches!(&s.status, StepStatus::Failed { reason } if reason.contains("panic"))
         }));
         // The normal step should have completed
-        assert!(result.steps.iter().any(|s| s.name == "normal-step" && s.status == StepStatus::Completed));
+        assert!(
+            result
+                .steps
+                .iter()
+                .any(|s| s.name == "normal-step" && s.status == StepStatus::Completed)
+        );
     }
 
     #[tokio::test]
@@ -892,8 +919,8 @@ mod tests {
         // Create a plan where after root completes, remaining steps have unresolvable deps
         let root = PlanStep::new("root", "Setup");
         let ghost_dep = Uuid::new_v4(); // doesn't exist in plan
-        let stuck = PlanStep::new("stuck", "Blocked forever")
-            .with_depends_on(vec![root.id, ghost_dep]);
+        let stuck =
+            PlanStep::new("stuck", "Blocked forever").with_depends_on(vec![root.id, ghost_dep]);
         // Note: validate() would catch this, but GraphRunner should still handle it
         let mut plan = make_plan(vec![root, stuck]);
         // Manually skip validation by not calling validate()
@@ -904,8 +931,18 @@ mod tests {
 
         let result = runner.execute(plan, &ctx()).await.unwrap();
         // Root should complete, stuck should remain pending (deadlock detected)
-        assert!(result.steps.iter().any(|s| s.name == "root" && s.status == StepStatus::Completed));
-        assert!(result.steps.iter().any(|s| s.name == "stuck" && s.status == StepStatus::Pending));
+        assert!(
+            result
+                .steps
+                .iter()
+                .any(|s| s.name == "root" && s.status == StepStatus::Completed)
+        );
+        assert!(
+            result
+                .steps
+                .iter()
+                .any(|s| s.name == "stuck" && s.status == StepStatus::Pending)
+        );
     }
 
     #[tokio::test]
@@ -915,17 +952,19 @@ mod tests {
         let plan = make_plan(vec![step]);
 
         let executor = Arc::new(
-            StubStepExecutor::all_pass()
-                .with_failure("verify:implement", "all tests fail"),
+            StubStepExecutor::all_pass().with_failure("verify:implement", "all tests fail"),
         );
         let planner = Arc::new(DirectPlanner);
         let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
 
         let result = runner.execute(plan, &ctx()).await.unwrap();
         // Should eventually stop (max replan attempts or no new steps)
-        assert!(result.steps.iter().any(|s| {
-            matches!(s.status, StepStatus::Failed { .. } | StepStatus::Replanned)
-        }));
+        assert!(
+            result
+                .steps
+                .iter()
+                .any(|s| { matches!(s.status, StepStatus::Failed { .. } | StepStatus::Replanned) })
+        );
     }
 
     // -- Output capture --

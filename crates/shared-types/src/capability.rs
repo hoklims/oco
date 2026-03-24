@@ -426,12 +426,7 @@ impl CapabilityRegistry {
     }
 
     /// Register an LLM provider.
-    pub fn register_llm(
-        &mut self,
-        provider: &str,
-        model: &str,
-        cost_tier: CostTier,
-    ) {
+    pub fn register_llm(&mut self, provider: &str, model: &str, cost_tier: CostTier) {
         self.register(CapabilityDescriptor {
             id: format!("llm:{provider}:{model}"),
             name: format!("{provider}/{model}"),
@@ -657,7 +652,11 @@ mod tests {
     #[test]
     fn query_by_capability() {
         let mut reg = CapabilityRegistry::new();
-        reg.register_skill("review", vec!["code_review".into(), "security".into()], CostTier::Moderate);
+        reg.register_skill(
+            "review",
+            vec!["code_review".into(), "security".into()],
+            CostTier::Moderate,
+        );
         reg.register_skill("tdd", vec!["testing".into()], CostTier::Cheap);
 
         let results = reg.query(&["code_review".into()], &[]);

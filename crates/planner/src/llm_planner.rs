@@ -9,10 +9,10 @@ use oco_shared_types::{
     TeamConfig, TeamMember,
 };
 
+use crate::Planner;
 use crate::context::PlanningContext;
 use crate::error::PlannerError;
 use crate::prompt;
-use crate::Planner;
 
 /// LLM-powered planner for Medium+ tasks.
 ///
@@ -76,14 +76,18 @@ impl LlmPlanner {
         })?;
 
         if raw_steps.is_empty() {
-            return Err(PlannerError::ParseError("LLM returned empty step list".into()));
+            return Err(PlannerError::ParseError(
+                "LLM returned empty step list".into(),
+            ));
         }
 
         // First pass: create steps with temporary IDs, build name→id map.
         // Deduplicate names (LLM may produce duplicates): append suffix.
         let mut steps: Vec<PlanStep> = Vec::with_capacity(raw_steps.len());
-        let mut name_to_id: std::collections::HashMap<String, Uuid> = std::collections::HashMap::new();
-        let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut name_to_id: std::collections::HashMap<String, Uuid> =
+            std::collections::HashMap::new();
+        let mut name_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
 
         for raw in &raw_steps {
             let count = name_counts.entry(raw.name.clone()).or_insert(0);
@@ -203,7 +207,11 @@ impl Planner for LlmPlanner {
 
         let (response, tokens_used) = self.llm_call.call(&sys, &user, max_tokens).await?;
 
-        debug!(tokens_used, response_len = response.len(), "LLM plan response received");
+        debug!(
+            tokens_used,
+            response_len = response.len(),
+            "LLM plan response received"
+        );
 
         // Fix #22: retry with correction prompt on parse failure (max 2 attempts)
         let steps = match Self::parse_steps(&response) {
@@ -226,13 +234,7 @@ impl Planner for LlmPlanner {
         };
 
         let model = "llm".to_string(); // In production, comes from provider
-        let mut plan = ExecutionPlan::new(
-            steps,
-            PlanStrategy::Generated {
-                model,
-                tokens_used,
-            },
-        );
+        let mut plan = ExecutionPlan::new(steps, PlanStrategy::Generated { model, tokens_used });
 
         // Validate the DAG
         plan.validate().map_err(|e| {
@@ -273,9 +275,8 @@ impl Planner for LlmPlanner {
         let new_steps = Self::parse_steps(&response)?;
 
         // Fix #21: transaction-safe merge that handles all step states
-        let mut merged_steps: Vec<PlanStep> = Vec::with_capacity(
-            original.steps.len() + new_steps.len(),
-        );
+        let mut merged_steps: Vec<PlanStep> =
+            Vec::with_capacity(original.steps.len() + new_steps.len());
 
         for step in &original.steps {
             match &step.status {
@@ -288,9 +289,7 @@ impl Planner for LlmPlanner {
                     merged_steps.push(step.clone());
                 }
                 // Mark failed, pending, and blocked steps as Replanned
-                StepStatus::Failed { .. }
-                | StepStatus::Pending
-                | StepStatus::Blocked => {
+                StepStatus::Failed { .. } | StepStatus::Pending | StepStatus::Blocked => {
                     let mut replaced = step.clone();
                     replaced.status = StepStatus::Replanned;
                     merged_steps.push(replaced);
@@ -386,7 +385,10 @@ fn extract_json(response: &str) -> Result<String, PlannerError> {
         if let Some(end) = after.find("```") {
             let inner = after[..end].trim();
             // Skip the "json" language tag if present
-            let inner = inner.strip_prefix("json").map(|s| s.trim()).unwrap_or(inner);
+            let inner = inner
+                .strip_prefix("json")
+                .map(|s| s.trim())
+                .unwrap_or(inner);
             if inner.starts_with('[') {
                 last_json_fence = Some(inner.to_string());
             }
@@ -615,7 +617,10 @@ mod tests {
         assert!(plan.validate().is_ok());
         assert_eq!(plan.steps[0].name, "investigate");
         assert!(plan.steps[0].agent_role.read_only);
-        assert!(matches!(plan.steps[0].execution, StepExecution::Subagent { .. }));
+        assert!(matches!(
+            plan.steps[0].execution,
+            StepExecution::Subagent { .. }
+        ));
         assert_eq!(plan.steps[1].depends_on.len(), 1);
         assert!(plan.steps[2].verify_after);
         assert_eq!(plan.critical_path_length(), 3);
@@ -701,8 +706,8 @@ mod tests {
 
     #[tokio::test]
     async fn llm_planner_retry_succeeds_on_second_attempt() {
-        use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         // Custom LLM call that returns garbage first, then valid JSON
         struct RetryLlm {
@@ -723,7 +728,11 @@ mod tests {
                     Ok(("oops not json".into(), 50))
                 } else {
                     // Retry: valid JSON
-                    Ok((r#"[{"name": "fixed", "description": "Works now", "depends_on": []}]"#.into(), 50))
+                    Ok((
+                        r#"[{"name": "fixed", "description": "Works now", "depends_on": []}]"#
+                            .into(),
+                        50,
+                    ))
                 }
             }
         }
@@ -774,7 +783,11 @@ mod tests {
             .unwrap();
 
         // Should have: completed step + replanned step + new step
-        assert!(plan.steps.iter().any(|s| s.name == "investigate" && s.status == StepStatus::Completed));
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| s.name == "investigate" && s.status == StepStatus::Completed)
+        );
         assert!(plan.steps.iter().any(|s| s.name == "fix-and-implement"));
         assert!(matches!(plan.strategy, PlanStrategy::Replanned { .. }));
     }
@@ -818,13 +831,29 @@ mod tests {
             .unwrap();
 
         // Completed step preserved
-        assert!(plan.steps.iter().any(|s| s.name == "investigate" && s.status == StepStatus::Completed));
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| s.name == "investigate" && s.status == StepStatus::Completed)
+        );
         // In-progress step preserved (NOT dropped or replanned)
-        assert!(plan.steps.iter().any(|s| s.name == "implement-a" && s.status == StepStatus::InProgress));
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| s.name == "implement-a" && s.status == StepStatus::InProgress)
+        );
         // Failed step marked as Replanned
-        assert!(plan.steps.iter().any(|s| s.name == "implement-b" && s.status == StepStatus::Replanned));
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| s.name == "implement-b" && s.status == StepStatus::Replanned)
+        );
         // New step added
-        assert!(plan.steps.iter().any(|s| s.name == "fix-tests" && s.status == StepStatus::Pending));
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| s.name == "fix-tests" && s.status == StepStatus::Pending)
+        );
     }
 
     // -- Team generation --
@@ -897,7 +926,10 @@ mod tests {
         // Should fail validation (cycle detected)
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("cycle") || err.contains("invalid DAG"), "error: {err}");
+        assert!(
+            err.contains("cycle") || err.contains("invalid DAG"),
+            "error: {err}"
+        );
     }
 
     #[tokio::test]

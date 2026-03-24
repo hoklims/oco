@@ -92,7 +92,11 @@ For mcp_tool mode: {{"mode": "mcp_tool", "server": "yoyo", "tool": "search"}}
         llms = format_items(&context.capabilities.llms),
         language = context.repo_profile.stack,
         risk = risk_str,
-        test_framework = context.repo_profile.test_command.as_deref().unwrap_or("unknown"),
+        test_framework = context
+            .repo_profile
+            .test_command
+            .as_deref()
+            .unwrap_or("unknown"),
         complexity = complexity_str,
         category = category_str,
     )

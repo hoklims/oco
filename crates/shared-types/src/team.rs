@@ -308,10 +308,11 @@ impl TeamCoordinator {
 
     /// Whether the team has finished all work.
     pub fn is_done(&self) -> bool {
-        self.task_list
-            .tasks
-            .iter()
-            .all(|t| t.status == StepStatus::Completed || matches!(t.status, StepStatus::Failed { .. }) || t.status == StepStatus::Replanned)
+        self.task_list.tasks.iter().all(|t| {
+            t.status == StepStatus::Completed
+                || matches!(t.status, StepStatus::Failed { .. })
+                || t.status == StepStatus::Replanned
+        })
     }
 
     /// Record a message exchange with topology enforcement (fix #18).
@@ -392,15 +393,9 @@ pub enum TeamTopologyError {
     #[error("cannot send message to self")]
     SelfMessage,
     #[error("hub-spoke violation: {sender:?} → {recipient:?} (only lead ↔ members allowed)")]
-    HubSpokeViolation {
-        sender: AgentId,
-        recipient: AgentId,
-    },
+    HubSpokeViolation { sender: AgentId, recipient: AgentId },
     #[error("pipeline violation: {sender:?} → {recipient:?} (only sequential allowed)")]
-    PipelineViolation {
-        sender: AgentId,
-        recipient: AgentId,
-    },
+    PipelineViolation { sender: AgentId, recipient: AgentId },
 }
 
 // ---------------------------------------------------------------------------
@@ -747,7 +742,9 @@ mod tests {
 
         // Simulate replan: add a new step to the plan
         let mut new_plan = plan.clone();
-        new_plan.steps.push(PlanStep::new("new-fix", "Fix the issue"));
+        new_plan
+            .steps
+            .push(PlanStep::new("new-fix", "Fix the issue"));
 
         list.sync_with_plan(&new_plan);
         assert_eq!(list.tasks.len(), 4);
