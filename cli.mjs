@@ -3,9 +3,9 @@
  * OCO Claude Code Plugin — Installer / Uninstaller
  *
  * Usage:
- *   npx github:hoklims/oco install [--global] [--force]
- *   npx github:hoklims/oco uninstall [--global]
- *   npx github:hoklims/oco status [--global]
+ *   npx oco-claude-plugin install [--global] [--force]
+ *   npx oco-claude-plugin uninstall [--global]
+ *   npx oco-claude-plugin status [--global]
  *
  * Zero external dependencies. Node >= 18.
  */
@@ -232,9 +232,9 @@ function usage() {
     --force, -f    Overwrite existing files
 
   Examples:
-    npx github:hoklims/oco install          # project-level
-    npx github:hoklims/oco install -g       # global
-    npx github:hoklims/oco uninstall        # clean removal
+    npx oco-claude-plugin install          # project-level
+    npx oco-claude-plugin install -g       # global
+    npx oco-claude-plugin uninstall        # clean removal
 `);
 }
 
