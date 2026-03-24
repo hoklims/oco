@@ -93,6 +93,41 @@ pub enum UiEvent {
         port: u16,
     },
 
+    // ── Plan Orchestration ────────────────────────────────
+    PlanGenerated {
+        step_count: usize,
+        parallel_groups: usize,
+        strategy: String,
+        has_team: bool,
+    },
+    PlanStepStarted {
+        step_name: String,
+        role: String,
+        execution_mode: String,
+    },
+    PlanStepCompleted {
+        step_name: String,
+        success: bool,
+        duration_ms: u64,
+    },
+    PlanReplanTriggered {
+        failed_step: String,
+        attempt: u32,
+        new_step_count: usize,
+    },
+    PlanVerifyGateFailed {
+        step_name: String,
+        error: String,
+    },
+    TeamStatus {
+        team_name: String,
+        members: u32,
+        communication: String,
+        completed: u32,
+        total: u32,
+        messages: u32,
+    },
+
     // ── Generic ───────────────────────────────────────────
     Info {
         message: String,
