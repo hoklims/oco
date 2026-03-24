@@ -190,6 +190,39 @@ impl Renderer for JsonlRenderer {
                 serde_json::json!({ "host": host, "port": port }),
             ),
 
+            UiEvent::PlanGenerated { step_count, parallel_groups, strategy, has_team } => {
+                self.emit_json("plan_generated", serde_json::json!({
+                    "step_count": step_count, "parallel_groups": parallel_groups,
+                    "strategy": strategy, "has_team": has_team,
+                }))
+            }
+            UiEvent::PlanStepStarted { step_name, role, execution_mode } => {
+                self.emit_json("plan_step_started", serde_json::json!({
+                    "step": step_name, "role": role, "mode": execution_mode,
+                }))
+            }
+            UiEvent::PlanStepCompleted { step_name, success, duration_ms } => {
+                self.emit_json("plan_step_completed", serde_json::json!({
+                    "step": step_name, "success": success, "duration_ms": duration_ms,
+                }))
+            }
+            UiEvent::PlanReplanTriggered { failed_step, attempt, new_step_count } => {
+                self.emit_json("plan_replan", serde_json::json!({
+                    "failed_step": failed_step, "attempt": attempt, "new_steps": new_step_count,
+                }))
+            }
+            UiEvent::PlanVerifyGateFailed { step_name, error } => {
+                self.emit_json("plan_verify_failed", serde_json::json!({
+                    "step": step_name, "error": error,
+                }))
+            }
+            UiEvent::TeamStatus { team_name, members, communication, completed, total, messages } => {
+                self.emit_json("team_status", serde_json::json!({
+                    "team": team_name, "members": members, "communication": communication,
+                    "completed": completed, "total": total, "messages": messages,
+                }))
+            }
+
             UiEvent::Info { message } => {
                 self.emit_json("info", serde_json::json!({ "message": message }))
             }

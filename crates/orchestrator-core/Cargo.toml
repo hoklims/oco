@@ -12,6 +12,7 @@ oco-context-engine = { workspace = true }
 oco-tool-runtime = { workspace = true }
 oco-retrieval = { workspace = true }
 oco-verifier = { workspace = true }
+oco-planner = { workspace = true }
 oco-telemetry = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

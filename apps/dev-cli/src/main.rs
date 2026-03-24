@@ -358,6 +358,10 @@ async fn cmd_run(
                     oco_shared_types::OrchestratorAction::Verify { .. } => "VERIFY",
                     oco_shared_types::OrchestratorAction::UpdateMemory { .. } => "MEMORY",
                     oco_shared_types::OrchestratorAction::Stop { .. } => "STOP",
+                    oco_shared_types::OrchestratorAction::Plan { .. } => "PLAN",
+                    oco_shared_types::OrchestratorAction::Delegate { .. } => "DELEGATE",
+                    oco_shared_types::OrchestratorAction::Message { .. } => "MESSAGE",
+                    oco_shared_types::OrchestratorAction::Replan { .. } => "REPLAN",
                 };
                 let tokens_max = budget_snapshot.tokens_used + budget_snapshot.tokens_remaining;
                 r.emit(UiEvent::RunStepCompleted {
@@ -1151,6 +1155,10 @@ fn cmd_runs_show(r: &mut dyn Renderer, id: String, workspace: String) -> Result<
                     oco_shared_types::OrchestratorAction::Verify { .. } => "VERIFY",
                     oco_shared_types::OrchestratorAction::UpdateMemory { .. } => "MEMORY",
                     oco_shared_types::OrchestratorAction::Stop { .. } => "STOP",
+                    oco_shared_types::OrchestratorAction::Plan { .. } => "PLAN",
+                    oco_shared_types::OrchestratorAction::Delegate { .. } => "DELEGATE",
+                    oco_shared_types::OrchestratorAction::Message { .. } => "MESSAGE",
+                    oco_shared_types::OrchestratorAction::Replan { .. } => "REPLAN",
                 };
                 r.emit(UiEvent::RunStepCompleted {
                     step,

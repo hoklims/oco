@@ -1,0 +1,20 @@
+[package]
+name = "oco-planner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LLM-powered task decomposition into emergent ExecutionPlans"
+
+[dependencies]
+oco-shared-types = { workspace = true }
+oco-policy-engine = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

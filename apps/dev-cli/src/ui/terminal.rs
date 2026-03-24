@@ -344,6 +344,114 @@ impl Renderer for TerminalRenderer {
                 ));
             }
 
+            // ── Plan Orchestration ────────────────────────
+            UiEvent::PlanGenerated {
+                step_count,
+                parallel_groups,
+                strategy,
+                has_team,
+            } => {
+                let team_indicator = if has_team { " + team" } else { "" };
+                let _ = self.term.write_line(&format!(
+                    "\n  {} Plan generated ({} steps, {} parallel groups, {}{}){}",
+                    style("*").cyan().bold(),
+                    style(step_count).bold(),
+                    style(parallel_groups).bold(),
+                    style(&strategy).dim(),
+                    team_indicator,
+                    "",
+                ));
+            }
+
+            UiEvent::PlanStepStarted {
+                step_name,
+                role,
+                execution_mode,
+            } => {
+                let mode_styled = match execution_mode.as_str() {
+                    "inline" => style(&execution_mode).dim(),
+                    "subagent" => style(&execution_mode).blue(),
+                    "teammate" => style(&execution_mode).magenta(),
+                    "mcp_tool" => style(&execution_mode).yellow(),
+                    _ => style(&execution_mode).white(),
+                };
+                let _ = self.term.write_line(&format!(
+                    "  {} {:<24} [{}] {}",
+                    style(">").cyan(),
+                    style(&step_name).white().bold(),
+                    style(&role).dim(),
+                    mode_styled,
+                ));
+            }
+
+            UiEvent::PlanStepCompleted {
+                step_name,
+                success,
+                duration_ms,
+            } => {
+                let icon = if success {
+                    style(self.icon_done()).green()
+                } else {
+                    style(self.icon_fail()).red()
+                };
+                let _ = self.term.write_line(&format!(
+                    "  {} {:<24} {}",
+                    icon,
+                    style(&step_name).white(),
+                    style(format!("{duration_ms}ms")).dim(),
+                ));
+            }
+
+            UiEvent::PlanReplanTriggered {
+                failed_step,
+                attempt,
+                new_step_count,
+            } => {
+                let _ = self.term.write_line(&format!(
+                    "  {} Replanning after '{}' failure (attempt {}/{}) — {} new steps",
+                    style(self.icon_warn()).yellow().bold(),
+                    style(&failed_step).red(),
+                    attempt,
+                    3,
+                    new_step_count,
+                ));
+            }
+
+            UiEvent::PlanVerifyGateFailed { step_name, error } => {
+                let error_short = if error.chars().count() > 60 {
+                    let truncated: String = error.chars().take(59).collect();
+                    format!("{truncated}…")
+                } else {
+                    error
+                };
+                let _ = self.term.write_line(&format!(
+                    "  {} Verify gate failed for '{}': {}",
+                    style(self.icon_fail()).red(),
+                    style(&step_name).bold(),
+                    style(&error_short).red(),
+                ));
+            }
+
+            UiEvent::TeamStatus {
+                team_name,
+                members,
+                communication,
+                completed,
+                total,
+                messages,
+            } => {
+                let _ = self.term.write_line(&format!(
+                    "\n  {} Team '{}' ({} members, {}) — {}/{} done, {} messages",
+                    style("T").magenta().bold(),
+                    style(&team_name).bold(),
+                    members,
+                    style(&communication).dim(),
+                    style(completed).green(),
+                    total,
+                    messages,
+                ));
+            }
+
             // ── Generic ───────────────────────────────────
             UiEvent::Info { message } => {
                 let _ = self.term.write_line(&message);

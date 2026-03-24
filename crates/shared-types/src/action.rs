@@ -1,10 +1,18 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// The six possible actions the orchestrator can select at each step.
+use crate::agent::AgentId;
+use crate::plan::AgentRole;
+
+/// Actions the orchestrator can select at each step.
+///
+/// The original six (Respond, Retrieve, ToolCall, Verify, UpdateMemory, Stop) handle
+/// the flat execution loop. The four new actions (Plan, Delegate, Message, Replan)
+/// enable emergent orchestration with execution plans, subagents, and team communication.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OrchestratorAction {
+    // -- Original actions (flat loop) --
     /// Respond directly to the user with generated content.
     Respond { content: String },
     /// Retrieve additional context (code, docs, search results).
@@ -27,6 +35,48 @@ pub enum OrchestratorAction {
     UpdateMemory { operation: MemoryOperation },
     /// Stop the current orchestration loop.
     Stop { reason: StopReason },
+
+    // -- Orchestration v2 actions (plan-based) --
+    /// Generate an execution plan for the current task.
+    /// Selected when: Medium+ complexity, no plan exists yet.
+    Plan { request: String },
+    /// Delegate a plan step to a subagent or teammate.
+    /// Selected when: plan exists, ready steps with Subagent/Teammate execution.
+    Delegate {
+        step_id: Uuid,
+        agent_role: AgentRole,
+        /// Filtered context to pass to the subagent/teammate.
+        context: Vec<String>,
+    },
+    /// Send a message to another agent (Agent Teams mesh communication).
+    /// Used for cross-agent coordination: status updates, API contracts, discoveries.
+    Message {
+        to_agent: AgentId,
+        content: String,
+        message_type: MessageType,
+    },
+    /// Replan from a failed step — generate replacement sub-plan.
+    /// Selected when: a plan step fails verification.
+    Replan {
+        failed_step_id: Uuid,
+        error_context: String,
+    },
+}
+
+/// Types of inter-agent messages (Agent Teams communication).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageType {
+    /// Progress update ("step X completed").
+    Status,
+    /// Needs information from another agent.
+    Question,
+    /// Found something relevant to share.
+    Discovery,
+    /// Passing work to the next agent in a pipeline.
+    Handoff,
+    /// Sharing an interface definition (e.g., API contract between frontend/backend).
+    ApiContract,
 }
 
 /// Operations the LLM can perform on working memory.
