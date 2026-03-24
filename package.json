@@ -1,0 +1,28 @@
+{
+  "name": "@anthropic-oco/claude-plugin",
+  "version": "0.1.0",
+  "description": "OCO Claude Code plugin — safety hooks, skills, agents, and MCP tools for any project",
+  "type": "module",
+  "bin": {
+    "oco-plugin": "./cli.mjs"
+  },
+  "files": [
+    "cli.mjs",
+    "plugin/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hoklims/oco.git"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "claude-code",
+    "mcp",
+    "orchestrator",
+    "code-intelligence",
+    "developer-tools"
+  ]
+}
