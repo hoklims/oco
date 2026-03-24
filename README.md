@@ -1,8 +1,31 @@
 # Open Context Orchestrator (OCO)
 
+[![CI](https://github.com/hoklims/oco/actions/workflows/ci.yml/badge.svg)](https://github.com/hoklims/oco/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/oco-claude-plugin)](https://www.npmjs.com/package/oco-claude-plugin)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 Intelligent orchestration middleware for IDE-based coding assistants.
 
 OCO sits between your IDE, an LLM, local tools, and context sources. It decides at each step whether to respond, retrieve context, call a tool, verify a result, or stop — producing structured decision traces for full auditability.
+
+## Claude Code Plugin
+
+Install OCO as a Claude Code plugin in any project — one command:
+
+```bash
+npx oco-claude-plugin install          # project-level
+npx oco-claude-plugin install --global # all projects
+npx oco-claude-plugin status           # check installation
+npx oco-claude-plugin uninstall        # clean removal
+```
+
+**What you get:**
+- **Safety hooks** — blocks destructive commands, protects sensitive files, detects loops, enforces verification before completion
+- **5 skills** — `/oco-inspect-repo-area`, `/oco-investigate-bug`, `/oco-safe-refactor`, `/oco-trace-stack`, `/oco-verify-fix`
+- **3 agents** — `codebase-investigator`, `patch-verifier`, `refactor-reviewer`
+- **MCP tools** — composite codebase search, error tracing, patch verification, findings collection
+
+Works immediately with Node.js only. No API key required. Enhanced features available when the `oco` binary is installed.
 
 ## Architecture
 
@@ -24,19 +47,20 @@ OCO sits between your IDE, an LLM, local tools, and context sources. It decides 
 
 ## Key Principles
 
-- **Provider-agnostic** — works with any LLM API
+- **Provider-agnostic** — works with Anthropic, Ollama, or any LLM API
 - **Local-first** — no cloud dependencies required
 - **Auditable** — every decision produces a structured trace
 - **Bounded** — explicit token, time, and tool-call budgets
 - **Graceful degradation** — works without ML components via heuristic fallbacks
+- **Deterministic policy** — no LLM calls for routing decisions
 
 ## Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Core runtime | Rust, Tokio, Axum |
+| Core runtime | Rust 1.85+, Tokio, Axum |
 | Storage | SQLite + FTS5 |
-| Code analysis | Tree-sitter |
+| Code analysis | Tree-sitter (regex fallback) |
 | IPC | gRPC / Protobuf |
 | IDE extension | TypeScript, VS Code API |
 | ML worker | Python, Sentence Transformers |
@@ -44,22 +68,75 @@ OCO sits between your IDE, an LLM, local tools, and context sources. It decides 
 
 ## Getting Started
 
-```bash
-# Prerequisites: Rust 1.85+, Node 20+, Python 3.11+, pnpm, uv
+### Prerequisites
 
-# Build Rust crates
+- Rust 1.85+ (edition 2024)
+- Node 20+ (for Claude Code plugin)
+- Python 3.11+ and uv (optional, for ML worker)
+- pnpm (optional, for VS Code extension)
+
+### Build from source
+
+```bash
+git clone https://github.com/hoklims/oco.git
+cd oco
+
+# Build all Rust crates
 cargo build
 
-# Setup Python ML worker
-cd py/ml-worker && uv sync
+# Run the test suite (110+ tests)
+cargo test
 
-# Setup VS Code extension
-cd apps/vscode-extension && pnpm install
-
-# Run dev CLI
+# Run the CLI
 cargo run -p oco-dev-cli -- --help
 ```
 
+### Optional components
+
+```bash
+# Python ML worker (embeddings & reranking)
+cd py/ml-worker && uv sync
+
+# VS Code extension
+cd apps/vscode-extension && pnpm install
+```
+
+### Quick usage
+
+```bash
+oco index ./my-project                    # Index a workspace
+oco search "auth handler" --workspace .   # Full-text search
+oco run "fix the login bug" --workspace . # Orchestrate
+oco serve --port 3000                     # Start HTTP/MCP server
+oco doctor --workspace .                  # Check health
+oco eval scenarios.jsonl                  # Run evaluations
+```
+
+## Configuration
+
+Runtime config in `oco.toml`. See [`examples/oco.toml`](examples/oco.toml) for a documented template.
+
+### LLM Providers
+
+| Provider | Config | Requirements |
+|----------|--------|--------------|
+| `stub` | `provider = "stub"` | None |
+| `anthropic` | `provider = "anthropic"` | `ANTHROPIC_API_KEY` env var |
+| `ollama` | `provider = "ollama"` | Local Ollama at `localhost:11434` |
+
+## Documentation
+
+- [Architecture overview](docs/architecture/overview.md)
+- [Architecture Decision Records](docs/adr/)
+- [Feature specifications](docs/specs/)
+- [Claude Code integration](.claude/README.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, conventions, and workflow.
+
 ## License
 
-Apache-2.0
+[Apache-2.0](LICENSE)
