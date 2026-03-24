@@ -80,7 +80,7 @@ class Embedder:
 class EmbedResult:
     """Result of an embedding operation."""
 
-    __slots__ = ("embeddings", "model_name", "duration_ms", "dimensions")
+    __slots__ = ("dimensions", "duration_ms", "embeddings", "model_name")
 
     def __init__(
         self,
