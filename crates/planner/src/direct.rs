@@ -5,9 +5,9 @@ use oco_shared_types::{
     AgentRole, ExecutionPlan, PlanStep, PlanStrategy, StepExecution, TaskCategory, TaskComplexity,
 };
 
+use crate::Planner;
 use crate::context::PlanningContext;
 use crate::error::PlannerError;
-use crate::Planner;
 
 /// Planner for simple tasks: returns a single-step direct plan.
 /// No LLM call, deterministic, instant.
@@ -88,14 +88,12 @@ fn role_for_category(category: TaskCategory) -> (AgentRole, Vec<String>, bool) {
                 "file_edit".into(),
                 "shell_exec".into(),
             ]),
-            vec![],      // all tools
-            true,        // verify after fix
+            vec![], // all tools
+            true,   // verify after fix
         ),
         TaskCategory::Refactor => (
-            AgentRole::new("refactorer").with_capabilities(vec![
-                "code_search".into(),
-                "file_edit".into(),
-            ]),
+            AgentRole::new("refactorer")
+                .with_capabilities(vec!["code_search".into(), "file_edit".into()]),
             vec![],
             true,
         ),
@@ -131,34 +129,24 @@ fn role_for_category(category: TaskCategory) -> (AgentRole, Vec<String>, bool) {
             false,
         ),
         TaskCategory::Testing => (
-            AgentRole::new("tester").with_capabilities(vec![
-                "file_edit".into(),
-                "shell_exec".into(),
-            ]),
+            AgentRole::new("tester")
+                .with_capabilities(vec!["file_edit".into(), "shell_exec".into()]),
             vec![],
             true,
         ),
         TaskCategory::Frontend => (
-            AgentRole::new("frontend-dev").with_capabilities(vec![
-                "file_edit".into(),
-                "code_search".into(),
-            ]),
+            AgentRole::new("frontend-dev")
+                .with_capabilities(vec!["file_edit".into(), "code_search".into()]),
             vec![],
             true,
         ),
         TaskCategory::DevOps => (
-            AgentRole::new("devops").with_capabilities(vec![
-                "shell_exec".into(),
-                "file_edit".into(),
-            ]),
+            AgentRole::new("devops")
+                .with_capabilities(vec!["shell_exec".into(), "file_edit".into()]),
             vec![],
             true,
         ),
-        TaskCategory::General => (
-            AgentRole::new("general"),
-            vec![],
-            false,
-        ),
+        TaskCategory::General => (AgentRole::new("general"), vec![], false),
     }
 }
 
@@ -196,7 +184,10 @@ mod tests {
         let ctx = PlanningContext::minimal(TaskComplexity::Low, TaskCategory::Security);
         let plan = planner.plan("check for XSS", &ctx).await.unwrap();
 
-        assert_eq!(plan.steps[0].agent_role.preferred_model.as_deref(), Some("opus"));
+        assert_eq!(
+            plan.steps[0].agent_role.preferred_model.as_deref(),
+            Some("opus")
+        );
         assert!(plan.steps[0].agent_role.read_only);
     }
 
@@ -207,7 +198,12 @@ mod tests {
         let original = planner.plan("fix the bug", &ctx).await.unwrap();
 
         let replan = planner
-            .replan(&original, &original.steps[0], "test failed: assertion error", &ctx)
+            .replan(
+                &original,
+                &original.steps[0],
+                "test failed: assertion error",
+                &ctx,
+            )
             .await
             .unwrap();
 

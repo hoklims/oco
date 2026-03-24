@@ -93,10 +93,7 @@ impl StepContextBuilder {
 
 /// Build the step-specific system prompt.
 fn build_step_prompt(step: &PlanStep) -> String {
-    let mut prompt = format!(
-        "## Current Step: {}\n\n{}\n",
-        step.name, step.description
-    );
+    let mut prompt = format!("## Current Step: {}\n\n{}\n", step.name, step.description);
 
     // Role instructions
     prompt.push_str(&format!("\n### Role: {}\n", step.agent_role.name));
@@ -251,9 +248,8 @@ mod tests {
         let (plan, _, b_id) = simple_plan();
         let step = plan.get_step(b_id).unwrap();
 
-        let builder = StepContextBuilder::build_for_step(
-            step, &plan, "add JWT auth", None, None, 10_000, 1,
-        );
+        let builder =
+            StepContextBuilder::build_for_step(step, &plan, "add JWT auth", None, None, 10_000, 1);
         let ctx = builder.build();
 
         // Should have user request + step prompt + dependency output
@@ -267,9 +263,8 @@ mod tests {
         let (plan, _, b_id) = simple_plan();
         let step = plan.get_step(b_id).unwrap();
 
-        let builder = StepContextBuilder::build_for_step(
-            step, &plan, "add JWT auth", None, None, 10_000, 1,
-        );
+        let builder =
+            StepContextBuilder::build_for_step(step, &plan, "add JWT auth", None, None, 10_000, 1);
         let ctx = builder.build();
 
         // Should include output from completed dependency
@@ -288,9 +283,8 @@ mod tests {
         let plan = ExecutionPlan::new(vec![a, b], PlanStrategy::Direct);
         let step = plan.get_step(b_id).unwrap();
 
-        let builder = StepContextBuilder::build_for_step(
-            step, &plan, "fix the bug", None, None, 10_000, 2,
-        );
+        let builder =
+            StepContextBuilder::build_for_step(step, &plan, "fix the bug", None, None, 10_000, 2);
         let ctx = builder.build();
 
         // Error should be in context
@@ -334,9 +328,8 @@ mod tests {
             .with_role(AgentRole::new("reviewer").read_only());
         let plan = ExecutionPlan::new(vec![step.clone()], PlanStrategy::Direct);
 
-        let builder = StepContextBuilder::build_for_step(
-            &step, &plan, "review auth", None, None, 10_000, 0,
-        );
+        let builder =
+            StepContextBuilder::build_for_step(&step, &plan, "review auth", None, None, 10_000, 0);
         let ctx = builder.build();
 
         assert!(ctx.items.iter().any(|i| i.content.contains("READ ONLY")));
@@ -354,7 +347,7 @@ mod tests {
         // big should get more budget than small
         assert!(budget_b > budget_a);
         // Both should be within bounds
-        assert!(budget_a >= 5_000);  // min 10%
+        assert!(budget_a >= 5_000); // min 10%
         assert!(budget_b <= 40_000); // max 80%
     }
 
@@ -375,9 +368,7 @@ mod tests {
         let b = PlanStep::new("after", "Depends on pending").with_depends_on(vec![a.id]);
         let plan = ExecutionPlan::new(vec![a, b.clone()], PlanStrategy::Direct);
 
-        let builder = StepContextBuilder::build_for_step(
-            &b, &plan, "task", None, None, 10_000, 0,
-        );
+        let builder = StepContextBuilder::build_for_step(&b, &plan, "task", None, None, 10_000, 0);
         let ctx = builder.build();
 
         // Should NOT have any dependency output (a is still pending)

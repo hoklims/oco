@@ -190,8 +190,8 @@ mod tests {
     #[test]
     fn heuristic_selects_haiku_for_explorer() {
         let router = make_router();
-        let step = PlanStep::new("explore", "Search codebase")
-            .with_role(AgentRole::new("explorer"));
+        let step =
+            PlanStep::new("explore", "Search codebase").with_role(AgentRole::new("explorer"));
 
         let provider = router.for_step(&step, 1.0);
         assert_eq!(provider.model_name(), "haiku");
@@ -200,8 +200,7 @@ mod tests {
     #[test]
     fn heuristic_selects_sonnet_for_coder() {
         let router = make_router();
-        let step =
-            PlanStep::new("implement", "Write code").with_role(AgentRole::new("coder"));
+        let step = PlanStep::new("implement", "Write code").with_role(AgentRole::new("coder"));
 
         let provider = router.for_step(&step, 1.0);
         assert_eq!(provider.model_name(), "sonnet");
@@ -210,8 +209,7 @@ mod tests {
     #[test]
     fn heuristic_selects_opus_for_architect() {
         let router = make_router();
-        let step =
-            PlanStep::new("design", "System design").with_role(AgentRole::new("architect"));
+        let step = PlanStep::new("design", "System design").with_role(AgentRole::new("architect"));
 
         let provider = router.for_step(&step, 1.0);
         assert_eq!(provider.model_name(), "opus");
@@ -220,8 +218,7 @@ mod tests {
     #[test]
     fn budget_downgrade_to_haiku() {
         let router = make_router();
-        let step =
-            PlanStep::new("implement", "Write code").with_role(AgentRole::new("coder"));
+        let step = PlanStep::new("implement", "Write code").with_role(AgentRole::new("coder"));
 
         // Normal budget → sonnet
         assert_eq!(router.for_step(&step, 0.8).model_name(), "sonnet");
@@ -243,8 +240,8 @@ mod tests {
     #[test]
     fn unknown_role_defaults_to_sonnet() {
         let router = make_router();
-        let step = PlanStep::new("mystery", "Unknown role")
-            .with_role(AgentRole::new("some-custom-role"));
+        let step =
+            PlanStep::new("mystery", "Unknown role").with_role(AgentRole::new("some-custom-role"));
 
         let provider = router.for_step(&step, 1.0);
         assert_eq!(provider.model_name(), "sonnet");

@@ -248,10 +248,13 @@ impl CapabilityRegistry {
             })
             .collect();
 
+        // Deterministic sort: score desc → cost tier asc → id asc (fix #20)
         matches.sort_by(|a, b| {
             b.selection_score()
                 .partial_cmp(&a.selection_score())
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.cost.tier.cmp(&b.cost.tier))
+                .then_with(|| a.id.cmp(&b.id))
         });
 
         matches
@@ -423,12 +426,7 @@ impl CapabilityRegistry {
     }
 
     /// Register an LLM provider.
-    pub fn register_llm(
-        &mut self,
-        provider: &str,
-        model: &str,
-        cost_tier: CostTier,
-    ) {
+    pub fn register_llm(&mut self, provider: &str, model: &str, cost_tier: CostTier) {
         self.register(CapabilityDescriptor {
             id: format!("llm:{provider}:{model}"),
             name: format!("{provider}/{model}"),
@@ -654,7 +652,11 @@ mod tests {
     #[test]
     fn query_by_capability() {
         let mut reg = CapabilityRegistry::new();
-        reg.register_skill("review", vec!["code_review".into(), "security".into()], CostTier::Moderate);
+        reg.register_skill(
+            "review",
+            vec!["code_review".into(), "security".into()],
+            CostTier::Moderate,
+        );
         reg.register_skill("tdd", vec!["testing".into()], CostTier::Cheap);
 
         let results = reg.query(&["code_review".into()], &[]);
@@ -739,6 +741,33 @@ mod tests {
         // Expert: 0.95 * 0.7 + 0.5 * 0.3 = 0.665 + 0.15 = 0.815
         // Basic:  0.5 * 0.7 + 1.0 * 0.3 = 0.35 + 0.3 = 0.65
         assert_eq!(best.id, "a", "expert should win on proficiency");
+    }
+
+    #[test]
+    fn best_for_deterministic_on_tied_scores() {
+        let mut reg = CapabilityRegistry::new();
+
+        // Two capabilities with identical proficiency and cost → same score
+        for id in ["beta", "alpha"] {
+            reg.register(CapabilityDescriptor {
+                id: id.into(),
+                name: id.into(),
+                kind: CapabilityKind::Tool {
+                    executor: id.into(),
+                },
+                capabilities: vec!["search".into()],
+                cost: CapabilityCost::new(CostTier::Free),
+                constraints: Vec::new(),
+                proficiency: 0.8,
+                available: true,
+            });
+        }
+
+        // Must always return "alpha" (lexicographic tie-break on id)
+        for _ in 0..10 {
+            let best = reg.best_for("search").unwrap();
+            assert_eq!(best.id, "alpha", "tie-breaking must be deterministic by id");
+        }
     }
 
     // -- by_kind --

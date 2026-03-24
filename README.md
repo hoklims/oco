@@ -85,7 +85,7 @@ cd oco
 # Build all Rust crates
 cargo build
 
-# Run the test suite (226+ tests)
+# Run the test suite (352+ tests)
 cargo test
 
 # Run the CLI
