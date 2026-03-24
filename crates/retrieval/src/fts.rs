@@ -58,7 +58,10 @@ impl FtsIndex {
     /// it is deleted first (upsert semantics).
     #[instrument(skip(self, content), fields(id, path))]
     pub fn index_document(&self, id: &str, path: &str, content: &str) -> Result<()> {
-        let conn = self.conn.lock().expect("FtsIndex mutex poisoned");
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| RetrievalError::SearchError("FTS index lock poisoned".into()))?;
         conn.execute("DELETE FROM documents WHERE id = ?1", [id])?;
         conn.execute(
             "INSERT INTO documents (id, path, content) VALUES (?1, ?2, ?3)",
@@ -73,7 +76,10 @@ impl FtsIndex {
     /// Each tuple is `(id, path, content)`.
     #[instrument(skip_all, fields(count = docs.len()))]
     pub fn index_documents_batch(&self, docs: Vec<(String, String, String)>) -> Result<()> {
-        let conn = self.conn.lock().expect("FtsIndex mutex poisoned");
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| RetrievalError::SearchError("FTS index lock poisoned".into()))?;
         let tx = conn.unchecked_transaction()?;
         {
             let mut delete_stmt = tx.prepare("DELETE FROM documents WHERE id = ?1")?;
@@ -109,7 +115,10 @@ impl FtsIndex {
             return Ok(Vec::new());
         }
 
-        let conn = self.conn.lock().expect("FtsIndex mutex poisoned");
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| RetrievalError::SearchError("FTS index lock poisoned".into()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, path, snippet(documents, 2, '<b>', '</b>', '...', 48), rank

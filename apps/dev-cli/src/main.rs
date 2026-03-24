@@ -425,15 +425,19 @@ async fn cmd_run(
         });
     }
 
-    // Save run artifacts to .oco/runs/<session_id>/
-    save_run_artifacts(
+    // Save run artifacts — non-fatal, warn on failure
+    if let Err(e) = save_run_artifacts(
         &session_id,
         &state,
         &trace_events,
         run_duration,
         success,
         &final_response,
-    )?;
+    ) {
+        r.emit(UiEvent::Warning {
+            message: format!("Failed to save run artifacts: {e}"),
+        });
+    }
 
     Ok(())
 }

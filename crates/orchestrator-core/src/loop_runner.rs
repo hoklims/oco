@@ -128,7 +128,28 @@ impl OrchestrationLoop {
     }
 
     /// Run the orchestration loop for a given user request.
+    /// Guarantees a `Stopped` event is emitted even if the loop errors out.
     pub async fn run(
+        &mut self,
+        user_request: String,
+        workspace_root: Option<String>,
+    ) -> Result<OrchestrationState, OrchestratorError> {
+        let result = self.run_inner(user_request, workspace_root).await;
+        // Emit Stopped on error paths where run_inner didn't reach its own Stopped
+        if let Err(ref e) = result {
+            self.emit_event(OrchestrationEvent::Stopped {
+                reason: StopReason::Error {
+                    message: e.to_string(),
+                },
+                total_steps: 0,
+                total_tokens: 0,
+            });
+        }
+        result
+    }
+
+    /// Inner run implementation.
+    async fn run_inner(
         &mut self,
         user_request: String,
         workspace_root: Option<String>,
