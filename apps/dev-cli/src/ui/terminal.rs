@@ -345,22 +345,67 @@ impl Renderer for TerminalRenderer {
             }
 
             // ── Plan Orchestration ────────────────────────
-            UiEvent::PlanGenerated {
+            UiEvent::PlanOverview {
                 step_count,
                 parallel_groups,
+                critical_path_length,
+                estimated_tokens,
+                budget_tokens,
                 strategy,
-                has_team,
+                team,
+                steps,
             } => {
-                let team_indicator = if has_team { " + team" } else { "" };
+                let _ = self.term.write_line("");
+                let team_str = if let Some((name, topo, count)) = &team {
+                    format!(" + {topo} team '{name}' ({count} members)")
+                } else {
+                    String::new()
+                };
                 let _ = self.term.write_line(&format!(
-                    "\n  {} Plan generated ({} steps, {} parallel groups, {}{}){}",
+                    "  {} Plan: {} steps, {} parallel groups, critical path: {}{}",
                     style("*").cyan().bold(),
                     style(step_count).bold(),
                     style(parallel_groups).bold(),
-                    style(&strategy).dim(),
-                    team_indicator,
-                    "",
+                    style(critical_path_length).bold(),
+                    style(&team_str).dim(),
                 ));
+
+                // Build step index for dep name lookup
+                let step_names: std::collections::HashMap<uuid::Uuid, &str> =
+                    steps.iter().map(|s| (s.id, s.name.as_str())).collect();
+
+                // Render each step with deps
+                for (i, step) in steps.iter().enumerate() {
+                    let model_str = step.preferred_model.as_deref().unwrap_or("default");
+                    let verify_marker = if step.verify_after { " +verify" } else { "" };
+                    let dep_names: Vec<&str> = step
+                        .depends_on
+                        .iter()
+                        .filter_map(|d| step_names.get(d).copied())
+                        .collect();
+                    let dep_str = if dep_names.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {} depends: {}", style("<-").dim(), dep_names.join(", "))
+                    };
+
+                    let _ = self.term.write_line(&format!(
+                        "    {} {:<28} ({}, {}{}){dep_str}",
+                        style(format!("[{}]", i + 1)).dim(),
+                        style(&step.name).white().bold(),
+                        style(model_str).dim(),
+                        style(&step.execution_mode).dim(),
+                        style(verify_marker).yellow(),
+                    ));
+                }
+
+                let _ = self.term.write_line(&format!(
+                    "    Budget: ~{}k est. / {}k available  Strategy: {}",
+                    estimated_tokens / 1000,
+                    budget_tokens / 1000,
+                    style(&strategy).dim(),
+                ));
+                let _ = self.term.write_line("");
             }
 
             UiEvent::PlanStepStarted {
@@ -388,47 +433,115 @@ impl Renderer for TerminalRenderer {
                 step_name,
                 success,
                 duration_ms,
+                tokens_used,
             } => {
                 let icon = if success {
                     style(self.icon_done()).green()
                 } else {
                     style(self.icon_fail()).red()
                 };
+                let tok_str = if tokens_used > 0 {
+                    format!("  {}tok", tokens_used)
+                } else {
+                    String::new()
+                };
                 let _ = self.term.write_line(&format!(
-                    "  {} {:<24} {}",
+                    "  {} {:<24} {}{}",
                     icon,
                     style(&step_name).white(),
                     style(format!("{duration_ms}ms")).dim(),
+                    style(&tok_str).dim(),
                 ));
+            }
+
+            UiEvent::PlanProgress {
+                completed,
+                total,
+                active_steps,
+                budget_used_pct,
+            } => {
+                let pct = if total > 0 {
+                    completed as f32 / total as f32
+                } else {
+                    0.0
+                };
+                let filled = (pct * 10.0) as usize;
+                let empty = 10_usize.saturating_sub(filled);
+                let bar = format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty));
+                let active_str = if active_steps.is_empty() {
+                    String::new()
+                } else {
+                    format!("  Active: {}", active_steps.join(", "))
+                };
+                let _ = self.term.write_line(&format!(
+                    "  [{completed}/{total}] {bar} {:.0}%{active_str}  Budget: {budget_used_pct:.0}%",
+                    pct * 100.0,
+                ));
+            }
+
+            UiEvent::PlanVerifyGateResult {
+                step_name,
+                checks,
+                overall_passed,
+                replan_triggered,
+            } => {
+                let icon = if overall_passed {
+                    style(self.icon_pass()).green()
+                } else {
+                    style(self.icon_fail()).red()
+                };
+                let _ = self.term.write_line(&format!(
+                    "  {} Verify [{}]:",
+                    icon,
+                    style(&step_name).bold(),
+                ));
+                for (check_type, passed, summary) in &checks {
+                    let check_icon = if *passed {
+                        style(self.icon_pass()).green()
+                    } else {
+                        style(self.icon_fail()).red()
+                    };
+                    let summary_short = if summary.chars().count() > 60 {
+                        let truncated: String = summary.chars().take(59).collect();
+                        format!("{truncated}…")
+                    } else {
+                        summary.clone()
+                    };
+                    let _ = self.term.write_line(&format!(
+                        "    {} {}: {}",
+                        check_icon,
+                        check_type,
+                        style(&summary_short).dim(),
+                    ));
+                }
+                if replan_triggered {
+                    let _ = self.term.write_line(&format!(
+                        "    {} Replan triggered",
+                        style("->").yellow().bold(),
+                    ));
+                }
             }
 
             UiEvent::PlanReplanTriggered {
                 failed_step,
                 attempt,
-                new_step_count,
+                max_attempts,
+                steps_preserved,
+                steps_removed,
+                steps_added,
             } => {
                 let _ = self.term.write_line(&format!(
-                    "  {} Replanning after '{}' failure (attempt {}/{}) — {} new steps",
+                    "  {} Replan (attempt {}/{}):",
                     style(self.icon_warn()).yellow().bold(),
-                    style(&failed_step).red(),
                     attempt,
-                    3,
-                    new_step_count,
+                    max_attempts,
                 ));
-            }
-
-            UiEvent::PlanVerifyGateFailed { step_name, error } => {
-                let error_short = if error.chars().count() > 60 {
-                    let truncated: String = error.chars().take(59).collect();
-                    format!("{truncated}…")
-                } else {
-                    error
-                };
                 let _ = self.term.write_line(&format!(
-                    "  {} Verify gate failed for '{}': {}",
-                    style(self.icon_fail()).red(),
-                    style(&step_name).bold(),
-                    style(&error_short).red(),
+                    "    Failed: '{}'  Kept: {}  Removed: {}  Added: {}",
+                    style(&failed_step).red(),
+                    style(steps_preserved).green(),
+                    style(steps_removed).red(),
+                    style(steps_added).cyan(),
                 ));
             }
 

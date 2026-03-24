@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
+use crate::TaskComplexity;
 use crate::agent::AgentId;
 
 // ---------------------------------------------------------------------------
@@ -327,6 +328,37 @@ impl ExecutionPlan {
         self.steps.iter().map(|s| s.estimated_tokens).sum()
     }
 
+    /// Maximum allowed steps for a given complexity tier.
+    /// Enforced at plan validation time to prevent over-planning.
+    pub fn max_steps_for_complexity(complexity: TaskComplexity) -> usize {
+        match complexity {
+            TaskComplexity::Trivial => 1,
+            TaskComplexity::Low => 3,
+            TaskComplexity::Medium => 7,
+            TaskComplexity::High => 10,
+            TaskComplexity::Critical => 15,
+        }
+    }
+
+    /// Check whether this plan exceeds the step limit for the given complexity.
+    /// Returns the count of active (non-Replanned) steps vs the max allowed.
+    pub fn check_step_limit(&self, complexity: TaskComplexity) -> Result<(), PlanValidationError> {
+        let max = Self::max_steps_for_complexity(complexity);
+        let active_count = self
+            .steps
+            .iter()
+            .filter(|s| s.status != StepStatus::Replanned)
+            .count();
+        if active_count > max {
+            return Err(PlanValidationError::TooManySteps {
+                count: active_count,
+                max,
+                complexity: format!("{complexity:?}"),
+            });
+        }
+        Ok(())
+    }
+
     /// Validate the DAG structure: cycles, dangling deps, duplicate IDs.
     pub fn validate(&self) -> Result<(), PlanValidationError> {
         // Check for duplicate step IDs first (HashSet dedup would hide them)
@@ -567,6 +599,12 @@ pub enum PlanValidationError {
     DanglingDependency { step_id: Uuid, missing_dep: Uuid },
     #[error("duplicate step ID in plan")]
     DuplicateStepId,
+    #[error("too many steps: {count} exceeds max {max} for {complexity} complexity")]
+    TooManySteps {
+        count: usize,
+        max: usize,
+        complexity: String,
+    },
 }
 
 /// Non-fatal warnings from semantic validation.
@@ -910,5 +948,55 @@ mod tests {
             },
         );
         assert!(matches!(plan.strategy, PlanStrategy::Replanned { .. }));
+    }
+
+    // -- Step limit enforcement --
+
+    #[test]
+    fn step_limit_values() {
+        assert_eq!(
+            ExecutionPlan::max_steps_for_complexity(TaskComplexity::Trivial),
+            1
+        );
+        assert_eq!(
+            ExecutionPlan::max_steps_for_complexity(TaskComplexity::Low),
+            3
+        );
+        assert_eq!(
+            ExecutionPlan::max_steps_for_complexity(TaskComplexity::Medium),
+            7
+        );
+        assert_eq!(
+            ExecutionPlan::max_steps_for_complexity(TaskComplexity::High),
+            10
+        );
+        assert_eq!(
+            ExecutionPlan::max_steps_for_complexity(TaskComplexity::Critical),
+            15
+        );
+    }
+
+    #[test]
+    fn check_step_limit_passes_within_bound() {
+        let steps: Vec<PlanStep> = (0..5).map(|i| step(&format!("s{i}"))).collect();
+        let plan = ExecutionPlan::new(steps, PlanStrategy::Direct);
+        assert!(plan.check_step_limit(TaskComplexity::Medium).is_ok());
+    }
+
+    #[test]
+    fn check_step_limit_fails_over_bound() {
+        let steps: Vec<PlanStep> = (0..8).map(|i| step(&format!("s{i}"))).collect();
+        let plan = ExecutionPlan::new(steps, PlanStrategy::Direct);
+        assert!(plan.check_step_limit(TaskComplexity::Medium).is_err());
+    }
+
+    #[test]
+    fn check_step_limit_ignores_replanned_steps() {
+        let mut steps: Vec<PlanStep> = (0..8).map(|i| step(&format!("s{i}"))).collect();
+        // Mark 2 as replanned — only 6 active, within Medium limit of 7
+        steps[6].status = StepStatus::Replanned;
+        steps[7].status = StepStatus::Replanned;
+        let plan = ExecutionPlan::new(steps, PlanStrategy::Direct);
+        assert!(plan.check_step_limit(TaskComplexity::Medium).is_ok());
     }
 }

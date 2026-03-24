@@ -1,5 +1,20 @@
 use std::path::PathBuf;
 
+use uuid::Uuid;
+
+/// Summary of a step for DAG display in the plan overview.
+#[derive(Debug, Clone)]
+pub struct UiStepSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub role: String,
+    pub execution_mode: String,
+    pub depends_on: Vec<Uuid>,
+    pub verify_after: bool,
+    pub estimated_tokens: u32,
+    pub preferred_model: Option<String>,
+}
+
 /// Structured events emitted by CLI commands.
 /// The core never knows how these are rendered — that's the renderer's job.
 #[derive(Debug, Clone)]
@@ -94,31 +109,59 @@ pub enum UiEvent {
     },
 
     // ── Plan Orchestration ────────────────────────────────
-    PlanGenerated {
+    /// Full plan overview with DAG structure — shown once at plan start.
+    PlanOverview {
         step_count: usize,
         parallel_groups: usize,
+        critical_path_length: u32,
+        estimated_tokens: u32,
+        budget_tokens: u64,
         strategy: String,
-        has_team: bool,
+        team: Option<(String, String, usize)>, // (name, topology, member_count)
+        steps: Vec<UiStepSummary>,
     },
+
+    /// A plan step started executing.
     PlanStepStarted {
         step_name: String,
         role: String,
         execution_mode: String,
     },
+
+    /// A plan step completed (success or failure).
     PlanStepCompleted {
         step_name: String,
         success: bool,
         duration_ms: u64,
+        tokens_used: u32,
     },
+
+    /// Live progress bar during plan execution.
+    PlanProgress {
+        completed: usize,
+        total: usize,
+        active_steps: Vec<String>,
+        budget_used_pct: f32,
+    },
+
+    /// A verify gate was evaluated.
+    PlanVerifyGateResult {
+        step_name: String,
+        checks: Vec<(String, bool, String)>, // (check_type, passed, summary)
+        overall_passed: bool,
+        replan_triggered: bool,
+    },
+
+    /// Replanning triggered — shows what changed.
     PlanReplanTriggered {
         failed_step: String,
         attempt: u32,
-        new_step_count: usize,
+        max_attempts: u32,
+        steps_preserved: usize,
+        steps_removed: usize,
+        steps_added: usize,
     },
-    PlanVerifyGateFailed {
-        step_name: String,
-        error: String,
-    },
+
     TeamStatus {
         team_name: String,
         members: u32,
