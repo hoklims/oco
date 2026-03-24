@@ -1,6 +1,8 @@
 use oco_shared_types::{ToolDescriptor, ToolGateDecision};
 use serde::{Deserialize, Serialize};
 
+use crate::secret_scanner;
+
 /// Write policy levels controlling how destructive actions are handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -98,9 +100,25 @@ impl PolicyGate {
         }
     }
 
-    /// Evaluate a raw command string against destructive patterns.
+    /// Evaluate a raw command string against destructive patterns and secret scanning.
     /// Useful for shell/exec tool calls where the actual command is in the arguments.
     pub fn evaluate_command(&self, command: &str) -> ToolGateDecision {
+        // Always scan for secrets, regardless of policy level.
+        let scan = secret_scanner::scan_secrets(command);
+        if scan.has_secrets {
+            let secret_names: Vec<&str> = scan
+                .matches
+                .iter()
+                .map(|m| m.pattern_name.as_str())
+                .collect();
+            return ToolGateDecision::Deny {
+                reason: format!(
+                    "command contains embedded secrets: {}. Use environment variables instead",
+                    secret_names.join(", ")
+                ),
+            };
+        }
+
         match self.policy {
             WritePolicy::AllowAll => ToolGateDecision::Allow,
 
@@ -308,6 +326,38 @@ mod tests {
         ));
         assert!(matches!(
             gate.evaluate_command("echo hello"),
+            ToolGateDecision::Allow
+        ));
+    }
+
+    #[test]
+    fn secret_scanning_blocks_api_keys() {
+        // Secret scanning applies regardless of policy level
+        let gate = PolicyGate::new(WritePolicy::AllowAll);
+        let result = gate.evaluate_command("curl -H 'Authorization: Bearer sk-ant-api03-abcdefghijklmnopqrstuvwx' https://api.example.com");
+        assert!(matches!(result, ToolGateDecision::Deny { .. }));
+        if let ToolGateDecision::Deny { reason } = result {
+            assert!(reason.contains("secrets"));
+        }
+    }
+
+    #[test]
+    fn secret_scanning_blocks_connection_strings() {
+        let gate = PolicyGate::new(WritePolicy::AllowAll);
+        let result =
+            gate.evaluate_command("psql postgres://admin:password123@prod.db.example.com/mydb");
+        assert!(matches!(result, ToolGateDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn clean_commands_pass_secret_scan() {
+        let gate = PolicyGate::new(WritePolicy::AllowAll);
+        assert!(matches!(
+            gate.evaluate_command("cargo test --release"),
+            ToolGateDecision::Allow
+        ));
+        assert!(matches!(
+            gate.evaluate_command("git log --oneline -10"),
             ToolGateDecision::Allow
         ));
     }

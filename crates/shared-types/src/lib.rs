@@ -5,6 +5,7 @@
 //! working memory, verification state, repo profiles, and replay scenarios.
 
 pub mod action;
+pub mod agent;
 pub mod budget;
 pub mod context;
 pub mod memory;
@@ -17,6 +18,7 @@ pub mod tool;
 pub mod verification;
 
 pub use action::*;
+pub use agent::*;
 pub use budget::*;
 pub use context::*;
 pub use memory::*;
