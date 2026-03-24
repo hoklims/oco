@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -60,8 +59,8 @@ _reranker: Reranker | None = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: ARG001
-    global _embedder, _reranker  # noqa: PLW0603
+async def lifespan(app: FastAPI):
+    global _embedder, _reranker
     _embedder = Embedder(_config.models)
     _reranker = Reranker(_config.models)
 
