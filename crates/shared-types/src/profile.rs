@@ -30,6 +30,25 @@ pub struct RepoProfile {
     pub custom_verifications: Vec<CustomVerification>,
     /// Key-value metadata for extensibility.
     pub metadata: HashMap<String, String>,
+    /// Per-task-type verification policies.
+    pub task_policies: Vec<TaskTypePolicy>,
+}
+
+/// Verification policy for a specific type of task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskTypePolicy {
+    /// Task pattern to match (e.g. "debug", "refactor", "implement", "review").
+    pub task_pattern: String,
+    /// Override risk level for this task type.
+    pub risk_level: Option<RiskLevel>,
+    /// Required verification steps before completion.
+    pub required_checks: Vec<String>,
+    /// Maximum steps allowed for this task type (0 = no limit).
+    #[serde(default)]
+    pub max_steps: u32,
+    /// Context priority paths specific to this task type.
+    #[serde(default)]
+    pub priority_paths: Vec<String>,
 }
 
 /// Risk level affects how aggressively verification is enforced.
@@ -166,6 +185,47 @@ impl RepoProfile {
             profile.stack = "unknown".into();
         }
 
+        // Default task policies based on common patterns.
+        if profile.task_policies.is_empty() {
+            profile.task_policies = vec![
+                TaskTypePolicy {
+                    task_pattern: "debug".into(),
+                    risk_level: Some(RiskLevel::Standard),
+                    required_checks: vec!["test".into()],
+                    max_steps: 0,
+                    priority_paths: vec!["src/".into(), "tests/".into()],
+                },
+                TaskTypePolicy {
+                    task_pattern: "refactor".into(),
+                    risk_level: Some(RiskLevel::High),
+                    required_checks: vec!["build".into(), "test".into(), "lint".into()],
+                    max_steps: 0,
+                    priority_paths: vec![],
+                },
+                TaskTypePolicy {
+                    task_pattern: "implement".into(),
+                    risk_level: Some(RiskLevel::Standard),
+                    required_checks: vec!["build".into(), "test".into()],
+                    max_steps: 0,
+                    priority_paths: vec![],
+                },
+                TaskTypePolicy {
+                    task_pattern: "review".into(),
+                    risk_level: Some(RiskLevel::Low),
+                    required_checks: vec![],
+                    max_steps: 20,
+                    priority_paths: vec![],
+                },
+                TaskTypePolicy {
+                    task_pattern: "security".into(),
+                    risk_level: Some(RiskLevel::Critical),
+                    required_checks: vec!["build".into(), "test".into(), "lint".into(), "typecheck".into()],
+                    max_steps: 0,
+                    priority_paths: vec![".env".into(), "auth".into(), "crypto".into()],
+                },
+            ];
+        }
+
         profile
     }
 
@@ -206,6 +266,15 @@ impl RepoProfile {
         for (k, v) in &other.metadata {
             self.metadata.insert(k.clone(), v.clone());
         }
+    }
+
+    /// Find the task policy matching a user request (by keyword).
+    /// Returns the first matching policy, or `None` if no pattern matches.
+    pub fn matching_policy(&self, user_request: &str) -> Option<&TaskTypePolicy> {
+        let lower = user_request.to_lowercase();
+        self.task_policies
+            .iter()
+            .find(|p| lower.contains(&p.task_pattern))
     }
 
     /// Check if a path matches any sensitive path pattern.
@@ -253,6 +322,33 @@ mod tests {
         assert_eq!(base.stack, "rust"); // not overridden (other is "unknown")
         assert_eq!(base.test_command.as_deref(), Some("cargo nextest run"));
         assert_eq!(base.risk_level, RiskLevel::High);
+    }
+
+    #[test]
+    fn matching_policy_finds_by_keyword() {
+        let profile = RepoProfile {
+            task_policies: vec![
+                TaskTypePolicy {
+                    task_pattern: "debug".into(),
+                    risk_level: Some(RiskLevel::Standard),
+                    required_checks: vec!["test".into()],
+                    max_steps: 0,
+                    priority_paths: vec![],
+                },
+                TaskTypePolicy {
+                    task_pattern: "refactor".into(),
+                    risk_level: Some(RiskLevel::High),
+                    required_checks: vec!["build".into(), "test".into()],
+                    max_steps: 0,
+                    priority_paths: vec![],
+                },
+            ],
+            ..Default::default()
+        };
+        let policy = profile.matching_policy("Please refactor the auth module");
+        assert!(policy.is_some());
+        assert_eq!(policy.unwrap().risk_level, Some(RiskLevel::High));
+        assert!(profile.matching_policy("explain this code").is_none());
     }
 
     #[test]

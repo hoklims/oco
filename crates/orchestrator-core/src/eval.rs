@@ -56,6 +56,9 @@ pub async fn run_scenario(
             OrchestratorAction::Verify { strategy, .. } => {
                 format!("verify:{strategy:?}")
             }
+            OrchestratorAction::UpdateMemory { operation } => {
+                format!("memory:{operation:?}")
+            }
             OrchestratorAction::Stop { reason } => format!("stop:{reason:?}"),
         })
         .collect();
@@ -91,7 +94,7 @@ pub async fn run_scenario(
         current_expected.is_none()
     };
 
-    let success = state.action_history.iter().any(|a| {
+    let task_complete = state.action_history.iter().any(|a| {
         matches!(
             a,
             OrchestratorAction::Stop {
@@ -99,6 +102,14 @@ pub async fn run_scenario(
             }
         )
     });
+
+    // Check that at least one non-empty Respond was generated.
+    let response_generated = state.action_history.iter().any(|a| {
+        matches!(a, OrchestratorAction::Respond { content } if !content.trim().is_empty())
+    });
+
+    // Success requires both task completion AND a meaningful response.
+    let success = task_complete && response_generated;
 
     Ok(ScenarioResult {
         scenario_name: scenario.name.clone(),
@@ -110,6 +121,7 @@ pub async fn run_scenario(
         actions,
         errors,
         expected_match,
+        response_generated,
     })
 }
 
@@ -163,6 +175,7 @@ pub async fn run_all(
                     actions: vec![],
                     errors: vec![e.to_string()],
                     expected_match: false,
+                    response_generated: false,
                 });
             }
         }
@@ -180,10 +193,19 @@ fn apply_overrides(config: &mut OrchestratorConfig, overrides: &ScenarioConfig) 
         config.llm.provider = provider.clone();
     }
     if let Some(max_steps) = overrides.max_steps {
-        config.default_budget.max_tool_calls = max_steps;
+        config.max_steps = max_steps;
     }
     if let Some(max_tokens) = overrides.max_total_tokens {
         config.default_budget.max_total_tokens = max_tokens;
+    }
+    if let Some(max_retrievals) = overrides.max_retrievals {
+        config.default_budget.max_retrievals = max_retrievals;
+    }
+    if let Some(max_duration_secs) = overrides.max_duration_secs {
+        config.default_budget.max_duration_secs = max_duration_secs;
+    }
+    if let Some(max_verify_cycles) = overrides.max_verify_cycles {
+        config.default_budget.max_verify_cycles = max_verify_cycles;
     }
 }
 
@@ -220,6 +242,7 @@ mod tests {
             actions: vec!["retrieve".into(), "respond".into()],
             errors: vec![],
             expected_match: true,
+            response_generated: true,
         };
         let metrics = result.metrics();
         assert_eq!(metrics.token_per_step, 2000.0);

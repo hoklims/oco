@@ -533,7 +533,27 @@ impl OrchestratorRuntime {
         budget_tokens: u32,
         current_step: u32,
     ) -> AssembledContext {
+        self.build_context_with_complexity(user_request, observations, pinned, budget_tokens, current_step, None)
+    }
+
+    /// Build context with task-complexity-aware category budgets.
+    pub fn build_context_with_complexity(
+        &self,
+        user_request: &str,
+        observations: &[Observation],
+        pinned: &[String],
+        budget_tokens: u32,
+        current_step: u32,
+        task_complexity: Option<oco_shared_types::TaskComplexity>,
+    ) -> AssembledContext {
         let mut builder = ContextBuilder::new(budget_tokens).with_staleness(current_step, 8); // Half-life of 8 steps
+
+        // v2: Apply task-aware category budgets.
+        if let Some(complexity) = task_complexity {
+            builder = builder.with_category_budgets(
+                oco_context_engine::CategoryBudgets::for_complexity(complexity),
+            );
+        }
 
         let system_prompt = self
             .config

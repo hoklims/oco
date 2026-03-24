@@ -83,3 +83,56 @@ impl Default for Budget {
         }
     }
 }
+
+impl Budget {
+    /// Create a budget tuned for the given task complexity.
+    ///
+    /// Lower complexity → smaller budgets (faster, cheaper).
+    /// Higher complexity → larger budgets (deeper analysis).
+    pub fn for_complexity(complexity: crate::TaskComplexity) -> Self {
+        use crate::TaskComplexity;
+        match complexity {
+            TaskComplexity::Trivial => Self {
+                max_context_tokens: 32_000,
+                max_output_tokens: 4_000,
+                max_total_tokens: 100_000,
+                max_tool_calls: 5,
+                max_retrievals: 3,
+                max_duration_secs: 30,
+                max_verify_cycles: 1,
+                ..Self::default()
+            },
+            TaskComplexity::Low => Self {
+                max_context_tokens: 64_000,
+                max_output_tokens: 8_000,
+                max_total_tokens: 300_000,
+                max_tool_calls: 15,
+                max_retrievals: 10,
+                max_duration_secs: 60,
+                max_verify_cycles: 3,
+                ..Self::default()
+            },
+            TaskComplexity::Medium => Self::default(),
+            TaskComplexity::High => Self {
+                max_context_tokens: 128_000,
+                max_output_tokens: 16_000,
+                max_total_tokens: 2_000_000,
+                max_tool_calls: 80,
+                max_retrievals: 50,
+                max_duration_secs: 600,
+                max_verify_cycles: 15,
+                ..Self::default()
+            },
+            TaskComplexity::Critical => Self {
+                max_context_tokens: 200_000,
+                max_output_tokens: 32_000,
+                max_total_tokens: 5_000_000,
+                max_tool_calls: 150,
+                max_retrievals: 100,
+                max_duration_secs: 900,
+                max_verify_cycles: 20,
+                ..Self::default()
+            },
+        }
+    }
+}

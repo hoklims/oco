@@ -177,19 +177,27 @@ async function searchCodebase(id, args) {
   ]);
 
   if (result.error) {
-    // Graceful degradation: return empty results
-    return success(id, {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ results: [], note: "OCO backend unavailable, use standard search tools" }),
-        },
-      ],
+    return respondStructured(id, {
+      summary: "OCO backend unavailable",
+      evidence: [],
+      risks: ["Search results may be incomplete without OCO indexing"],
+      next_step: "Use standard search tools (Grep, Glob) as fallback",
+      confidence: 0.0,
     });
   }
 
-  return success(id, {
-    content: [{ type: "text", text: result.stdout }],
+  let parsed = [];
+  try { parsed = JSON.parse(result.stdout); } catch { /* keep empty */ }
+  const results = Array.isArray(parsed) ? parsed : (parsed.results || []);
+
+  return respondStructured(id, {
+    summary: `Found ${results.length} result(s) for "${args.query}"`,
+    evidence: results.slice(0, limit),
+    risks: [],
+    next_step: results.length > 0
+      ? "Review top results and inspect relevant files"
+      : "Broaden search query or try different keywords",
+    confidence: results.length > 0 ? 0.8 : 0.2,
   });
 }
 
@@ -200,16 +208,12 @@ async function traceError(id, args) {
   const frames = parseStackTrace(args.stacktrace);
 
   if (frames.length === 0) {
-    return success(id, {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            frames: [],
-            note: "Could not parse stack trace. Provide the raw error output.",
-          }),
-        },
-      ],
+    return respondStructured(id, {
+      summary: "Could not parse stack trace",
+      evidence: [],
+      risks: ["Raw error output may need manual analysis"],
+      next_step: "Provide the full raw error output for better parsing",
+      confidence: 0.1,
     });
   }
 
@@ -238,17 +242,22 @@ async function traceError(id, args) {
     }
   }
 
-  return success(id, {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({
-          parsed_frames: frames,
-          codebase_matches: results,
-          suggestion: "Inspect the deepest application frame first. Check for null access, type errors, or missing validation.",
-        }),
-      },
+  const deepestFrame = frames[frames.length - 1];
+  const matchedFiles = results.filter((r) => r.matches && (Array.isArray(r.matches) ? r.matches.length > 0 : true));
+
+  return respondStructured(id, {
+    summary: `Parsed ${frames.length} frame(s) across ${fileSet.length} file(s). ${matchedFiles.length} matched in codebase.`,
+    evidence: [
+      { parsed_frames: frames },
+      { codebase_matches: results },
     ],
+    risks: matchedFiles.length === 0
+      ? ["No stack frames matched local files — error may originate in dependencies"]
+      : [],
+    next_step: deepestFrame
+      ? `Inspect ${deepestFrame.file}:${deepestFrame.line} — deepest application frame`
+      : "Review the stack trace manually",
+    confidence: matchedFiles.length > 0 ? 0.7 : 0.3,
   });
 }
 
@@ -266,9 +275,10 @@ async function verifyPatch(id, args) {
     }
 
     const result = await runShell(cmd.command, cmd.args, { cwd: workspace });
+    const passed = result.exitCode === 0;
     verdicts[check] = {
-      status: result.exitCode === 0 ? "pass" : "fail",
-      output: truncate(result.stderr || result.stdout, 500),
+      status: passed ? "pass" : "fail",
+      ...(passed ? {} : { output: truncate((result.stderr + "\n" + result.stdout).trim(), 500) }),
     };
 
     // Stop on first failure
@@ -277,20 +287,27 @@ async function verifyPatch(id, args) {
     }
   }
 
-  const allPass = Object.values(verdicts).every(
-    (v) => v.status === "pass" || v.status === "skip"
-  );
+  const entries = Object.values(verdicts);
+  const allSkipped = entries.every((v) => v.status === "skip");
+  const hasFail = entries.some((v) => v.status === "fail");
+  const verdict = hasFail ? "FAIL" : allSkipped ? "SKIP" : "PASS";
+  const failedChecks = Object.entries(verdicts).filter(([, v]) => v.status === "fail").map(([k]) => k);
+  const passedChecks = Object.entries(verdicts).filter(([, v]) => v.status === "pass").map(([k]) => k);
 
-  return success(id, {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({
-          verdict: allPass ? "PASS" : "FAIL",
-          checks: verdicts,
-        }),
-      },
-    ],
+  return respondStructured(id, {
+    summary: `Verification ${verdict}: ${passedChecks.length} passed, ${failedChecks.length} failed, ${entries.length - passedChecks.length - failedChecks.length} skipped`,
+    evidence: [{ verdict, checks: verdicts }],
+    risks: hasFail
+      ? failedChecks.map((c) => `${c} failed — see output for details`)
+      : allSkipped
+        ? ["No verification commands detected for this workspace"]
+        : [],
+    next_step: hasFail
+      ? `Fix ${failedChecks[0]} errors first, then re-verify`
+      : allSkipped
+        ? "Configure build/test/lint commands or verify manually"
+        : "All checks passed — safe to proceed",
+    confidence: hasFail ? 0.9 : allSkipped ? 0.1 : 1.0,
   });
 }
 
@@ -305,23 +322,34 @@ async function collectFindings(id, args) {
   ]);
 
   if (result.error) {
-    return success(id, {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            evidence: [],
-            open_questions: [],
-            risks: [],
-            next_action: "No OCO session data available. Use standard investigation.",
-          }),
-        },
-      ],
+    return respondStructured(id, {
+      summary: "No OCO session data available",
+      evidence: [],
+      risks: ["Session trace unavailable — investigation state unknown"],
+      next_step: "Use standard investigation tools to gather evidence",
+      confidence: 0.0,
     });
   }
 
-  return success(id, {
-    content: [{ type: "text", text: result.stdout }],
+  let trace = [];
+  try { trace = JSON.parse(result.stdout); } catch { /* keep empty */ }
+  // Unwrap { traces: [...] } envelope if present.
+  const traceEntries = Array.isArray(trace)
+    ? trace
+    : Array.isArray(trace?.traces)
+      ? trace.traces
+      : [trace];
+  const errors = traceEntries.filter((t) => t.decision_type === "error" || t.error);
+  const decisions = traceEntries.filter((t) => t.reasoning);
+
+  return respondStructured(id, {
+    summary: `Session ${sessionId}: ${traceEntries.length} trace entries, ${errors.length} error(s), ${decisions.length} decision(s)`,
+    evidence: traceEntries,
+    risks: errors.map((e) => e.error || e.reasoning || "Unknown error in trace"),
+    next_step: errors.length > 0
+      ? "Investigate unresolved errors in the session trace"
+      : "Review decisions for correctness and proceed",
+    confidence: errors.length === 0 ? 0.8 : 0.5,
   });
 }
 
@@ -419,6 +447,16 @@ function runShell(command, args, options) {
 function truncate(str, maxLen) {
   if (!str || str.length <= maxLen) return str || "";
   return str.slice(0, maxLen) + "\n... (truncated)";
+}
+
+/**
+ * Wrap a structured response in MCP format.
+ * All tools return: { summary, evidence, risks, next_step, confidence }
+ */
+function respondStructured(id, payload) {
+  return success(id, {
+    content: [{ type: "text", text: JSON.stringify(payload) }],
+  });
 }
 
 function success(id, result) {

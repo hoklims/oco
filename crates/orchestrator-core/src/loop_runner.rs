@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use oco_shared_types::{
-    ActionCandidate, MemoryEntry, Observation, ObservationKind, ObservationSource,
+    ActionCandidate, MemoryEntry, MemorySeverity, Observation, ObservationKind, ObservationSource,
     OrchestratorAction, Session, StopReason, TelemetryEventType, ToolGateDecision, WorkingMemory,
 };
 use tracing::{debug, info, warn};
@@ -136,15 +136,39 @@ impl OrchestrationLoop {
         let session = Session::new(user_request.clone(), workspace_root);
         let mut state = OrchestrationState::new(session);
 
+        // Apply max_steps override from config (e.g. eval scenario overrides).
+        if self.config.max_steps > 0 {
+            state.session.max_steps = self.config.max_steps;
+        }
+
         // Initialize session metrics
         self.metrics = Some(oco_telemetry::SessionMetrics::new(state.session.id));
 
-        // Classify task complexity
+        // Classify task complexity and adapt budget.
+        // Start from configured budget, then apply complexity-based limits as caps.
         state.task_complexity = oco_policy_engine::TaskClassifier::classify(&user_request, &[]);
+        let complexity_budget = oco_shared_types::Budget::for_complexity(state.task_complexity);
+        let configured = &self.config.default_budget;
+        state.session.budget = oco_shared_types::Budget {
+            max_context_tokens: configured.max_context_tokens.min(complexity_budget.max_context_tokens),
+            max_output_tokens: configured.max_output_tokens.min(complexity_budget.max_output_tokens),
+            max_total_tokens: configured.max_total_tokens.min(complexity_budget.max_total_tokens),
+            max_tool_calls: configured.max_tool_calls.min(complexity_budget.max_tool_calls),
+            max_retrievals: configured.max_retrievals.min(complexity_budget.max_retrievals),
+            max_duration_secs: configured.max_duration_secs.min(complexity_budget.max_duration_secs),
+            max_verify_cycles: configured.max_verify_cycles.min(complexity_budget.max_verify_cycles),
+            // Counters start at zero.
+            tokens_used: 0,
+            tool_calls_used: 0,
+            retrievals_used: 0,
+            verify_cycles_used: 0,
+        };
         info!(
             session_id = %state.session.id.0,
             complexity = ?state.task_complexity,
-            "Starting orchestration"
+            max_tokens = state.session.budget.max_total_tokens,
+            max_tool_calls = state.session.budget.max_tool_calls,
+            "Starting orchestration with task-adapted budget"
         );
 
         // Main loop
@@ -158,7 +182,7 @@ impl OrchestrationLoop {
             }
 
             // Check budget duration
-            if state.elapsed_secs() > self.config.default_budget.max_duration_secs {
+            if state.elapsed_secs() > state.session.budget.max_duration_secs {
                 let stop_action = OrchestratorAction::Stop {
                     reason: StopReason::BudgetExhausted,
                 };
@@ -333,6 +357,50 @@ impl OrchestrationLoop {
                     }
                     // On failure, let the policy engine decide the next action
                 }
+                OrchestratorAction::UpdateMemory { operation } => {
+                    // Memory ops are always local — no external execution needed.
+                    use oco_shared_types::MemoryOperation;
+                    match operation {
+                        MemoryOperation::PromoteToFact { entry_id } => {
+                            state.memory.promote_to_fact(*entry_id);
+                        }
+                        MemoryOperation::Invalidate { entry_id, reason } => {
+                            state.memory.invalidate(*entry_id, reason);
+                        }
+                        MemoryOperation::Supersede { old_id, new_id } => {
+                            state.memory.supersede(*old_id, *new_id);
+                        }
+                        MemoryOperation::LinkEvidence {
+                            target_id,
+                            evidence_id,
+                            supports,
+                        } => {
+                            state
+                                .memory
+                                .add_evidence_link(*target_id, *evidence_id, *supports);
+                        }
+                        MemoryOperation::AddHypothesis {
+                            content,
+                            confidence,
+                        } => {
+                            state.memory.add_hypothesis(MemoryEntry::new(
+                                content.clone(),
+                                *confidence,
+                            ));
+                        }
+                        MemoryOperation::AddQuestion { content } => {
+                            state
+                                .memory
+                                .add_question(MemoryEntry::new(content.clone(), 0.5));
+                        }
+                        MemoryOperation::ResolveQuestion { question_id } => {
+                            state.memory.resolve_question(*question_id);
+                        }
+                        MemoryOperation::UpdatePlan { steps } => {
+                            state.memory.update_plan(steps.clone());
+                        }
+                    }
+                }
                 OrchestratorAction::Stop { .. } => break,
             }
 
@@ -398,11 +466,7 @@ impl OrchestrationLoop {
         }
 
         // v2: Check for unresolved errors in working memory.
-        let has_memory_errors = state
-            .memory
-            .findings
-            .iter()
-            .any(|f| f.tags.iter().any(|t| t == "error"));
+        let has_memory_errors = !state.memory.unresolved_errors().is_empty();
 
         oco_policy_engine::PolicyState {
             current_step: state.session.step_count,
@@ -440,6 +504,14 @@ impl OrchestrationLoop {
             OrchestratorAction::Verify { strategy, target } => {
                 self.execute_verify(strategy, target.as_deref()).await
             }
+            OrchestratorAction::UpdateMemory { operation } => Ok(Observation::new(
+                ObservationSource::System,
+                ObservationKind::Text {
+                    content: format!("Memory updated: {operation:?}"),
+                    metadata: None,
+                },
+                5,
+            )),
             OrchestratorAction::Stop { .. } => Ok(Observation::new(
                 ObservationSource::System,
                 ObservationKind::Text {
@@ -464,12 +536,13 @@ impl OrchestrationLoop {
         // Build context from observations
         let observations: Vec<Observation> = state.observations.iter().cloned().collect();
         let context = if let Some(ref rt) = self.runtime {
-            rt.build_context(
+            rt.build_context_with_complexity(
                 &state.session.user_request,
                 &observations,
                 &pinned,
                 state.session.budget.max_context_tokens,
                 state.session.step_count,
+                Some(state.task_complexity),
             )
         } else {
             // Minimal context without runtime
@@ -691,13 +764,15 @@ fn update_working_memory(
         } => {
             if *passed {
                 let entry = MemoryEntry::new(format!("Verification passed: {action:?}"), 1.0)
-                    .with_source("verification".into());
+                    .with_source("verification".into())
+                    .with_severity(MemorySeverity::Info);
                 memory.add_finding(entry);
             } else {
                 for failure in failures {
                     let entry = MemoryEntry::new(format!("Verification failure: {failure}"), 0.9)
                         .with_source("verification".into())
-                        .with_tags(vec!["failure".into()]);
+                        .with_tags(vec!["failure".into()])
+                        .with_severity(MemorySeverity::Error);
                     memory.add_finding(entry);
                 }
             }
@@ -706,10 +781,15 @@ fn update_working_memory(
             message,
             recoverable,
         } => {
-            let confidence = if *recoverable { 0.7 } else { 0.9 };
+            let (confidence, severity) = if *recoverable {
+                (0.7, MemorySeverity::Warning)
+            } else {
+                (0.9, MemorySeverity::Critical)
+            };
             let entry = MemoryEntry::new(format!("Error: {message}"), confidence)
                 .with_source("error".into())
-                .with_tags(vec!["error".into()]);
+                .with_tags(vec!["error".into()])
+                .with_severity(severity);
             memory.add_finding(entry);
         }
         ObservationKind::Symbol {
@@ -719,12 +799,53 @@ fn update_working_memory(
             ..
         } => {
             let entry = MemoryEntry::new(format!("Found {kind} `{name}` in {file_path}"), 0.8)
-                .with_source(file_path.clone());
+                .with_source(file_path.clone())
+                .with_severity(MemorySeverity::Info);
             memory.add_finding(entry);
         }
-        _ => {
-            // Text, CodeSnippet, Structured — no automatic memory update.
-            // The LLM or future heuristics can promote these.
+        ObservationKind::CodeSnippet {
+            file_path,
+            start_line,
+            language,
+            ..
+        } => {
+            let lang = language.as_deref().unwrap_or("unknown");
+            let entry = MemoryEntry::new(
+                format!("Code snippet from {file_path}:{start_line} ({lang})"),
+                0.6,
+            )
+            .with_source(file_path.clone())
+            .with_tags(vec!["code_snippet".into()]);
+            memory.add_finding(entry);
+        }
+        ObservationKind::Structured { data } => {
+            // Extract key fields from structured data as findings.
+            if let Some(obj) = data.as_object()
+                && let Some(status) = obj.get("status").and_then(|v| v.as_str())
+            {
+                let severity = if status == "error" || status == "fail" {
+                    MemorySeverity::Error
+                } else {
+                    MemorySeverity::Info
+                };
+                let summary = obj
+                    .get("message")
+                    .or_else(|| obj.get("summary"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(status);
+                let entry = MemoryEntry::new(
+                    format!("Structured result: {summary}"),
+                    0.7,
+                )
+                .with_source("structured".into())
+                .with_tags(vec!["structured".into()])
+                .with_severity(severity);
+                memory.add_finding(entry);
+            }
+        }
+        ObservationKind::Text { .. } => {
+            // Plain text observations are too noisy for automatic memory.
+            // The LLM can promote relevant text via UpdateMemory actions.
         }
     }
 }

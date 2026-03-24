@@ -118,49 +118,90 @@ pub fn handle_resources_list(id: serde_json::Value) -> JsonRpcResponse {
     JsonRpcResponse::success(id, json!({ "resources": resources }))
 }
 
-/// Handle tools/call method.
+/// Helper: wrap a structured response into MCP content format.
+/// All tools return: { summary, evidence, risks, next_step, confidence }.
+fn structured_response(id: serde_json::Value, payload: serde_json::Value) -> JsonRpcResponse {
+    JsonRpcResponse::success(
+        id,
+        json!({
+            "content": [{
+                "type": "text",
+                "text": payload.to_string()
+            }]
+        }),
+    )
+}
+
+/// Handle tools/call method (stdio fallback — no AppState available).
+///
+/// For the full HTTP server with real session management, see `router.rs`.
+/// This handler returns structured responses indicating that the client
+/// should use the HTTP server for full functionality.
 pub fn handle_tool_call(
     id: serde_json::Value,
     tool_name: &str,
     _arguments: &serde_json::Value,
 ) -> JsonRpcResponse {
     match tool_name {
-        "oco_orchestrate" => JsonRpcResponse::success(
+        "oco_orchestrate" => structured_response(
             id,
             json!({
-                "content": [{
-                    "type": "text",
-                    "text": "Orchestration session started. Use oco_status to check progress."
-                }]
+                "summary": "Stdio transport does not support session orchestration",
+                "evidence": [],
+                "risks": ["Orchestration requires the HTTP server (`oco serve`)"],
+                "next_step": "Start the HTTP server with `oco serve --port 3000`, then connect via HTTP",
+                "confidence": 0.0
             }),
         ),
-        "oco_status" => JsonRpcResponse::success(
+        "oco_status" => structured_response(
             id,
             json!({
-                "content": [{
-                    "type": "text",
-                    "text": "{\"status\": \"idle\", \"sessions\": 0}"
-                }]
+                "summary": "Server running in stdio mode — no active sessions",
+                "evidence": [{"status": "idle", "sessions": 0, "transport": "stdio"}],
+                "risks": [],
+                "next_step": "Use `oco serve` for full session management",
+                "confidence": 1.0
             }),
         ),
-        "oco_trace" => JsonRpcResponse::success(
+        "oco_trace" => structured_response(
             id,
             json!({
-                "content": [{
-                    "type": "text",
-                    "text": "[]"
-                }]
+                "summary": "No traces available in stdio mode",
+                "evidence": [],
+                "risks": ["Session traces require the HTTP server"],
+                "next_step": "Start `oco serve` and run a session first",
+                "confidence": 0.0
             }),
         ),
-        "oco_search" => JsonRpcResponse::success(
-            id,
-            json!({
-                "content": [{
-                    "type": "text",
-                    "text": "[]"
-                }]
-            }),
-        ),
+        "oco_search" => {
+            // Search can work without full AppState — attempt CLI-based search.
+            let query = _arguments
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if query.is_empty() {
+                return structured_response(
+                    id,
+                    json!({
+                        "summary": "Empty search query",
+                        "evidence": [],
+                        "risks": ["No query provided"],
+                        "next_step": "Provide a non-empty search query",
+                        "confidence": 0.0
+                    }),
+                );
+            }
+            structured_response(
+                id,
+                json!({
+                    "summary": format!("Search for \"{query}\" requires indexed workspace"),
+                    "evidence": [],
+                    "risks": ["Workspace may not be indexed — run `oco index .` first"],
+                    "next_step": format!("Run `oco search \"{query}\" --workspace .` via CLI, or use `oco serve` for HTTP search"),
+                    "confidence": 0.1
+                }),
+            )
+        }
         _ => JsonRpcResponse::error(id, -32601, format!("Unknown tool: {tool_name}")),
     }
 }
