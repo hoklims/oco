@@ -10,9 +10,9 @@ static EXTENSION_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::
     m.insert("rs", "rust");
     // TypeScript / JavaScript
     m.insert("ts", "typescript");
-    m.insert("tsx", "typescript");
+    m.insert("tsx", "tsx");
     m.insert("js", "javascript");
-    m.insert("jsx", "javascript");
+    m.insert("jsx", "jsx");
     m.insert("mjs", "javascript");
     m.insert("cjs", "javascript");
     // Python
@@ -120,6 +120,14 @@ mod tests {
     #[test]
     fn unknown_extension() {
         assert_eq!(language_from_extension("xyz"), None);
+    }
+
+    #[test]
+    fn tsx_jsx_have_dedicated_language_names() {
+        assert_eq!(language_from_extension("tsx"), Some("tsx"));
+        assert_eq!(language_from_extension("jsx"), Some("jsx"));
+        assert_eq!(language_from_path("app/page.tsx"), Some("tsx"));
+        assert_eq!(language_from_path("components/Button.jsx"), Some("jsx"));
     }
 
     #[test]

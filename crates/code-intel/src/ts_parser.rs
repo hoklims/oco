@@ -157,11 +157,9 @@ fn extract_rust(tree: &Tree, source: &str) -> (Vec<SymbolInfo>, Vec<ImportInfo>)
                 let Some(name) = field_text(node, "name", src) else {
                     return;
                 };
-                // Method if inside impl_item
-                let kind = if node
-                    .parent()
-                    .is_some_and(|p| p.kind() == "impl_item" || p.kind() == "declaration_list")
-                {
+                // Method if inside an impl block. Walk up through declaration_list
+                // to find impl_item (method) vs mod_item (free function in module).
+                let kind = if is_inside_impl(node) {
                     SymbolKind::Method
                 } else {
                     SymbolKind::Function
@@ -294,6 +292,21 @@ fn rust_visibility(node: Node, source: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+/// Check if a Rust function_item is inside an impl block (not a mod block).
+fn is_inside_impl(node: Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "impl_item" => return true,
+            "mod_item" | "source_file" => return false,
+            // declaration_list is the body of both impl and mod — keep walking
+            _ => {}
+        }
+        current = parent.parent();
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,6 +1034,30 @@ enum Color { Red, Green, Blue }
         assert!(config.end_line.is_some());
 
         assert_eq!(result.imports.len(), 2);
+    }
+
+    #[test]
+    fn rust_free_functions_in_modules_are_not_methods() {
+        let source = r#"
+mod utils {
+    pub fn helper() {}
+    fn internal() {}
+}
+
+impl Server {
+    pub fn start(&self) {}
+}
+"#;
+        let result = ts_parser().parse(source, "rust").unwrap();
+
+        let helper = result.symbols.iter().find(|s| s.name == "helper").unwrap();
+        assert_eq!(helper.kind, SymbolKind::Function, "free fn in mod should be Function");
+
+        let internal = result.symbols.iter().find(|s| s.name == "internal").unwrap();
+        assert_eq!(internal.kind, SymbolKind::Function, "private fn in mod should be Function");
+
+        let start = result.symbols.iter().find(|s| s.name == "start").unwrap();
+        assert_eq!(start.kind, SymbolKind::Method, "fn in impl should be Method");
     }
 
     // -- Python --
