@@ -208,20 +208,18 @@ impl DefaultActionSelector {
         }
 
         // v2: Higher risk level increases verification urgency.
-        match state.risk_level {
-            RiskLevel::High => {
-                if state.has_called_tools && !state.has_verified {
+        if state.has_called_tools && !state.has_verified {
+            match state.risk_level {
+                RiskLevel::High => {
                     score += 0.3;
                     reasons.push("high risk repo requires verification");
                 }
-            }
-            RiskLevel::Critical => {
-                if state.has_called_tools && !state.has_verified {
+                RiskLevel::Critical => {
                     score += 0.5;
                     reasons.push("critical risk repo demands verification");
                 }
+                _ => {}
             }
-            _ => {}
         }
 
         // v2: Working memory errors boost verify urgency.

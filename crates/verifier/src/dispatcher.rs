@@ -60,6 +60,59 @@ impl Default for VerificationDispatcher {
     }
 }
 
+async fn run_custom_command(
+    command: &str,
+    working_dir: &str,
+    timeout_secs: u64,
+) -> Result<VerificationOutput> {
+    use std::time::Instant;
+    use tokio::process::Command;
+
+    use crate::error::VerifierError;
+
+    info!(command, working_dir, "running custom verification command");
+
+    let start = Instant::now();
+
+    let shell = if cfg!(target_os = "windows") {
+        ("cmd", vec!["/C".to_string(), command.to_string()])
+    } else {
+        ("sh", vec!["-c".to_string(), command.to_string()])
+    };
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        Command::new(shell.0)
+            .args(&shell.1)
+            .current_dir(working_dir)
+            .output(),
+    )
+    .await
+    .map_err(|_| VerifierError::Timeout { timeout_secs })?
+    .map_err(VerifierError::IoError)?;
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let exit_code = output.status.code().unwrap_or(-1);
+    let passed = output.status.success();
+
+    let failures = if !passed {
+        vec![format!("Custom command exited with code {exit_code}")]
+    } else {
+        Vec::new()
+    };
+
+    Ok(VerificationOutput {
+        passed,
+        stdout,
+        stderr,
+        exit_code,
+        duration_ms,
+        failures,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,57 +177,4 @@ mod tests {
             .await;
         assert!(result.is_err());
     }
-}
-
-async fn run_custom_command(
-    command: &str,
-    working_dir: &str,
-    timeout_secs: u64,
-) -> Result<VerificationOutput> {
-    use std::time::Instant;
-    use tokio::process::Command;
-
-    use crate::error::VerifierError;
-
-    info!(command, working_dir, "running custom verification command");
-
-    let start = Instant::now();
-
-    let shell = if cfg!(target_os = "windows") {
-        ("cmd", vec!["/C".to_string(), command.to_string()])
-    } else {
-        ("sh", vec!["-c".to_string(), command.to_string()])
-    };
-
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        Command::new(shell.0)
-            .args(&shell.1)
-            .current_dir(working_dir)
-            .output(),
-    )
-    .await
-    .map_err(|_| VerifierError::Timeout { timeout_secs })?
-    .map_err(VerifierError::IoError)?;
-
-    let duration_ms = start.elapsed().as_millis() as u64;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let exit_code = output.status.code().unwrap_or(-1);
-    let passed = output.status.success();
-
-    let failures = if !passed {
-        vec![format!("Custom command exited with code {exit_code}")]
-    } else {
-        Vec::new()
-    };
-
-    Ok(VerificationOutput {
-        passed,
-        stdout,
-        stderr,
-        exit_code,
-        duration_ms,
-        failures,
-    })
 }
