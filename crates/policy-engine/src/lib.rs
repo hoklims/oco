@@ -15,12 +15,16 @@ pub mod budget;
 pub mod classifier;
 pub mod gates;
 pub mod knowledge;
+pub mod scheduler;
+pub mod secret_scanner;
 pub mod selector;
 
 pub use budget::{BudgetEnforcer, BudgetReport, BudgetStatus};
 pub use classifier::TaskClassifier;
 pub use gates::{PolicyGate, WritePolicy};
 pub use knowledge::KnowledgeBoundaryEstimator;
+pub use scheduler::{SchedulableAction, Schedule, SchedulerError};
+pub use secret_scanner::{SecretScanResult, scan_secrets};
 pub use selector::{
     ActionDecision, ActionSelector, DefaultActionSelector, PolicyState, ScoredAlternative,
 };

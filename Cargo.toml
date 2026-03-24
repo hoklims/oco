@@ -60,6 +60,11 @@ async-trait = "0.1"
 dashmap = "6"
 reqwest = { version = "0.12", features = ["json"] }
 clap = { version = "4", features = ["derive"] }
+regex = "1"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+petgraph = "0.7"
 
 # Testing
 tempfile = "3"
