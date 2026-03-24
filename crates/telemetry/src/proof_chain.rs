@@ -65,7 +65,7 @@ impl ProofChain {
         let previous_envelope_hash = self
             .envelopes
             .last()
-            .map(|e| Self::envelope_hash(e))
+            .map(Self::envelope_hash)
             .unwrap_or_else(|| GENESIS_HASH.to_string());
 
         let content_hash = sha256_hex(content.as_bytes());
