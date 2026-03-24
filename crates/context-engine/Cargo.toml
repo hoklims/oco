@@ -10,6 +10,7 @@ oco-shared-types = { workspace = true }
 oco-retrieval = { workspace = true }
 oco-code-intel = { workspace = true }
 chrono = { workspace = true }
+uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
