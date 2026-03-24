@@ -463,9 +463,13 @@ impl CapabilityRegistry {
                 continue;
             }
             let item = SummaryItem {
-                id: entry.id.clone(),
-                name: entry.name.clone(),
-                capabilities: entry.capabilities.clone(),
+                id: sanitize_for_prompt(&entry.id),
+                name: sanitize_for_prompt(&entry.name),
+                capabilities: entry
+                    .capabilities
+                    .iter()
+                    .map(|c| sanitize_for_prompt(c))
+                    .collect(),
             };
             match &entry.kind {
                 CapabilityKind::Tool { .. } => tools.push(item),
@@ -487,6 +491,9 @@ impl CapabilityRegistry {
 }
 
 /// Compact summary of available capabilities, for Planner context injection.
+///
+/// **Security note**: all fields are sanitized before injection into LLM prompts.
+/// External metadata (MCP tool names, agent descriptions) is treated as untrusted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistrySummary {
     pub tools: Vec<SummaryItem>,
@@ -509,6 +516,28 @@ pub struct SummaryItem {
     pub id: String,
     pub name: String,
     pub capabilities: Vec<String>,
+}
+
+/// Max length for a single field injected into planner prompts.
+const SUMMARY_FIELD_MAX_LEN: usize = 100;
+
+/// Sanitize a string for safe injection into LLM prompts.
+/// Strips control characters, backtick fences, and truncates to max length.
+pub fn sanitize_for_prompt(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect();
+    // Strip markdown code fences and system-like tags
+    let cleaned = cleaned
+        .replace("```", "")
+        .replace("<system", "&lt;system")
+        .replace("</system", "&lt;/system");
+    if cleaned.len() > SUMMARY_FIELD_MAX_LEN {
+        format!("{}…", &cleaned[..SUMMARY_FIELD_MAX_LEN])
+    } else {
+        cleaned
+    }
 }
 
 // ---------------------------------------------------------------------------

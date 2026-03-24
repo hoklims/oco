@@ -79,13 +79,25 @@ impl LlmPlanner {
             return Err(PlannerError::ParseError("LLM returned empty step list".into()));
         }
 
-        // First pass: create steps with temporary IDs, build name→id map
+        // First pass: create steps with temporary IDs, build name→id map.
+        // Deduplicate names (LLM may produce duplicates): append suffix.
         let mut steps: Vec<PlanStep> = Vec::with_capacity(raw_steps.len());
         let mut name_to_id: std::collections::HashMap<String, Uuid> = std::collections::HashMap::new();
+        let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
 
         for raw in &raw_steps {
-            let step = PlanStep::new(&raw.name, &raw.description);
-            name_to_id.insert(raw.name.clone(), step.id);
+            let count = name_counts.entry(raw.name.clone()).or_insert(0);
+            let unique_name = if *count == 0 {
+                raw.name.clone()
+            } else {
+                format!("{}-{}", raw.name, count)
+            };
+            *count += 1;
+
+            let step = PlanStep::new(&unique_name, &raw.description);
+            name_to_id.insert(unique_name, step.id);
+            // Also map original name to first occurrence for dep resolution
+            name_to_id.entry(raw.name.clone()).or_insert(step.id);
             steps.push(step);
         }
 

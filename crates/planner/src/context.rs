@@ -21,10 +21,11 @@ pub struct PlanningContext {
 }
 
 impl PlanningContext {
-    /// Maximum tokens the planner can spend on the planning LLM call.
-    /// Capped at 10% of total budget to leave room for execution.
+    /// Maximum tokens the planner can spend on a SINGLE planning LLM call.
+    /// Capped at 5% of total budget per call. With max 3 replans, cumulative
+    /// cap is ~20% (plan + 3 replans × 5% = 20%). See fix for GPT-5.4 review #10.
     pub fn planning_token_budget(&self) -> u32 {
-        ((self.budget.max_total_tokens / 10).max(500)) as u32
+        ((self.budget.max_total_tokens / 20).max(500)) as u32
     }
 
     /// Whether the task needs a multi-step plan (vs direct execution).

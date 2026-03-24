@@ -172,6 +172,8 @@ impl GraphRunner {
 
         let mut replan_count: u32 = 0;
 
+        let mut last_completed_count = 0usize;
+
         loop {
             // Budget check
             if self.tokens_used >= self.token_budget {
@@ -212,92 +214,114 @@ impl GraphRunner {
                 break;
             }
 
-            // Execute ready steps (parallel when multiple)
-            let ready_ids: Vec<Uuid> = ready.iter().map(|s| s.id).collect();
-            let results = self.execute_parallel(&plan, &ready_ids).await;
-
-            // Process results
-            for result in results {
-                let step = plan
-                    .get_step_mut(result.step_id)
-                    .expect("step must exist in plan");
-
-                self.tokens_used += result.tokens_used as u64;
-
-                if result.success {
-                    step.output = Some(result.output.clone());
-
-                    // Verify gate
-                    if step.verify_after {
-                        let verify_result = self.executor.verify_step(step).await;
-                        match verify_result {
-                            Ok(vr) if vr.success => {
-                                let step_name = step.name.clone();
-                                step.status = StepStatus::Completed;
-                                self.emit_step_completed(
-                                    result.step_id,
-                                    &step_name,
-                                    true,
-                                    result.duration_ms,
-                                );
-                            }
-                            Ok(vr) => {
-                                let step_name = step.name.clone();
-                                step.status = StepStatus::Failed {
-                                    reason: vr.output.clone(),
-                                };
-                                self.emit_step_completed(
-                                    result.step_id,
-                                    &step_name,
-                                    false,
-                                    result.duration_ms,
-                                );
-                                self.emit_verify_gate_failed(
-                                    result.step_id,
-                                    &step_name,
-                                    &vr.output,
-                                    replan_count,
-                                );
-                            }
-                            Err(e) => {
-                                let step_name = step.name.clone();
-                                step.status = StepStatus::Failed {
-                                    reason: e.to_string(),
-                                };
-                                self.emit_step_completed(
-                                    result.step_id,
-                                    &step_name,
-                                    false,
-                                    result.duration_ms,
-                                );
-                            }
-                        }
-                    } else {
-                        let step_name = step.name.clone();
-                        step.status = StepStatus::Completed;
-                        self.emit_step_completed(
-                            result.step_id,
-                            &step_name,
-                            true,
-                            result.duration_ms,
-                        );
-                    }
-                } else {
-                    let step_name = step.name.clone();
-                    step.status = StepStatus::Failed {
-                        reason: result.output.clone(),
-                    };
-                    self.emit_step_completed(
-                        result.step_id,
-                        &step_name,
-                        false,
-                        result.duration_ms,
-                    );
-                }
+            // No-progress guard: if completed count hasn't changed, we're stuck
+            let current_completed = plan
+                .steps
+                .iter()
+                .filter(|s| s.is_terminal())
+                .count();
+            if current_completed == last_completed_count && last_completed_count > 0 {
+                warn!("no progress detected: terminal step count unchanged");
+                break;
             }
+            last_completed_count = current_completed;
+
+            // Pre-reserve budget for the batch (fix #9: preventive, not reactive)
+            let ready_ids: Vec<Uuid> = ready.iter().map(|s| s.id).collect();
+            let batch_estimated: u64 = ready_ids
+                .iter()
+                .filter_map(|id| plan.get_step(*id))
+                .map(|s| s.estimated_tokens as u64)
+                .sum();
+            let remaining = self.token_budget.saturating_sub(self.tokens_used);
+            if batch_estimated > remaining * 2 {
+                // Batch would exceed 2x remaining budget — trim to affordable steps
+                let affordable: Vec<Uuid> = ready_ids
+                    .iter()
+                    .copied()
+                    .scan(0u64, |acc, id| {
+                        if let Some(step) = plan.get_step(id) {
+                            *acc += step.estimated_tokens as u64;
+                            if *acc <= remaining {
+                                Some(Some(id))
+                            } else {
+                                Some(None)
+                            }
+                        } else {
+                            Some(None)
+                        }
+                    })
+                    .flatten()
+                    .collect();
+                if affordable.is_empty() {
+                    warn!("no steps affordable within remaining budget");
+                    break;
+                }
+                debug!(
+                    trimmed = ready_ids.len() - affordable.len(),
+                    "budget-trimmed parallel batch"
+                );
+                let results = self.execute_parallel(&plan, &affordable).await;
+                self.process_results(&mut plan, results, replan_count).await;
+                continue;
+            }
+
+            let results = self.execute_parallel(&plan, &ready_ids).await;
+            self.process_results(&mut plan, results, replan_count).await;
         }
 
         Ok(plan)
+    }
+
+    /// Process step results: update statuses, run verify gates, emit events.
+    async fn process_results(
+        &mut self,
+        plan: &mut ExecutionPlan,
+        results: Vec<StepResult>,
+        replan_count: u32,
+    ) {
+        for result in results {
+            let Some(step) = plan.get_step_mut(result.step_id) else {
+                warn!(step_id = %result.step_id, "step not found in plan during result processing");
+                continue;
+            };
+
+            self.tokens_used += result.tokens_used as u64;
+
+            if result.success {
+                step.output = Some(result.output.clone());
+
+                if step.verify_after {
+                    let verify_result = self.executor.verify_step(step).await;
+                    match verify_result {
+                        Ok(vr) if vr.success => {
+                            let step_name = step.name.clone();
+                            step.status = StepStatus::Completed;
+                            self.emit_step_completed(result.step_id, &step_name, true, result.duration_ms);
+                        }
+                        Ok(vr) => {
+                            let step_name = step.name.clone();
+                            step.status = StepStatus::Failed { reason: vr.output.clone() };
+                            self.emit_step_completed(result.step_id, &step_name, false, result.duration_ms);
+                            self.emit_verify_gate_failed(result.step_id, &step_name, &vr.output, replan_count);
+                        }
+                        Err(e) => {
+                            let step_name = step.name.clone();
+                            step.status = StepStatus::Failed { reason: e.to_string() };
+                            self.emit_step_completed(result.step_id, &step_name, false, result.duration_ms);
+                        }
+                    }
+                } else {
+                    let step_name = step.name.clone();
+                    step.status = StepStatus::Completed;
+                    self.emit_step_completed(result.step_id, &step_name, true, result.duration_ms);
+                }
+            } else {
+                let step_name = step.name.clone();
+                step.status = StepStatus::Failed { reason: result.output.clone() };
+                self.emit_step_completed(result.step_id, &step_name, false, result.duration_ms);
+            }
+        }
     }
 
     /// Execute multiple steps in parallel.
@@ -344,11 +368,21 @@ impl GraphRunner {
             }
 
             let mut results = Vec::with_capacity(handles.len());
-            for handle in handles {
+            for (i, handle) in handles.into_iter().enumerate() {
                 match handle.await {
                     Ok(r) => results.push(r),
                     Err(e) => {
-                        warn!(error = %e, "step task panicked");
+                        // Fix #8: JoinError (panic/cancel) → produce a Failed StepResult
+                        // so the step doesn't "disappear" from the state machine.
+                        warn!(error = %e, "step task panicked or was cancelled");
+                        let failed_id = step_ids.get(i).copied().unwrap_or_default();
+                        results.push(StepResult {
+                            step_id: failed_id,
+                            success: false,
+                            output: format!("task panicked: {e}"),
+                            duration_ms: 0,
+                            tokens_used: 0,
+                        });
                     }
                 }
             }

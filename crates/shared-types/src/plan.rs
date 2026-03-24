@@ -319,7 +319,7 @@ impl ExecutionPlan {
         self.steps.iter().map(|s| s.estimated_tokens).sum()
     }
 
-    /// Validate the DAG: check for cycles and dangling dependencies.
+    /// Validate the DAG structure: cycles, dangling deps, duplicate IDs.
     pub fn validate(&self) -> Result<(), PlanValidationError> {
         // Check for duplicate step IDs first (HashSet dedup would hide them)
         let mut seen = HashSet::new();
@@ -347,6 +347,61 @@ impl ExecutionPlan {
         }
 
         Ok(())
+    }
+
+    /// Semantic validation: check that steps reference valid capabilities,
+    /// tools, and execution targets. Call after structural validate().
+    ///
+    /// `available_tools`: set of known tool names (from CapabilityRegistry).
+    /// `available_models`: set of known model names (e.g., "opus", "sonnet", "haiku").
+    pub fn validate_semantic(
+        &self,
+        available_tools: &HashSet<String>,
+        available_models: &HashSet<String>,
+    ) -> Vec<PlanValidationWarning> {
+        let mut warnings = Vec::new();
+
+        for step in &self.steps {
+            // Check allowed_tools against registry
+            for tool in &step.allowed_tools {
+                if !available_tools.is_empty() && !available_tools.contains(tool) {
+                    warnings.push(PlanValidationWarning::UnknownTool {
+                        step_id: step.id,
+                        step_name: step.name.clone(),
+                        tool: tool.clone(),
+                    });
+                }
+            }
+
+            // Check preferred model
+            if let Some(ref model) = step.agent_role.preferred_model
+                && !available_models.is_empty()
+                && !available_models.contains(model)
+            {
+                warnings.push(PlanValidationWarning::UnknownModel {
+                    step_id: step.id,
+                    step_name: step.name.clone(),
+                    model: model.clone(),
+                });
+            }
+
+            // Check read_only consistency: read_only role should not have write tools
+            if step.agent_role.read_only {
+                let write_tools = ["edit", "write", "shell", "bash", "delete", "move"];
+                for tool in &step.allowed_tools {
+                    let lower = tool.to_lowercase();
+                    if write_tools.iter().any(|w| lower.contains(w)) {
+                        warnings.push(PlanValidationWarning::ReadOnlyWithWriteTool {
+                            step_id: step.id,
+                            step_name: step.name.clone(),
+                            tool: tool.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        warnings
     }
 
     // -- Internal helpers --
@@ -507,6 +562,30 @@ pub enum PlanValidationError {
     DanglingDependency { step_id: Uuid, missing_dep: Uuid },
     #[error("duplicate step ID in plan")]
     DuplicateStepId,
+}
+
+/// Non-fatal warnings from semantic validation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlanValidationWarning {
+    /// Step references a tool not found in the registry.
+    UnknownTool {
+        step_id: Uuid,
+        step_name: String,
+        tool: String,
+    },
+    /// Step references a model not found in available providers.
+    UnknownModel {
+        step_id: Uuid,
+        step_name: String,
+        model: String,
+    },
+    /// Read-only role has write-capable tools assigned.
+    ReadOnlyWithWriteTool {
+        step_id: Uuid,
+        step_name: String,
+        tool: String,
+    },
 }
 
 // ---------------------------------------------------------------------------

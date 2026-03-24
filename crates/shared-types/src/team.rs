@@ -92,17 +92,43 @@ impl SharedTaskList {
         false
     }
 
-    /// Mark a task as completed.
-    pub fn complete(&mut self, step_id: Uuid) {
+    /// Mark a task as completed. Requires the claiming agent's ID for ownership check.
+    /// Returns false if the task is not claimed by `agent_id`.
+    pub fn complete(&mut self, step_id: Uuid, agent_id: AgentId) -> bool {
+        if let Some(task) = self.tasks.iter_mut().find(|t| t.step_id == step_id) {
+            if task.claimed_by != Some(agent_id) {
+                return false; // ownership check failed
+            }
+            task.status = StepStatus::Completed;
+            self.refresh_dependencies();
+            return true;
+        }
+        false
+    }
+
+    /// Mark a task as completed without ownership check (for coordinator/system use).
+    pub fn force_complete(&mut self, step_id: Uuid) {
         if let Some(task) = self.tasks.iter_mut().find(|t| t.step_id == step_id) {
             task.status = StepStatus::Completed;
         }
-        // Update dependency flags for downstream tasks
         self.refresh_dependencies();
     }
 
-    /// Mark a task as failed.
-    pub fn fail(&mut self, step_id: Uuid, reason: String) {
+    /// Mark a task as failed. Requires the claiming agent's ID for ownership check.
+    /// Returns false if the task is not claimed by `agent_id`.
+    pub fn fail(&mut self, step_id: Uuid, agent_id: AgentId, reason: String) -> bool {
+        if let Some(task) = self.tasks.iter_mut().find(|t| t.step_id == step_id) {
+            if task.claimed_by != Some(agent_id) {
+                return false;
+            }
+            task.status = StepStatus::Failed { reason };
+            return true;
+        }
+        false
+    }
+
+    /// Mark a task as failed without ownership check (for coordinator/system use).
+    pub fn force_fail(&mut self, step_id: Uuid, reason: String) {
         if let Some(task) = self.tasks.iter_mut().find(|t| t.step_id == step_id) {
             task.status = StepStatus::Failed { reason };
         }
@@ -169,8 +195,11 @@ pub struct TaskListSummary {
 /// Coordinates a team of agents working on a plan.
 ///
 /// Manages the lifecycle: spawn members → assign tasks → monitor → converge.
+/// Members are scoped to the plan_id to avoid polluting the global registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamCoordinator {
+    /// Plan ID this team belongs to (for scoped cleanup).
+    pub plan_id: Uuid,
     /// Team configuration.
     pub config: TeamConfig,
     /// Shared task list visible to all members.
@@ -179,23 +208,29 @@ pub struct TeamCoordinator {
     pub created_at: DateTime<Utc>,
     /// Messages exchanged (count for monitoring).
     pub messages_exchanged: u32,
+    /// Agent IDs spawned by this team (for cleanup).
+    pub spawned_agent_ids: Vec<AgentId>,
 }
 
 impl TeamCoordinator {
     /// Create a new team coordinator from a plan and team config.
     pub fn new(plan: &ExecutionPlan, config: TeamConfig) -> Self {
         Self {
+            plan_id: plan.id,
             config,
             task_list: SharedTaskList::from_plan(plan),
             created_at: Utc::now(),
             messages_exchanged: 0,
+            spawned_agent_ids: Vec::new(),
         }
     }
 
     /// Spawn team members in the agent registry.
+    /// Agent names are prefixed with plan_id for isolation.
     /// Returns the assigned agent IDs.
     pub fn spawn_members(&mut self, registry: &mut AgentRegistry) -> Vec<AgentId> {
         let mut ids = Vec::new();
+        let plan_prefix = &self.plan_id.to_string()[..8];
 
         for member in &mut self.config.members {
             let capabilities: Vec<Capability> = member
@@ -205,7 +240,8 @@ impl TeamCoordinator {
                 .map(Capability::new)
                 .collect();
 
-            let agent = AgentDescriptor::new(&member.role.name, &member.role.name)
+            let scoped_name = format!("{plan_prefix}/{}", member.role.name);
+            let agent = AgentDescriptor::new(&scoped_name, &member.role.name)
                 .with_capabilities(capabilities)
                 .with_max_load(member.assigned_steps.len() as u32);
 
@@ -214,7 +250,19 @@ impl TeamCoordinator {
             ids.push(id);
         }
 
+        self.spawned_agent_ids = ids.clone();
         ids
+    }
+
+    /// Teardown: unregister all agents spawned by this team.
+    /// Call when the plan is complete or aborted.
+    pub fn teardown(&mut self, registry: &mut AgentRegistry) {
+        for id in self.spawned_agent_ids.drain(..) {
+            registry.unregister(id);
+        }
+        for member in &mut self.config.members {
+            member.agent_id = None;
+        }
     }
 
     /// Find the best member for a given step (by capability match).
@@ -343,9 +391,12 @@ mod tests {
         // Can't claim again
         assert!(!list.claim(setup_id, AgentId::new()));
 
-        // Complete setup
-        list.complete(setup_id);
+        // Complete setup (with ownership)
+        assert!(list.complete(setup_id, agent));
         assert_eq!(list.tasks[0].status, StepStatus::Completed);
+
+        // Can't complete someone else's task
+        assert!(!list.complete(setup_id, AgentId::new()));
 
         let summary = list.summary();
         assert_eq!(summary.completed, 1);
@@ -433,7 +484,8 @@ mod tests {
         let mut list = SharedTaskList::from_plan(&plan);
         let step_id = list.tasks[0].step_id;
 
-        list.fail(step_id, "runtime error".into());
+        // Use force_fail for system-level failure (no ownership required)
+        list.force_fail(step_id, "runtime error".into());
         assert!(matches!(list.tasks[0].status, StepStatus::Failed { .. }));
 
         let summary = list.summary();
