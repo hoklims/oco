@@ -1,0 +1,31 @@
+# Changelog
+
+## [0.2.0] — 2026-03-24
+
+### Added
+- **Event-driven CLI**: `UiEvent` enum (26 variants) + `Renderer` trait decouples business events from presentation
+- **Three renderers**: Terminal (colors, spinners, icons), JSONL (machine-readable), Quiet (final results only)
+- **Live orchestration trace**: `OrchestrationEvent` streamed via `mpsc` channel, rendered in real-time via `tokio::spawn`
+- **Run artifacts**: every `oco run` persists `trace.jsonl` + `summary.json` to `.oco/runs/<id>/`
+- **`oco runs show <id|last>`**: replay a past run's trace from artifacts
+- **`oco runs list`**: list recent runs with status, steps, duration
+- **`--format jsonl`**: structured JSONL output on stdout for all commands
+- **`--quiet`**: suppress all output except final result and errors
+- **Tracing log redirection**: in human mode, logs go to `.oco/oco.log` keeping the terminal clean
+- **`OrchestrationEvent`** enum in `shared-types` (StepCompleted, BudgetWarning, Stopped, IndexProgress)
+- **`with_event_channel()`** on `OrchestrationLoop` for live event streaming
+- **`index_workspace_with_progress()`** callback for future progress bar support
+
+### Changed
+- `FtsIndex` wraps `Connection` in `Mutex` for `Send+Sync` (enables `tokio::spawn` for the loop)
+- `TelemetryConfig` gains `log_to_file` and `quiet` fields
+- `run()` wrapper guarantees `Stopped` event emission even on early errors
+- Run success derived from terminal `Stop { TaskComplete }` action (not `session.status`)
+- Artifact save is non-fatal (warning on failure)
+
+### Dependencies
+- Added: `indicatif` 0.17, `console` 0.15
+
+## [0.1.0] — 2026-03-20
+
+Initial release: orchestration loop, policy engine, code-intel, retrieval, verifier, telemetry, MCP server, dev CLI.

@@ -4,7 +4,8 @@ use std::time::Instant;
 
 use oco_shared_types::{
     ActionCandidate, MemoryEntry, MemorySeverity, Observation, ObservationKind, ObservationSource,
-    OrchestratorAction, Session, StopReason, TelemetryEventType, ToolGateDecision, WorkingMemory,
+    OrchestrationEvent, OrchestratorAction, Session, StopReason, TelemetryEventType,
+    ToolGateDecision, WorkingMemory,
 };
 use tracing::{debug, info, warn};
 
@@ -75,6 +76,8 @@ pub struct OrchestrationLoop {
     runtime: Option<OrchestratorRuntime>,
     trace_collector: oco_telemetry::DecisionTraceCollector,
     metrics: Option<oco_telemetry::SessionMetrics>,
+    /// Optional channel for live event streaming to UI.
+    event_tx: Option<tokio::sync::mpsc::UnboundedSender<OrchestrationEvent>>,
 }
 
 impl OrchestrationLoop {
@@ -91,7 +94,17 @@ impl OrchestrationLoop {
             runtime: None,
             trace_collector: oco_telemetry::DecisionTraceCollector::new(),
             metrics: None,
+            event_tx: None,
         }
+    }
+
+    /// Set a channel for live orchestration events (step-by-step feedback).
+    pub fn with_event_channel(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<OrchestrationEvent>,
+    ) -> &mut Self {
+        self.event_tx = Some(tx);
+        self
     }
 
     /// Access the decision trace collector.
@@ -115,7 +128,28 @@ impl OrchestrationLoop {
     }
 
     /// Run the orchestration loop for a given user request.
+    /// Guarantees a `Stopped` event is emitted even if the loop errors out.
     pub async fn run(
+        &mut self,
+        user_request: String,
+        workspace_root: Option<String>,
+    ) -> Result<OrchestrationState, OrchestratorError> {
+        let result = self.run_inner(user_request, workspace_root).await;
+        // Emit Stopped on error paths where run_inner didn't reach its own Stopped
+        if let Err(ref e) = result {
+            self.emit_event(OrchestrationEvent::Stopped {
+                reason: StopReason::Error {
+                    message: e.to_string(),
+                },
+                total_steps: 0,
+                total_tokens: 0,
+            });
+        }
+        result
+    }
+
+    /// Inner run implementation.
+    async fn run_inner(
         &mut self,
         user_request: String,
         workspace_root: Option<String>,
@@ -228,6 +262,10 @@ impl OrchestrationLoop {
                         }
                         .into(),
                     });
+                self.emit_event(OrchestrationEvent::BudgetWarning {
+                    resource: "tokens".into(),
+                    utilization: token_util,
+                });
             }
 
             // Select action via policy engine
@@ -288,6 +326,16 @@ impl OrchestrationLoop {
             // Feed telemetry collector with the trace we just recorded
             if let Some(trace) = state.traces.last() {
                 self.trace_collector.record(trace.clone());
+                // Emit live event for the UI
+                self.emit_event(OrchestrationEvent::StepCompleted {
+                    step: trace.step,
+                    action: action.clone(),
+                    reason: trace.reason.clone(),
+                    duration_ms,
+                    budget_snapshot: trace.budget_snapshot.clone(),
+                    knowledge_confidence: trace.knowledge_confidence,
+                    success: action_succeeded,
+                });
             }
 
             // Record step duration in session metrics
@@ -444,7 +492,35 @@ impl OrchestrationLoop {
             );
         }
 
+        // Emit final stopped event — derive reason from the terminal Stop action
+        let stop_reason = state
+            .action_history
+            .iter()
+            .rev()
+            .find_map(|a| {
+                if let OrchestratorAction::Stop { reason } = a {
+                    Some(reason.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(StopReason::Error {
+                message: "session ended without explicit stop".into(),
+            });
+        self.emit_event(OrchestrationEvent::Stopped {
+            reason: stop_reason,
+            total_steps: state.session.step_count,
+            total_tokens: state.session.budget.tokens_used,
+        });
+
         Ok(state)
+    }
+
+    /// Emit a live event if a channel is connected. Non-blocking, ignores send failures.
+    fn emit_event(&self, event: OrchestrationEvent) {
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(event);
+        }
     }
 
     fn build_policy_state(&self, state: &OrchestrationState) -> oco_policy_engine::PolicyState {

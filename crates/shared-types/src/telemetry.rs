@@ -142,3 +142,35 @@ pub struct InterventionSummary {
     pub harmful: u32,
     pub unknown: u32,
 }
+
+// ── Live orchestration events ─────────────────────────────
+
+/// Events emitted by the orchestration loop in real time via channel.
+/// Decoupled from UI — the CLI converts these to UiEvents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum OrchestrationEvent {
+    /// A step was completed (action executed + trace recorded).
+    StepCompleted {
+        step: u32,
+        action: crate::OrchestratorAction,
+        reason: String,
+        duration_ms: u64,
+        budget_snapshot: BudgetSnapshot,
+        knowledge_confidence: f64,
+        success: bool,
+    },
+    /// Budget crossed a warning threshold.
+    BudgetWarning { resource: String, utilization: f64 },
+    /// The orchestration loop stopped.
+    Stopped {
+        reason: crate::StopReason,
+        total_steps: u32,
+        total_tokens: u64,
+    },
+    /// Indexing progress (file-by-file).
+    IndexProgress {
+        files_done: u32,
+        symbols_so_far: u32,
+    },
+}

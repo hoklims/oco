@@ -157,6 +157,14 @@ impl OrchestratorRuntime {
 
     /// Index the workspace: scan files, build FTS index, extract symbols.
     pub fn index_workspace(&mut self) -> Result<IndexResult> {
+        self.index_workspace_with_progress(None)
+    }
+
+    /// Index the workspace with optional progress callback (files_done, symbols_so_far).
+    pub fn index_workspace_with_progress(
+        &mut self,
+        on_progress: Option<&dyn Fn(u32, u32)>,
+    ) -> Result<IndexResult> {
         let ws = self.workspace_root.to_string_lossy().to_string();
         info!(workspace = %ws, "Indexing workspace");
 
@@ -204,6 +212,10 @@ impl OrchestratorRuntime {
             }
 
             file_count += 1;
+
+            if let Some(cb) = on_progress {
+                cb(file_count, symbol_count);
+            }
         }
 
         // Batch insert into FTS

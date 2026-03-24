@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/open-context-orchestrator/oco"
@@ -66,6 +66,9 @@ hmac = "0.12"
 hex = "0.4"
 petgraph = "0.7"
 
+# Terminal UI
+indicatif = "0.17"
+console = "0.15"
 # Testing
 tempfile = "3"
 
