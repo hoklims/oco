@@ -4,7 +4,8 @@ use std::time::Instant;
 
 use oco_shared_types::{
     ActionCandidate, MemoryEntry, MemorySeverity, Observation, ObservationKind, ObservationSource,
-    OrchestratorAction, Session, StopReason, TelemetryEventType, ToolGateDecision, WorkingMemory,
+    OrchestrationEvent, OrchestratorAction, Session, StopReason, TelemetryEventType,
+    ToolGateDecision, WorkingMemory,
 };
 use tracing::{debug, info, warn};
 
@@ -75,6 +76,8 @@ pub struct OrchestrationLoop {
     runtime: Option<OrchestratorRuntime>,
     trace_collector: oco_telemetry::DecisionTraceCollector,
     metrics: Option<oco_telemetry::SessionMetrics>,
+    /// Optional channel for live event streaming to UI.
+    event_tx: Option<tokio::sync::mpsc::UnboundedSender<OrchestrationEvent>>,
 }
 
 impl OrchestrationLoop {
@@ -91,7 +94,17 @@ impl OrchestrationLoop {
             runtime: None,
             trace_collector: oco_telemetry::DecisionTraceCollector::new(),
             metrics: None,
+            event_tx: None,
         }
+    }
+
+    /// Set a channel for live orchestration events (step-by-step feedback).
+    pub fn with_event_channel(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<OrchestrationEvent>,
+    ) -> &mut Self {
+        self.event_tx = Some(tx);
+        self
     }
 
     /// Access the decision trace collector.
@@ -228,6 +241,10 @@ impl OrchestrationLoop {
                         }
                         .into(),
                     });
+                self.emit_event(OrchestrationEvent::BudgetWarning {
+                    resource: "tokens".into(),
+                    utilization: token_util,
+                });
             }
 
             // Select action via policy engine
@@ -288,6 +305,16 @@ impl OrchestrationLoop {
             // Feed telemetry collector with the trace we just recorded
             if let Some(trace) = state.traces.last() {
                 self.trace_collector.record(trace.clone());
+                // Emit live event for the UI
+                self.emit_event(OrchestrationEvent::StepCompleted {
+                    step: trace.step,
+                    action: action.clone(),
+                    reason: trace.reason.clone(),
+                    duration_ms,
+                    budget_snapshot: trace.budget_snapshot.clone(),
+                    knowledge_confidence: trace.knowledge_confidence,
+                    success: action_succeeded,
+                });
             }
 
             // Record step duration in session metrics
@@ -444,7 +471,29 @@ impl OrchestrationLoop {
             );
         }
 
+        // Emit final stopped event
+        let stop_reason = match state.session.status {
+            oco_shared_types::SessionStatus::Completed => StopReason::TaskComplete,
+            oco_shared_types::SessionStatus::BudgetExhausted => StopReason::BudgetExhausted,
+            oco_shared_types::SessionStatus::Cancelled => StopReason::UserCancelled,
+            _ => StopReason::Error {
+                message: "session ended".into(),
+            },
+        };
+        self.emit_event(OrchestrationEvent::Stopped {
+            reason: stop_reason,
+            total_steps: state.session.step_count,
+            total_tokens: state.session.budget.tokens_used,
+        });
+
         Ok(state)
+    }
+
+    /// Emit a live event if a channel is connected. Non-blocking, ignores send failures.
+    fn emit_event(&self, event: OrchestrationEvent) {
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(event);
+        }
     }
 
     fn build_policy_state(&self, state: &OrchestrationState) -> oco_policy_engine::PolicyState {

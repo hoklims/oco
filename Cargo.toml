@@ -66,6 +66,11 @@ hmac = "0.12"
 hex = "0.4"
 petgraph = "0.7"
 
+# Terminal UI
+indicatif = "0.17"
+console = "0.15"
+comfy-table = "7"
+
 # Testing
 tempfile = "3"
 

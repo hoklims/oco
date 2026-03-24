@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument};
@@ -14,8 +16,11 @@ pub struct FtsResult {
 }
 
 /// Full-text search index backed by SQLite FTS5.
+///
+/// Wraps the connection in a `Mutex` so that `FtsIndex` is `Send + Sync`,
+/// which allows the orchestration loop to run on a spawned tokio task.
 pub struct FtsIndex {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl FtsIndex {
@@ -44,17 +49,18 @@ impl FtsIndex {
         )?;
 
         debug!("FTS5 index ready at {db_path}");
-        Ok(Self { conn })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Index a single document. If a document with the same `id` already exists
     /// it is deleted first (upsert semantics).
     #[instrument(skip(self, content), fields(id, path))]
     pub fn index_document(&self, id: &str, path: &str, content: &str) -> Result<()> {
-        // Remove previous version if any.
-        self.conn
-            .execute("DELETE FROM documents WHERE id = ?1", [id])?;
-        self.conn.execute(
+        let conn = self.conn.lock().expect("FtsIndex mutex poisoned");
+        conn.execute("DELETE FROM documents WHERE id = ?1", [id])?;
+        conn.execute(
             "INSERT INTO documents (id, path, content) VALUES (?1, ?2, ?3)",
             [id, path, content],
         )?;
@@ -67,7 +73,8 @@ impl FtsIndex {
     /// Each tuple is `(id, path, content)`.
     #[instrument(skip_all, fields(count = docs.len()))]
     pub fn index_documents_batch(&self, docs: Vec<(String, String, String)>) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
+        let conn = self.conn.lock().expect("FtsIndex mutex poisoned");
+        let tx = conn.unchecked_transaction()?;
         {
             let mut delete_stmt = tx.prepare("DELETE FROM documents WHERE id = ?1")?;
             let mut insert_stmt =
@@ -102,8 +109,8 @@ impl FtsIndex {
             return Ok(Vec::new());
         }
 
-        let mut stmt = self
-            .conn
+        let conn = self.conn.lock().expect("FtsIndex mutex poisoned");
+        let mut stmt = conn
             .prepare(
                 "SELECT id, path, snippet(documents, 2, '<b>', '</b>', '...', 48), rank
              FROM documents

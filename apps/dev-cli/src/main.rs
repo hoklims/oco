@@ -1,7 +1,12 @@
+mod ui;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
+
+use ui::{CheckStatus, OutputFormat, Renderer, UiEvent};
 
 #[derive(Parser)]
 #[command(name = "oco", version, about = "Open Context Orchestrator — Dev CLI")]
@@ -13,9 +18,13 @@ struct Cli {
     #[arg(long, default_value = "info", global = true)]
     log_level: String,
 
-    /// Output format (human, json)
+    /// Output format (human, json, jsonl)
     #[arg(long, default_value = "human", global = true)]
     format: String,
+
+    /// Suppress all output except final result
+    #[arg(long, global = true)]
+    quiet: bool,
 }
 
 #[derive(Subcommand)]
@@ -114,7 +123,7 @@ enum Commands {
         #[arg(long)]
         output: Option<String>,
     },
-    /// v2: Run evaluation scenarios
+    /// Run evaluation scenarios
     Eval {
         /// Path to scenarios JSONL file
         scenarios: String,
@@ -125,615 +134,1072 @@ enum Commands {
         #[arg(long, default_value = "stub")]
         provider: String,
     },
-    /// v2: Check plugin health and configuration
+    /// Check plugin health and configuration
     Doctor {
         /// Workspace path to check
         #[arg(long, default_value = ".")]
         workspace: String,
+    },
+    /// Show a past run's trace and summary
+    Runs {
+        #[command(subcommand)]
+        action: RunsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum RunsAction {
+    /// Show a past run's trace
+    Show {
+        /// Run/session ID (or "last" for most recent)
+        id: String,
+        /// Workspace path (to find .oco/runs/)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+    },
+    /// List recent runs
+    List {
+        /// Workspace path
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Max entries
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
     },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let out_format = OutputFormat::from_str(&cli.format);
 
-    // Initialize telemetry
+    // Initialize telemetry.
+    // In human mode: redirect logs to .oco/oco.log to keep the terminal clean.
+    // In quiet mode: suppress all logs except errors.
+    let log_to_file = if out_format == OutputFormat::Human && !cli.quiet {
+        Some(".oco/oco.log".to_string())
+    } else {
+        None
+    };
     oco_telemetry::init_tracing(oco_telemetry::TelemetryConfig {
         log_level: cli.log_level.clone(),
-        json_output: cli.format == "json",
+        json_output: matches!(out_format, OutputFormat::Json | OutputFormat::Jsonl),
         trace_file: None,
+        log_to_file,
+        quiet: cli.quiet,
     })?;
 
-    match cli.command {
-        Commands::Serve { host, port } => {
-            let mut config =
-                oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
-            config.bind_address = host;
-            config.port = port;
+    let mut r: Box<dyn Renderer> = if cli.quiet {
+        Box::new(ui::quiet::QuietRenderer::new())
+    } else {
+        ui::create_renderer(out_format)
+    };
 
-            let server = oco_mcp_server::McpServer::new(config);
-            server.run().await?;
-        }
+    match cli.command {
+        Commands::Serve { host, port } => cmd_serve(&mut *r, host, port).await?,
         Commands::Run {
             request,
             workspace,
             provider,
             model,
             max_steps: _,
-        } => {
-            let mut config = oco_orchestrator_core::OrchestratorConfig::default();
-            config.default_budget.max_duration_secs = 120;
-
-            // Select LLM provider
-            let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
-                "anthropic" => {
-                    let model_name = model.unwrap_or_else(|| config.llm.model.clone());
-                    let anthropic_config =
-                        oco_orchestrator_core::llm::AnthropicConfig::from_env(&model_name, None)?;
-                    Arc::new(oco_orchestrator_core::llm::AnthropicProvider::new(
-                        anthropic_config,
-                    )?)
-                }
-                "ollama" => {
-                    let model_name = model.unwrap_or_else(|| "llama3.2".to_string());
-                    let ollama_config = oco_orchestrator_core::llm::OllamaConfig::new(&model_name);
-                    Arc::new(oco_orchestrator_core::llm::OllamaProvider::new(
-                        ollama_config,
-                    )?)
-                }
-                _ => Arc::new(oco_orchestrator_core::llm::StubLlmProvider {
-                    model: model.unwrap_or_else(|| config.llm.model.clone()),
-                }),
-            };
-
-            println!("Provider: {} ({})", llm.provider_name(), llm.model_name());
-
-            let mut orchestrator = oco_orchestrator_core::OrchestrationLoop::new(config, llm);
-
-            // Index workspace if provided
-            if let Some(ref ws) = workspace {
-                let ws_path = PathBuf::from(ws)
-                    .canonicalize()
-                    .unwrap_or_else(|_| PathBuf::from(ws));
-                println!("Indexing workspace: {}", ws_path.display());
-                orchestrator.with_workspace(ws_path);
-            }
-
-            println!("Request: {request}");
-            println!("---");
-
-            let state = orchestrator.run(request, workspace).await?;
-
-            // Print results
-            println!("---");
-            println!("Session: {}", state.session.id.0);
-            println!("Steps: {}", state.session.step_count);
-            println!(
-                "Tokens used: {} / {}",
-                state.session.budget.tokens_used, state.session.budget.max_total_tokens
-            );
-
-            if cli.format == "json" {
-                let output = serde_json::json!({
-                    "session_id": state.session.id.0.to_string(),
-                    "steps": state.session.step_count,
-                    "complexity": state.task_complexity,
-                    "tokens_used": state.session.budget.tokens_used,
-                    "traces": state.traces,
-                    "final_response": state.observations.iter().rev()
-                        .find(|o| matches!(o.source, oco_shared_types::ObservationSource::LlmResponse))
-                        .and_then(|o| if let oco_shared_types::ObservationKind::Text { content, .. } = &o.kind { Some(content.clone()) } else { None })
-                });
-                println!("{}", serde_json::to_string_pretty(&output)?);
-            } else {
-                // Print decision trace
-                println!("\nDecision trace:");
-                for trace in &state.traces {
-                    let action_type = match &trace.action {
-                        oco_shared_types::OrchestratorAction::Respond { .. } => "RESPOND",
-                        oco_shared_types::OrchestratorAction::Retrieve { .. } => "RETRIEVE",
-                        oco_shared_types::OrchestratorAction::ToolCall { .. } => "TOOL_CALL",
-                        oco_shared_types::OrchestratorAction::Verify { .. } => "VERIFY",
-                        oco_shared_types::OrchestratorAction::UpdateMemory { .. } => "MEMORY",
-                        oco_shared_types::OrchestratorAction::Stop { .. } => "STOP",
-                    };
-                    println!(
-                        "  [{:>2}] {:<10} | {:<50} | conf: {:.2}",
-                        trace.step, action_type, trace.reason, trace.knowledge_confidence
-                    );
-                }
-
-                // Print final response if available
-                let final_response = state
-                    .observations
-                    .iter()
-                    .rev()
-                    .find(|o| matches!(o.source, oco_shared_types::ObservationSource::LlmResponse))
-                    .and_then(|o| {
-                        if let oco_shared_types::ObservationKind::Text { content, .. } = &o.kind {
-                            Some(content.clone())
-                        } else {
-                            None
-                        }
-                    });
-
-                if let Some(response) = final_response {
-                    println!("\nResponse:\n{response}");
-                }
-            }
-        }
-        Commands::Index { path } => {
-            let ws_path = PathBuf::from(&path)
-                .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from(&path));
-            println!("Indexing {}...", ws_path.display());
-
-            let mut runtime = oco_orchestrator_core::OrchestratorRuntime::new(ws_path);
-            let result = runtime.index_workspace()?;
-
-            println!(
-                "Done: {} files indexed, {} symbols extracted",
-                result.file_count, result.symbol_count
-            );
-        }
+        } => cmd_run(&mut *r, out_format, request, workspace, provider, model).await?,
+        Commands::Index { path } => cmd_index(&mut *r, path)?,
         Commands::Search {
             query,
             workspace,
             limit,
-        } => {
-            let ws_path = PathBuf::from(&workspace)
-                .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from(&workspace));
-
-            let mut runtime = oco_orchestrator_core::OrchestratorRuntime::new(ws_path);
-            runtime.index_workspace()?;
-
-            let results = runtime.search(&query, limit)?;
-
-            if cli.format == "json" {
-                println!("{}", serde_json::to_string(&results)?);
-            } else if results.is_empty() {
-                println!("No results for \"{query}\"");
-            } else {
-                for (i, r) in results.iter().enumerate() {
-                    println!("{}. {} (score: {:.2})", i + 1, r.path, r.score);
-                    println!("   {}", r.snippet.replace('\n', "\n   "));
-                    println!();
-                }
-            }
-        }
-        Commands::Status { url } => {
-            let resp = reqwest::get(format!("{url}/api/v1/status")).await?;
-            let body: serde_json::Value = resp.json().await?;
-            if cli.format == "json" {
-                println!("{}", serde_json::to_string_pretty(&body)?);
-            } else {
-                println!("Status: {}", body["status"]);
-                println!("Steps: {}", body["steps"]);
-                println!("Tokens used: {}", body["tokens_used"]);
-            }
-        }
-        Commands::Trace { session_id, url } => {
-            let resp = reqwest::get(format!("{url}/api/v1/sessions/{session_id}/trace")).await?;
-            let body: serde_json::Value = resp.json().await?;
-            println!("{}", serde_json::to_string_pretty(&body)?);
-        }
-        Commands::Init { output } => {
-            let path = PathBuf::from(&output);
-            if path.exists() {
-                anyhow::bail!(
-                    "{output} already exists. Remove it first or use --output to specify a different path."
-                );
-            }
-            let config = oco_orchestrator_core::OrchestratorConfig::default();
-            let toml_str = config.to_toml()?;
-            std::fs::write(&path, toml_str)?;
-            println!("Created {output}");
-            println!("Edit it to configure LLM provider, budget limits, etc.");
-        }
-        Commands::Classify { prompt, workspace } => {
-            let ws_path = PathBuf::from(&workspace);
-
-            // Gather lightweight workspace signals
-            let mut signals = Vec::new();
-            if ws_path.join("Cargo.toml").exists() {
-                signals.push("rust workspace".to_string());
-            }
-            if ws_path.join("package.json").exists() {
-                signals.push("node workspace".to_string());
-            }
-            if ws_path.join("pyproject.toml").exists() {
-                signals.push("python workspace".to_string());
-            }
-
-            let complexity = oco_policy_engine::TaskClassifier::classify(&prompt, &signals);
-
-            // Determine task type from keywords
-            let prompt_lower = prompt.to_lowercase();
-            let task_type = if prompt_lower.contains("refactor") || prompt_lower.contains("rename")
-            {
-                "refactor"
-            } else if prompt_lower.contains("bug")
-                || prompt_lower.contains("fix")
-                || prompt_lower.contains("debug")
-            {
-                "bugfix"
-            } else if prompt_lower.contains("test") {
-                "testing"
-            } else if prompt_lower.contains("implement")
-                || prompt_lower.contains("create")
-                || prompt_lower.contains("add")
-            {
-                "feature"
-            } else if prompt_lower.contains("explain")
-                || prompt_lower.contains("what")
-                || prompt_lower.contains("how")
-            {
-                "exploration"
-            } else {
-                "unknown"
-            };
-
-            let needs_verification = matches!(
-                complexity,
-                oco_shared_types::TaskComplexity::Medium
-                    | oco_shared_types::TaskComplexity::High
-                    | oco_shared_types::TaskComplexity::Critical
-            ) && task_type != "exploration";
-
-            // Collect priority files: check for recently modified files in workspace
-            let priority_files: Vec<String> = collect_priority_files(&ws_path, &prompt);
-
-            let output = serde_json::json!({
-                "complexity": complexity,
-                "task_type": task_type,
-                "needs_verification": needs_verification,
-                "priority_files": priority_files,
-                "workspace_signals": signals,
-            });
-
-            if cli.format == "json" {
-                println!("{}", serde_json::to_string(&output)?);
-            } else {
-                println!("Complexity: {:?}", complexity);
-                println!("Task type: {task_type}");
-                println!("Needs verification: {needs_verification}");
-                if !priority_files.is_empty() {
-                    println!("Priority files: {}", priority_files.join(", "));
-                }
-            }
-        }
+        } => cmd_search(&mut *r, out_format, query, workspace, limit)?,
+        Commands::Status { url } => cmd_status(&mut *r, out_format, url).await?,
+        Commands::Trace { session_id, url } => cmd_trace(session_id, url).await?,
+        Commands::Init { output } => cmd_init(&mut *r, output)?,
+        Commands::Classify { prompt, workspace } => cmd_classify(out_format, prompt, workspace)?,
         Commands::GateCheck {
             tool,
             input,
             policy,
-        } => {
-            let write_policy = match policy.as_str() {
-                "allow_all" => oco_policy_engine::WritePolicy::AllowAll,
-                "deny_destructive" => oco_policy_engine::WritePolicy::DenyDestructive,
-                _ => oco_policy_engine::WritePolicy::RequireConfirmation,
-            };
-
-            let gate = oco_policy_engine::PolicyGate::new(write_policy);
-
-            // Parse JSON input — fail-closed on invalid JSON
-            let input_json: serde_json::Value = match serde_json::from_str(&input) {
-                Ok(v) => v,
-                Err(e) => {
-                    let output = serde_json::json!({
-                        "decision": "deny",
-                        "reason": format!("Invalid JSON input: {e}")
-                    });
-                    println!("{}", serde_json::to_string(&output)?);
-                    return Ok(());
-                }
-            };
-
-            // Check if this is a shell/bash tool with a command argument
-            let decision = if tool.to_lowercase() == "bash" || tool.to_lowercase() == "shell" {
-                let command = input_json
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if command.is_empty() {
-                    // Missing command for shell tool — deny
-                    oco_shared_types::ToolGateDecision::Deny {
-                        reason: "shell tool called without a command field".to_string(),
-                    }
-                } else {
-                    gate.evaluate_command(command)
-                }
-            } else {
-                // Build a ToolDescriptor from the tool name and input
-                // Known write tools
-                let tool_lower = tool.to_lowercase();
-                let is_write = matches!(
-                    tool_lower.as_str(),
-                    "edit"
-                        | "write"
-                        | "file_write"
-                        | "file_delete"
-                        | "directory_delete"
-                        | "notebookedit"
-                        | "multiedit"
-                );
-                let is_destructive = matches!(
-                    tool_lower.as_str(),
-                    "file_delete" | "directory_delete" | "git_reset" | "git_force_push"
-                );
-                // Fail-closed: unknown tools that aren't in the known-safe read list
-                // require confirmation
-                let known_read = matches!(
-                    tool_lower.as_str(),
-                    "read"
-                        | "glob"
-                        | "grep"
-                        | "bash"
-                        | "shell"
-                        | "web_search"
-                        | "web_fetch"
-                        | "list_files"
-                );
-                let requires_confirmation = is_destructive || (!is_write && !known_read);
-
-                let descriptor = oco_shared_types::ToolDescriptor {
-                    name: tool.clone(),
-                    description: String::new(),
-                    input_schema: serde_json::json!({}),
-                    is_write: is_write || (!known_read && !is_destructive),
-                    requires_confirmation,
-                    timeout_secs: 30,
-                    tags: if is_destructive {
-                        vec!["destructive".to_string()]
-                    } else if is_write {
-                        vec!["write".to_string()]
-                    } else {
-                        vec!["read".to_string()]
-                    },
-                };
-                gate.evaluate(&descriptor)
-            };
-
-            let output = match &decision {
-                oco_shared_types::ToolGateDecision::Allow => {
-                    serde_json::json!({"decision": "allow"})
-                }
-                oco_shared_types::ToolGateDecision::RequireConfirmation { reason } => {
-                    serde_json::json!({"decision": "confirm", "reason": reason})
-                }
-                oco_shared_types::ToolGateDecision::Deny { reason } => {
-                    serde_json::json!({"decision": "deny", "reason": reason})
-                }
-            };
-
-            if cli.format == "json" {
-                println!("{}", serde_json::to_string(&output)?);
-            } else {
-                match &decision {
-                    oco_shared_types::ToolGateDecision::Allow => {
-                        println!("ALLOW: tool '{tool}' permitted");
-                    }
-                    oco_shared_types::ToolGateDecision::RequireConfirmation { reason } => {
-                        println!("CONFIRM: {reason}");
-                    }
-                    oco_shared_types::ToolGateDecision::Deny { reason } => {
-                        println!("DENY: {reason}");
-                    }
-                }
-            }
-        }
-        Commands::Eval {
-            scenarios,
-            output,
-            provider,
-        } => {
-            let config =
-                oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
-
-            let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
-                "anthropic" => {
-                    let anthropic_config = oco_orchestrator_core::llm::AnthropicConfig::from_env(
-                        &config.llm.model,
-                        None,
-                    )?;
-                    Arc::new(oco_orchestrator_core::llm::AnthropicProvider::new(
-                        anthropic_config,
-                    )?)
-                }
-                _ => Arc::new(oco_orchestrator_core::llm::StubLlmProvider {
-                    model: config.llm.model.clone(),
-                }),
-            };
-
-            let scenario_path = PathBuf::from(&scenarios);
-            let loaded = oco_orchestrator_core::eval::load_scenarios(&scenario_path)?;
-            println!("Loaded {} scenarios from {scenarios}", loaded.len());
-
-            let results = oco_orchestrator_core::eval::run_all(&loaded, llm, &config).await;
-
-            let metrics = oco_orchestrator_core::eval::aggregate_metrics(&results);
-
-            if let Some(ref output_path) = output {
-                let json = serde_json::to_string_pretty(&metrics)?;
-                std::fs::write(output_path, json)?;
-                println!("Results written to {output_path}");
-            } else {
-                for m in &metrics {
-                    println!(
-                        "{}: success={}, steps={}, tokens={}, duration={}ms, tokens/step={:.0}",
-                        m.scenario_name,
-                        m.success,
-                        m.step_count,
-                        m.total_tokens,
-                        m.duration_ms,
-                        m.token_per_step,
-                    );
-                }
-            }
-        }
-        Commands::Doctor { workspace } => {
-            let ws_path = PathBuf::from(&workspace);
-            println!("OCO Doctor — checking {}", ws_path.display());
-            println!();
-
-            let mut issues = 0u32;
-
-            // Check oco.toml
-            let config_path = ws_path.join("oco.toml");
-            if config_path.exists() {
-                match oco_orchestrator_core::OrchestratorConfig::from_file(&config_path) {
-                    Ok(_) => println!("  [PASS] oco.toml is valid"),
-                    Err(e) => {
-                        println!("  [FAIL] oco.toml parse error: {e}");
-                        issues += 1;
-                    }
-                }
-            } else {
-                println!("  [WARN] oco.toml not found — using defaults");
-            }
-
-            // Check .oco directory
-            let oco_dir = ws_path.join(".oco");
-            if oco_dir.exists() {
-                println!("  [PASS] .oco/ directory exists");
-                let db_path = oco_dir.join("index.db");
-                if db_path.exists() {
-                    println!("  [PASS] index.db exists");
-                } else {
-                    println!("  [WARN] index.db not found — run `oco index .` first");
-                }
-            } else {
-                println!("  [WARN] .oco/ directory not found — workspace not indexed");
-            }
-
-            // Check .claude/ directory
-            let claude_dir = ws_path.join(".claude");
-            if claude_dir.exists() {
-                println!("  [PASS] .claude/ directory exists");
-
-                // Check hooks (Node.js-based, as declared in settings.json)
-                let hooks_dir = claude_dir.join("hooks");
-                if hooks_dir.exists() {
-                    let hook_files = [
-                        "pre-tool-use.mjs",
-                        "post-tool-use.mjs",
-                        "user-prompt-submit.cjs",
-                        "stop.mjs",
-                    ];
-                    for hook in &hook_files {
-                        if hooks_dir.join(hook).exists() {
-                            println!("  [PASS] hook {hook}");
-                        } else {
-                            println!("  [WARN] hook {hook} missing");
-                        }
-                    }
-                } else {
-                    println!("  [WARN] .claude/hooks/ not found");
-                }
-
-                // Check settings.json
-                let settings = claude_dir.join("settings.json");
-                if settings.exists() {
-                    match std::fs::read_to_string(&settings)
-                        .ok()
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                    {
-                        Some(v) => {
-                            if v.get("hooks").is_some() {
-                                println!("  [PASS] settings.json has hooks configured");
-                            } else {
-                                println!("  [WARN] settings.json missing hooks section");
-                            }
-                            if v.get("mcpServers").is_some() {
-                                println!("  [PASS] settings.json has MCP servers configured");
-                            } else {
-                                println!("  [WARN] settings.json missing MCP servers");
-                            }
-                        }
-                        None => {
-                            println!("  [FAIL] settings.json is invalid JSON");
-                            issues += 1;
-                        }
-                    }
-                } else {
-                    println!("  [FAIL] .claude/settings.json not found");
-                    issues += 1;
-                }
-
-                // Check skills
-                let skills_dir = claude_dir.join("skills");
-                if skills_dir.exists() {
-                    let count = std::fs::read_dir(&skills_dir)
-                        .map(|entries| entries.filter_map(|e| e.ok()).count())
-                        .unwrap_or(0);
-                    println!("  [PASS] {count} skills found");
-                }
-            } else {
-                println!("  [WARN] .claude/ directory not found — not a Claude Code plugin");
-            }
-
-            // Detect repo profile
-            let profile = oco_shared_types::RepoProfile::detect(&ws_path);
-            println!();
-            println!("  Stack: {}", profile.stack);
-            if let Some(ref cmd) = profile.build_command {
-                println!("  Build: {cmd}");
-            }
-            if let Some(ref cmd) = profile.test_command {
-                println!("  Test:  {cmd}");
-            }
-
-            println!();
-            if issues == 0 {
-                println!("All checks passed.");
-            } else {
-                println!("{issues} issue(s) found.");
-            }
-        }
+        } => cmd_gate_check(out_format, tool, input, policy)?,
         Commands::Observe {
             tool,
             status,
             output,
-        } => {
-            let timestamp = chrono::Utc::now();
+        } => cmd_observe(&mut *r, out_format, tool, status, output)?,
+        Commands::Eval {
+            scenarios,
+            output,
+            provider,
+        } => cmd_eval(&mut *r, out_format, scenarios, output, provider).await?,
+        Commands::Doctor { workspace } => cmd_doctor(&mut *r, workspace)?,
+        Commands::Runs { action } => match action {
+            RunsAction::Show { id, workspace } => cmd_runs_show(&mut *r, id, workspace)?,
+            RunsAction::List { workspace, limit } => cmd_runs_list(&mut *r, workspace, limit)?,
+        },
+    }
 
-            // Write observation to local telemetry log
-            let oco_dir = PathBuf::from(".oco");
-            if !oco_dir.exists() {
-                std::fs::create_dir_all(&oco_dir)?;
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Command implementations
+// ═══════════════════════════════════════════════════════════
+
+async fn cmd_serve(r: &mut dyn Renderer, host: String, port: u16) -> Result<()> {
+    r.emit(UiEvent::ServerListening {
+        host: host.clone(),
+        port,
+    });
+
+    let mut config =
+        oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
+    config.bind_address = host;
+    config.port = port;
+
+    let server = oco_mcp_server::McpServer::new(config);
+    server.run().await?;
+    Ok(())
+}
+
+async fn cmd_run(
+    r: &mut dyn Renderer,
+    format: OutputFormat,
+    request: String,
+    workspace: Option<String>,
+    provider: String,
+    model: Option<String>,
+) -> Result<()> {
+    let mut config = oco_orchestrator_core::OrchestratorConfig::default();
+    config.default_budget.max_duration_secs = 120;
+
+    let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
+        "anthropic" => {
+            let model_name = model.unwrap_or_else(|| config.llm.model.clone());
+            let anthropic_config =
+                oco_orchestrator_core::llm::AnthropicConfig::from_env(&model_name, None)?;
+            Arc::new(oco_orchestrator_core::llm::AnthropicProvider::new(
+                anthropic_config,
+            )?)
+        }
+        "ollama" => {
+            let model_name = model.unwrap_or_else(|| "llama3.2".to_string());
+            let ollama_config = oco_orchestrator_core::llm::OllamaConfig::new(&model_name);
+            Arc::new(oco_orchestrator_core::llm::OllamaProvider::new(
+                ollama_config,
+            )?)
+        }
+        _ => Arc::new(oco_orchestrator_core::llm::StubLlmProvider {
+            model: model.unwrap_or_else(|| config.llm.model.clone()),
+        }),
+    };
+
+    r.emit(UiEvent::RunStarted {
+        provider: llm.provider_name().to_string(),
+        model: llm.model_name().to_string(),
+        request: request.clone(),
+        workspace: workspace.clone(),
+    });
+
+    let mut orchestrator = oco_orchestrator_core::OrchestrationLoop::new(config, llm);
+
+    // Index workspace if provided
+    if let Some(ref ws) = workspace {
+        let ws_path = PathBuf::from(ws)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(ws));
+
+        let t = Instant::now();
+        let spinner = if format == OutputFormat::Human {
+            let tr = ui::terminal::TerminalRenderer::new();
+            Some(tr.spinner(&format!("Indexing {}…", ws_path.display())))
+        } else {
+            r.emit(UiEvent::IndexStarted {
+                path: ws_path.clone(),
+            });
+            None
+        };
+
+        orchestrator.with_workspace(ws_path.clone());
+
+        if let Some(sp) = spinner {
+            sp.finish_and_clear();
+            r.emit(UiEvent::IndexCompleted {
+                files: 0,
+                symbols: 0,
+                duration_ms: t.elapsed().as_millis() as u64,
+            });
+        }
+    }
+
+    // Set up live event channel
+    let (event_tx, mut event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<oco_shared_types::OrchestrationEvent>();
+    orchestrator.with_event_channel(event_tx);
+
+    // Spawn the orchestration loop on a separate task (possible now that FtsIndex is Send)
+    let run_start = Instant::now();
+    let run_handle = tokio::spawn(async move { orchestrator.run(request, workspace).await });
+
+    // Consume events in real time as the loop executes
+    let mut trace_events = Vec::new();
+    while let Some(event) = event_rx.recv().await {
+        trace_events.push(event.clone());
+        match event {
+            oco_shared_types::OrchestrationEvent::StepCompleted {
+                step,
+                ref action,
+                ref reason,
+                duration_ms,
+                ref budget_snapshot,
+                ..
+            } => {
+                let action_type = match action {
+                    oco_shared_types::OrchestratorAction::Respond { .. } => "RESPOND",
+                    oco_shared_types::OrchestratorAction::Retrieve { .. } => "RETRIEVE",
+                    oco_shared_types::OrchestratorAction::ToolCall { .. } => "TOOL_CALL",
+                    oco_shared_types::OrchestratorAction::Verify { .. } => "VERIFY",
+                    oco_shared_types::OrchestratorAction::UpdateMemory { .. } => "MEMORY",
+                    oco_shared_types::OrchestratorAction::Stop { .. } => "STOP",
+                };
+                let tokens_max = budget_snapshot.tokens_used + budget_snapshot.tokens_remaining;
+                r.emit(UiEvent::RunStepCompleted {
+                    step,
+                    action_type: action_type.to_string(),
+                    reason: reason.clone(),
+                    tokens_used: budget_snapshot.tokens_used,
+                    tokens_max,
+                    duration_ms,
+                });
             }
+            oco_shared_types::OrchestrationEvent::BudgetWarning {
+                ref resource,
+                utilization,
+            } => {
+                r.emit(UiEvent::Warning {
+                    message: format!(
+                        "Budget warning: {} at {:.0}% utilization",
+                        resource,
+                        utilization * 100.0
+                    ),
+                });
+            }
+            _ => {}
+        }
+    }
 
-            let observation = serde_json::json!({
-                "timestamp": timestamp.to_rfc3339(),
-                "tool": tool,
-                "status": status,
-                "output_preview": output.as_deref().map(|o| {
-                    o.chars().take(200).collect::<String>()
-                }),
-            });
+    // Get the final state from the spawned task
+    let state = run_handle.await??;
+    let run_duration = run_start.elapsed().as_millis() as u64;
 
-            // Append to observations log (newline-delimited JSON)
-            let log_path = oco_dir.join("observations.jsonl");
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)?;
-            writeln!(file, "{}", serde_json::to_string(&observation)?)?;
+    let success = matches!(
+        state.session.status,
+        oco_shared_types::SessionStatus::Completed
+    );
 
-            let result = serde_json::json!({
-                "recorded": true,
-                "timestamp": timestamp.to_rfc3339(),
-                "tool": tool,
-                "status": status,
-                "log": log_path.display().to_string(),
-            });
+    let session_id = state.session.id.0.to_string();
 
-            if cli.format == "json" {
-                println!("{}", serde_json::to_string(&result)?);
+    r.emit(UiEvent::RunFinished {
+        session_id: session_id.clone(),
+        steps: state.session.step_count,
+        tokens_used: state.session.budget.tokens_used,
+        tokens_max: state.session.budget.max_total_tokens,
+        duration_ms: run_duration,
+        success,
+    });
+
+    // Extract and display final response
+    let final_response = state
+        .observations
+        .iter()
+        .rev()
+        .find(|o| matches!(o.source, oco_shared_types::ObservationSource::LlmResponse))
+        .and_then(|o| {
+            if let oco_shared_types::ObservationKind::Text { content, .. } = &o.kind {
+                Some(content.clone())
             } else {
-                println!("Recorded: {tool} ({status}) at {}", timestamp.to_rfc3339());
+                None
             }
+        });
+
+    if let Some(ref response) = final_response {
+        r.emit(UiEvent::RunResponse {
+            content: response.clone(),
+        });
+    }
+
+    // Save run artifacts to .oco/runs/<session_id>/
+    save_run_artifacts(
+        &session_id,
+        &state,
+        &trace_events,
+        run_duration,
+        success,
+        &final_response,
+    )?;
+
+    Ok(())
+}
+
+/// Save run artifacts (trace.jsonl, summary.json) to .oco/runs/<id>/
+fn save_run_artifacts(
+    session_id: &str,
+    state: &oco_orchestrator_core::OrchestrationState,
+    events: &[oco_shared_types::OrchestrationEvent],
+    duration_ms: u64,
+    success: bool,
+    final_response: &Option<String>,
+) -> Result<()> {
+    let run_dir = PathBuf::from(".oco").join("runs").join(session_id);
+    std::fs::create_dir_all(&run_dir)?;
+
+    // trace.jsonl — one event per line
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(run_dir.join("trace.jsonl"))?;
+        for event in events {
+            writeln!(f, "{}", serde_json::to_string(event)?)?;
+        }
+    }
+
+    // summary.json
+    let summary = serde_json::json!({
+        "session_id": session_id,
+        "request": state.session.user_request,
+        "workspace": state.session.workspace_root,
+        "status": format!("{:?}", state.session.status),
+        "complexity": format!("{:?}", state.task_complexity),
+        "steps": state.session.step_count,
+        "tokens_used": state.session.budget.tokens_used,
+        "tokens_max": state.session.budget.max_total_tokens,
+        "duration_ms": duration_ms,
+        "success": success,
+        "final_response": final_response,
+        "created_at": state.session.created_at.to_rfc3339(),
+    });
+    std::fs::write(
+        run_dir.join("summary.json"),
+        serde_json::to_string_pretty(&summary)?,
+    )?;
+
+    Ok(())
+}
+
+fn cmd_index(r: &mut dyn Renderer, path: String) -> Result<()> {
+    let ws_path = PathBuf::from(&path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&path));
+
+    let tr = ui::terminal::TerminalRenderer::new();
+    let spinner = tr.spinner(&format!("Indexing {}…", ws_path.display()));
+
+    let t = Instant::now();
+    let mut runtime = oco_orchestrator_core::OrchestratorRuntime::new(ws_path.clone());
+    let result = runtime.index_workspace()?;
+    let duration = t.elapsed().as_millis() as u64;
+
+    spinner.finish_and_clear();
+
+    r.emit(UiEvent::IndexCompleted {
+        files: result.file_count,
+        symbols: result.symbol_count,
+        duration_ms: duration,
+    });
+
+    Ok(())
+}
+
+fn cmd_search(
+    r: &mut dyn Renderer,
+    format: OutputFormat,
+    query: String,
+    workspace: String,
+    limit: u32,
+) -> Result<()> {
+    let ws_path = PathBuf::from(&workspace)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&workspace));
+
+    let tr = ui::terminal::TerminalRenderer::new();
+    let spinner = tr.spinner("Indexing & searching…");
+
+    let mut runtime = oco_orchestrator_core::OrchestratorRuntime::new(ws_path);
+    runtime.index_workspace()?;
+
+    let results = runtime.search(&query, limit)?;
+    spinner.finish_and_clear();
+
+    if format == OutputFormat::Json {
+        println!("{}", serde_json::to_string(&results)?);
+        return Ok(());
+    }
+
+    if results.is_empty() {
+        r.emit(UiEvent::SearchEmpty { query });
+    } else {
+        for (i, res) in results.iter().enumerate() {
+            r.emit(UiEvent::SearchResult {
+                rank: i + 1,
+                path: res.path.clone(),
+                score: res.score,
+                snippet: res.snippet.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_status(r: &mut dyn Renderer, format: OutputFormat, url: String) -> Result<()> {
+    let resp = reqwest::get(format!("{url}/api/v1/status")).await?;
+    let body: serde_json::Value = resp.json().await?;
+    if format == OutputFormat::Json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+    } else {
+        r.emit(UiEvent::Info {
+            message: format!(
+                "Status: {}  Steps: {}  Tokens: {}",
+                body["status"], body["steps"], body["tokens_used"]
+            ),
+        });
+    }
+    Ok(())
+}
+
+async fn cmd_trace(session_id: String, url: String) -> Result<()> {
+    let resp = reqwest::get(format!("{url}/api/v1/sessions/{session_id}/trace")).await?;
+    let body: serde_json::Value = resp.json().await?;
+    println!("{}", serde_json::to_string_pretty(&body)?);
+    Ok(())
+}
+
+fn cmd_init(r: &mut dyn Renderer, output: String) -> Result<()> {
+    let path = PathBuf::from(&output);
+    if path.exists() {
+        anyhow::bail!(
+            "{output} already exists. Remove it first or use --output to specify a different path."
+        );
+    }
+    let config = oco_orchestrator_core::OrchestratorConfig::default();
+    let toml_str = config.to_toml()?;
+    std::fs::write(&path, toml_str)?;
+    r.emit(UiEvent::Success {
+        message: format!("Created {output} — edit to configure provider, budgets, etc."),
+    });
+    Ok(())
+}
+
+fn cmd_classify(format: OutputFormat, prompt: String, workspace: String) -> Result<()> {
+    let ws_path = PathBuf::from(&workspace);
+
+    let mut signals = Vec::new();
+    if ws_path.join("Cargo.toml").exists() {
+        signals.push("rust workspace".to_string());
+    }
+    if ws_path.join("package.json").exists() {
+        signals.push("node workspace".to_string());
+    }
+    if ws_path.join("pyproject.toml").exists() {
+        signals.push("python workspace".to_string());
+    }
+
+    let complexity = oco_policy_engine::TaskClassifier::classify(&prompt, &signals);
+
+    let prompt_lower = prompt.to_lowercase();
+    let task_type = if prompt_lower.contains("refactor") || prompt_lower.contains("rename") {
+        "refactor"
+    } else if prompt_lower.contains("bug")
+        || prompt_lower.contains("fix")
+        || prompt_lower.contains("debug")
+    {
+        "bugfix"
+    } else if prompt_lower.contains("test") {
+        "testing"
+    } else if prompt_lower.contains("implement")
+        || prompt_lower.contains("create")
+        || prompt_lower.contains("add")
+    {
+        "feature"
+    } else if prompt_lower.contains("explain")
+        || prompt_lower.contains("what")
+        || prompt_lower.contains("how")
+    {
+        "exploration"
+    } else {
+        "unknown"
+    };
+
+    let needs_verification = matches!(
+        complexity,
+        oco_shared_types::TaskComplexity::Medium
+            | oco_shared_types::TaskComplexity::High
+            | oco_shared_types::TaskComplexity::Critical
+    ) && task_type != "exploration";
+
+    let priority_files: Vec<String> = collect_priority_files(&ws_path, &prompt);
+
+    let output = serde_json::json!({
+        "complexity": complexity,
+        "task_type": task_type,
+        "needs_verification": needs_verification,
+        "priority_files": priority_files,
+        "workspace_signals": signals,
+    });
+
+    if format == OutputFormat::Json {
+        println!("{}", serde_json::to_string(&output)?);
+    } else {
+        println!("Complexity: {:?}", complexity);
+        println!("Task type: {task_type}");
+        println!("Needs verification: {needs_verification}");
+        if !priority_files.is_empty() {
+            println!("Priority files: {}", priority_files.join(", "));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_gate_check(format: OutputFormat, tool: String, input: String, policy: String) -> Result<()> {
+    let write_policy = match policy.as_str() {
+        "allow_all" => oco_policy_engine::WritePolicy::AllowAll,
+        "deny_destructive" => oco_policy_engine::WritePolicy::DenyDestructive,
+        _ => oco_policy_engine::WritePolicy::RequireConfirmation,
+    };
+
+    let gate = oco_policy_engine::PolicyGate::new(write_policy);
+
+    let input_json: serde_json::Value = match serde_json::from_str(&input) {
+        Ok(v) => v,
+        Err(e) => {
+            let output = serde_json::json!({
+                "decision": "deny",
+                "reason": format!("Invalid JSON input: {e}")
+            });
+            println!("{}", serde_json::to_string(&output)?);
+            return Ok(());
+        }
+    };
+
+    let decision = if tool.to_lowercase() == "bash" || tool.to_lowercase() == "shell" {
+        let command = input_json
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if command.is_empty() {
+            oco_shared_types::ToolGateDecision::Deny {
+                reason: "shell tool called without a command field".to_string(),
+            }
+        } else {
+            gate.evaluate_command(command)
+        }
+    } else {
+        let tool_lower = tool.to_lowercase();
+        let is_write = matches!(
+            tool_lower.as_str(),
+            "edit"
+                | "write"
+                | "file_write"
+                | "file_delete"
+                | "directory_delete"
+                | "notebookedit"
+                | "multiedit"
+        );
+        let is_destructive = matches!(
+            tool_lower.as_str(),
+            "file_delete" | "directory_delete" | "git_reset" | "git_force_push"
+        );
+        let known_read = matches!(
+            tool_lower.as_str(),
+            "read" | "glob" | "grep" | "bash" | "shell" | "web_search" | "web_fetch" | "list_files"
+        );
+        let requires_confirmation = is_destructive || (!is_write && !known_read);
+
+        let descriptor = oco_shared_types::ToolDescriptor {
+            name: tool.clone(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+            is_write: is_write || (!known_read && !is_destructive),
+            requires_confirmation,
+            timeout_secs: 30,
+            tags: if is_destructive {
+                vec!["destructive".to_string()]
+            } else if is_write {
+                vec!["write".to_string()]
+            } else {
+                vec!["read".to_string()]
+            },
+        };
+        gate.evaluate(&descriptor)
+    };
+
+    let output = match &decision {
+        oco_shared_types::ToolGateDecision::Allow => {
+            serde_json::json!({"decision": "allow"})
+        }
+        oco_shared_types::ToolGateDecision::RequireConfirmation { reason } => {
+            serde_json::json!({"decision": "confirm", "reason": reason})
+        }
+        oco_shared_types::ToolGateDecision::Deny { reason } => {
+            serde_json::json!({"decision": "deny", "reason": reason})
+        }
+    };
+
+    if format == OutputFormat::Json {
+        println!("{}", serde_json::to_string(&output)?);
+    } else {
+        match &decision {
+            oco_shared_types::ToolGateDecision::Allow => {
+                println!("ALLOW: tool '{tool}' permitted");
+            }
+            oco_shared_types::ToolGateDecision::RequireConfirmation { reason } => {
+                println!("CONFIRM: {reason}");
+            }
+            oco_shared_types::ToolGateDecision::Deny { reason } => {
+                println!("DENY: {reason}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_observe(
+    r: &mut dyn Renderer,
+    format: OutputFormat,
+    tool: String,
+    status: String,
+    output: Option<String>,
+) -> Result<()> {
+    let timestamp = chrono::Utc::now();
+
+    let oco_dir = PathBuf::from(".oco");
+    if !oco_dir.exists() {
+        std::fs::create_dir_all(&oco_dir)?;
+    }
+
+    let observation = serde_json::json!({
+        "timestamp": timestamp.to_rfc3339(),
+        "tool": tool,
+        "status": status,
+        "output_preview": output.as_deref().map(|o| {
+            o.chars().take(200).collect::<String>()
+        }),
+    });
+
+    let log_path = oco_dir.join("observations.jsonl");
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    writeln!(file, "{}", serde_json::to_string(&observation)?)?;
+
+    if format == OutputFormat::Json {
+        let result = serde_json::json!({
+            "recorded": true,
+            "timestamp": timestamp.to_rfc3339(),
+            "tool": tool,
+            "status": status,
+            "log": log_path.display().to_string(),
+        });
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        r.emit(UiEvent::Success {
+            message: format!("Recorded: {tool} ({status}) at {}", timestamp.to_rfc3339()),
+        });
+    }
+    Ok(())
+}
+
+async fn cmd_eval(
+    r: &mut dyn Renderer,
+    format: OutputFormat,
+    scenarios: String,
+    output: Option<String>,
+    provider: String,
+) -> Result<()> {
+    let config =
+        oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
+
+    let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
+        "anthropic" => {
+            let anthropic_config =
+                oco_orchestrator_core::llm::AnthropicConfig::from_env(&config.llm.model, None)?;
+            Arc::new(oco_orchestrator_core::llm::AnthropicProvider::new(
+                anthropic_config,
+            )?)
+        }
+        _ => Arc::new(oco_orchestrator_core::llm::StubLlmProvider {
+            model: config.llm.model.clone(),
+        }),
+    };
+
+    let scenario_path = PathBuf::from(&scenarios);
+    let loaded = oco_orchestrator_core::eval::load_scenarios(&scenario_path)?;
+
+    r.emit(UiEvent::EvalStarted {
+        scenario_count: loaded.len(),
+    });
+
+    let results = oco_orchestrator_core::eval::run_all(&loaded, llm, &config).await;
+    let metrics = oco_orchestrator_core::eval::aggregate_metrics(&results);
+
+    if let Some(ref output_path) = output {
+        let json = serde_json::to_string_pretty(&metrics)?;
+        std::fs::write(output_path, json)?;
+        r.emit(UiEvent::EvalSaved {
+            path: output_path.clone(),
+        });
+    } else if format == OutputFormat::Json {
+        println!("{}", serde_json::to_string_pretty(&metrics)?);
+    } else {
+        for m in &metrics {
+            r.emit(UiEvent::EvalScenario {
+                name: m.scenario_name.clone(),
+                success: m.success,
+                steps: m.step_count,
+                tokens: m.total_tokens,
+                duration_ms: m.duration_ms,
+                tokens_per_step: m.token_per_step,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
+    let ws_path = PathBuf::from(&workspace);
+
+    r.emit(UiEvent::DoctorHeader {
+        workspace: ws_path.display().to_string(),
+    });
+
+    let mut issues = 0u32;
+
+    // Check oco.toml
+    let config_path = ws_path.join("oco.toml");
+    if config_path.exists() {
+        match oco_orchestrator_core::OrchestratorConfig::from_file(&config_path) {
+            Ok(_) => r.emit(UiEvent::DoctorCheck {
+                name: "oco.toml".into(),
+                status: CheckStatus::Pass,
+                detail: Some("valid".into()),
+            }),
+            Err(e) => {
+                r.emit(UiEvent::DoctorCheck {
+                    name: "oco.toml".into(),
+                    status: CheckStatus::Fail,
+                    detail: Some(format!("parse error: {e}")),
+                });
+                issues += 1;
+            }
+        }
+    } else {
+        r.emit(UiEvent::DoctorCheck {
+            name: "oco.toml".into(),
+            status: CheckStatus::Warn,
+            detail: Some("not found — using defaults".into()),
+        });
+    }
+
+    // Check .oco directory
+    let oco_dir = ws_path.join(".oco");
+    if oco_dir.exists() {
+        r.emit(UiEvent::DoctorCheck {
+            name: ".oco/ directory".into(),
+            status: CheckStatus::Pass,
+            detail: None,
+        });
+        let db_path = oco_dir.join("index.db");
+        if db_path.exists() {
+            r.emit(UiEvent::DoctorCheck {
+                name: "index.db".into(),
+                status: CheckStatus::Pass,
+                detail: None,
+            });
+        } else {
+            r.emit(UiEvent::DoctorCheck {
+                name: "index.db".into(),
+                status: CheckStatus::Warn,
+                detail: Some("not found — run `oco index .` first".into()),
+            });
+        }
+    } else {
+        r.emit(UiEvent::DoctorCheck {
+            name: ".oco/ directory".into(),
+            status: CheckStatus::Warn,
+            detail: Some("workspace not indexed".into()),
+        });
+    }
+
+    // Check .claude/ directory
+    let claude_dir = ws_path.join(".claude");
+    if claude_dir.exists() {
+        r.emit(UiEvent::DoctorCheck {
+            name: ".claude/ directory".into(),
+            status: CheckStatus::Pass,
+            detail: None,
+        });
+
+        // Check hooks
+        let hooks_dir = claude_dir.join("hooks");
+        if hooks_dir.exists() {
+            let hook_files = [
+                "pre-tool-use.mjs",
+                "post-tool-use.mjs",
+                "user-prompt-submit.cjs",
+                "stop.mjs",
+            ];
+            for hook in &hook_files {
+                if hooks_dir.join(hook).exists() {
+                    r.emit(UiEvent::DoctorCheck {
+                        name: format!("hook {hook}"),
+                        status: CheckStatus::Pass,
+                        detail: None,
+                    });
+                } else {
+                    r.emit(UiEvent::DoctorCheck {
+                        name: format!("hook {hook}"),
+                        status: CheckStatus::Warn,
+                        detail: Some("missing".into()),
+                    });
+                }
+            }
+        } else {
+            r.emit(UiEvent::DoctorCheck {
+                name: ".claude/hooks/".into(),
+                status: CheckStatus::Warn,
+                detail: Some("not found".into()),
+            });
+        }
+
+        // Check settings.json
+        let settings = claude_dir.join("settings.json");
+        if settings.exists() {
+            match std::fs::read_to_string(&settings)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            {
+                Some(v) => {
+                    if v.get("hooks").is_some() {
+                        r.emit(UiEvent::DoctorCheck {
+                            name: "settings.json hooks".into(),
+                            status: CheckStatus::Pass,
+                            detail: None,
+                        });
+                    } else {
+                        r.emit(UiEvent::DoctorCheck {
+                            name: "settings.json hooks".into(),
+                            status: CheckStatus::Warn,
+                            detail: Some("missing hooks section".into()),
+                        });
+                    }
+                    if v.get("mcpServers").is_some() {
+                        r.emit(UiEvent::DoctorCheck {
+                            name: "settings.json MCP servers".into(),
+                            status: CheckStatus::Pass,
+                            detail: None,
+                        });
+                    } else {
+                        r.emit(UiEvent::DoctorCheck {
+                            name: "settings.json MCP servers".into(),
+                            status: CheckStatus::Warn,
+                            detail: Some("missing MCP servers".into()),
+                        });
+                    }
+                }
+                None => {
+                    r.emit(UiEvent::DoctorCheck {
+                        name: "settings.json".into(),
+                        status: CheckStatus::Fail,
+                        detail: Some("invalid JSON".into()),
+                    });
+                    issues += 1;
+                }
+            }
+        } else {
+            r.emit(UiEvent::DoctorCheck {
+                name: ".claude/settings.json".into(),
+                status: CheckStatus::Fail,
+                detail: Some("not found".into()),
+            });
+            issues += 1;
+        }
+
+        // Check skills
+        let skills_dir = claude_dir.join("skills");
+        if skills_dir.exists() {
+            let count = std::fs::read_dir(&skills_dir)
+                .map(|entries| entries.filter_map(|e| e.ok()).count())
+                .unwrap_or(0);
+            r.emit(UiEvent::DoctorCheck {
+                name: "skills".into(),
+                status: CheckStatus::Pass,
+                detail: Some(format!("{count} found")),
+            });
+        }
+    } else {
+        r.emit(UiEvent::DoctorCheck {
+            name: ".claude/ directory".into(),
+            status: CheckStatus::Warn,
+            detail: Some("not a Claude Code plugin".into()),
+        });
+    }
+
+    // Detect repo profile
+    let profile = oco_shared_types::RepoProfile::detect(&ws_path);
+    r.emit(UiEvent::DoctorProfile {
+        stack: profile.stack.clone(),
+        build_cmd: profile.build_command.clone(),
+        test_cmd: profile.test_command.clone(),
+    });
+
+    r.emit(UiEvent::DoctorSummary { issues });
+    Ok(())
+}
+
+fn cmd_runs_show(r: &mut dyn Renderer, id: String, workspace: String) -> Result<()> {
+    let runs_dir = PathBuf::from(&workspace).join(".oco").join("runs");
+
+    let run_dir = if id == "last" {
+        // Find most recent run by directory mtime
+        let mut entries: Vec<_> = std::fs::read_dir(&runs_dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect();
+        entries.sort_by_key(|e| {
+            std::cmp::Reverse(
+                e.metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
+        });
+        entries
+            .first()
+            .map(|e| e.path())
+            .ok_or_else(|| anyhow::anyhow!("no runs found in {}", runs_dir.display()))?
+    } else {
+        runs_dir.join(&id)
+    };
+
+    if !run_dir.exists() {
+        anyhow::bail!("run {} not found", run_dir.display());
+    }
+
+    // Read summary
+    let summary_path = run_dir.join("summary.json");
+    if summary_path.exists() {
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&summary_path)?)?;
+
+        r.emit(UiEvent::RunStarted {
+            provider: String::new(),
+            model: String::new(),
+            request: summary["request"].as_str().unwrap_or("").to_string(),
+            workspace: summary["workspace"].as_str().map(|s| s.to_string()),
+        });
+
+        r.emit(UiEvent::RunFinished {
+            session_id: summary["session_id"].as_str().unwrap_or("").to_string(),
+            steps: summary["steps"].as_u64().unwrap_or(0) as u32,
+            tokens_used: summary["tokens_used"].as_u64().unwrap_or(0),
+            tokens_max: summary["tokens_max"].as_u64().unwrap_or(0),
+            duration_ms: summary["duration_ms"].as_u64().unwrap_or(0),
+            success: summary["success"].as_bool().unwrap_or(false),
+        });
+
+        if let Some(resp) = summary["final_response"].as_str() {
+            r.emit(UiEvent::RunResponse {
+                content: resp.to_string(),
+            });
+        }
+    }
+
+    // Read and replay trace events
+    let trace_path = run_dir.join("trace.jsonl");
+    if trace_path.exists() {
+        r.emit(UiEvent::Info {
+            message: format!("\nTrace: {}", trace_path.display()),
+        });
+        let content = std::fs::read_to_string(&trace_path)?;
+        for line in content.lines() {
+            if let Ok(oco_shared_types::OrchestrationEvent::StepCompleted {
+                step,
+                ref action,
+                ref reason,
+                duration_ms,
+                ref budget_snapshot,
+                ..
+            }) = serde_json::from_str::<oco_shared_types::OrchestrationEvent>(line)
+            {
+                let action_type = match action {
+                    oco_shared_types::OrchestratorAction::Respond { .. } => "RESPOND",
+                    oco_shared_types::OrchestratorAction::Retrieve { .. } => "RETRIEVE",
+                    oco_shared_types::OrchestratorAction::ToolCall { .. } => "TOOL_CALL",
+                    oco_shared_types::OrchestratorAction::Verify { .. } => "VERIFY",
+                    oco_shared_types::OrchestratorAction::UpdateMemory { .. } => "MEMORY",
+                    oco_shared_types::OrchestratorAction::Stop { .. } => "STOP",
+                };
+                r.emit(UiEvent::RunStepCompleted {
+                    step,
+                    action_type: action_type.to_string(),
+                    reason: reason.clone(),
+                    tokens_used: budget_snapshot.tokens_used,
+                    tokens_max: budget_snapshot.tokens_used + budget_snapshot.tokens_remaining,
+                    duration_ms,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_runs_list(r: &mut dyn Renderer, workspace: String, limit: usize) -> Result<()> {
+    let runs_dir = PathBuf::from(&workspace).join(".oco").join("runs");
+    if !runs_dir.exists() {
+        r.emit(UiEvent::Info {
+            message: "No runs found.".into(),
+        });
+        return Ok(());
+    }
+
+    let mut entries: Vec<_> = std::fs::read_dir(&runs_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .collect();
+    entries.sort_by_key(|e| {
+        std::cmp::Reverse(
+            e.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+        )
+    });
+
+    for entry in entries.into_iter().take(limit) {
+        let summary_path = entry.path().join("summary.json");
+        if let Ok(content) = std::fs::read_to_string(&summary_path)
+            && let Ok(summary) = serde_json::from_str::<serde_json::Value>(&content)
+        {
+            let id = summary["session_id"].as_str().unwrap_or("?");
+            let request = summary["request"].as_str().unwrap_or("?");
+            let steps = summary["steps"].as_u64().unwrap_or(0);
+            let success = summary["success"].as_bool().unwrap_or(false);
+            let duration = summary["duration_ms"].as_u64().unwrap_or(0);
+
+            let status = if success { "ok" } else { "fail" };
+            let req_display = if request.len() > 50 {
+                format!("{}…", &request[..49])
+            } else {
+                request.to_string()
+            };
+            r.emit(UiEvent::Info {
+                message: format!(
+                    "  {:<8} {:<5} {:>3} steps  {:>6}ms  {}",
+                    &id[..8.min(id.len())],
+                    status,
+                    steps,
+                    duration,
+                    req_display,
+                ),
+            });
         }
     }
 
@@ -745,10 +1211,8 @@ fn collect_priority_files(workspace: &std::path::Path, prompt: &str) -> Vec<Stri
     let mut files = Vec::new();
     let prompt_lower = prompt.to_lowercase();
 
-    // Extract potential file names or module names from the prompt
     let words: Vec<&str> = prompt_lower.split_whitespace().collect();
 
-    // Quick scan: look for recently modified files in src/ that match prompt keywords
     let src_dir = workspace.join("src");
     if src_dir.exists()
         && let Ok(entries) = std::fs::read_dir(&src_dir)
@@ -769,7 +1233,6 @@ fn collect_priority_files(workspace: &std::path::Path, prompt: &str) -> Vec<Stri
         }
     }
 
-    // Limit to top 5
     files.truncate(5);
     files
 }
