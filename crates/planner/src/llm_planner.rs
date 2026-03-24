@@ -205,7 +205,25 @@ impl Planner for LlmPlanner {
 
         debug!(tokens_used, response_len = response.len(), "LLM plan response received");
 
-        let steps = Self::parse_steps(&response)?;
+        // Fix #22: retry with correction prompt on parse failure (max 2 attempts)
+        let steps = match Self::parse_steps(&response) {
+            Ok(s) => s,
+            Err(first_err) => {
+                debug!(error = %first_err, "first parse attempt failed, retrying with correction prompt");
+                let correction = format!(
+                    "Your previous response could not be parsed as a valid JSON array of steps.\n\
+                     Error: {first_err}\n\n\
+                     Please output ONLY a valid JSON array (no markdown, no explanation) matching this schema:\n\
+                     [{{\"name\": \"...\", \"description\": \"...\", \"depends_on\": [\"...\"], ...}}]"
+                );
+                let (retry_response, _) = self.llm_call.call(&sys, &correction, max_tokens).await?;
+                Self::parse_steps(&retry_response).map_err(|retry_err| {
+                    PlannerError::ParseError(format!(
+                        "parse failed after retry.\nFirst: {first_err}\nRetry: {retry_err}"
+                    ))
+                })?
+            }
+        };
 
         let model = "llm".to_string(); // In production, comes from provider
         let mut plan = ExecutionPlan::new(
@@ -254,22 +272,33 @@ impl Planner for LlmPlanner {
 
         let new_steps = Self::parse_steps(&response)?;
 
-        // Merge: keep completed steps from original, add new steps
-        let mut merged_steps: Vec<PlanStep> = original
-            .steps
-            .iter()
-            .filter(|s| s.status == StepStatus::Completed)
-            .cloned()
-            .collect();
+        // Fix #21: transaction-safe merge that handles all step states
+        let mut merged_steps: Vec<PlanStep> = Vec::with_capacity(
+            original.steps.len() + new_steps.len(),
+        );
 
-        // Mark failed and downstream steps as Replanned
         for step in &original.steps {
-            if step.id == failed_step.id
-                || matches!(step.status, StepStatus::Pending | StepStatus::Blocked)
-            {
-                let mut replaced = step.clone();
-                replaced.status = StepStatus::Replanned;
-                merged_steps.push(replaced);
+            match &step.status {
+                // Keep completed steps as-is
+                StepStatus::Completed => {
+                    merged_steps.push(step.clone());
+                }
+                // Keep in-progress steps as-is — they're being executed right now
+                StepStatus::InProgress => {
+                    merged_steps.push(step.clone());
+                }
+                // Mark failed, pending, and blocked steps as Replanned
+                StepStatus::Failed { .. }
+                | StepStatus::Pending
+                | StepStatus::Blocked => {
+                    let mut replaced = step.clone();
+                    replaced.status = StepStatus::Replanned;
+                    merged_steps.push(replaced);
+                }
+                // Already replanned steps stay replanned
+                StepStatus::Replanned => {
+                    merged_steps.push(step.clone());
+                }
             }
         }
 
@@ -312,35 +341,67 @@ struct RawStep {
     estimated_tokens: Option<u32>,
 }
 
-/// Extract JSON from a response that may be wrapped in markdown code blocks.
+/// Extract JSON from a response that may be wrapped in markdown code blocks (fix #22).
+///
+/// Layered extraction strategy:
+/// 1. Direct JSON array
+/// 2. Last ```json ... ``` fence (prefer last — LLM often wraps corrections)
+/// 3. Last ``` ... ``` fence containing a JSON array
+/// 4. Bracket matching: outermost [ ... ]
 fn extract_json(response: &str) -> Result<String, PlannerError> {
     let trimmed = response.trim();
 
-    // Try direct parse first
-    if trimmed.starts_with('[') {
+    // 1. Direct JSON array
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
         return Ok(trimmed.to_string());
     }
 
-    // Try extracting from ```json ... ``` blocks
-    if let Some(start) = trimmed.find("```json") {
-        let after = &trimmed[start + 7..];
+    // 2. Find the LAST ```json ... ``` block (handles multiple fences)
+    let mut last_json_fence: Option<String> = None;
+    let mut search = trimmed;
+    while let Some(start) = search.find("```json") {
+        let after = &search[start + 7..];
         if let Some(end) = after.find("```") {
-            return Ok(after[..end].trim().to_string());
+            last_json_fence = Some(after[..end].trim().to_string());
+            search = &after[end + 3..];
+        } else {
+            // Unclosed fence — try to extract from start to end of string
+            let candidate = after.trim();
+            if candidate.starts_with('[') {
+                last_json_fence = Some(candidate.to_string());
+            }
+            break;
         }
     }
+    if let Some(ref json) = last_json_fence
+        && json.starts_with('[')
+    {
+        return Ok(json.clone());
+    }
 
-    // Try extracting from ``` ... ``` blocks
-    if let Some(start) = trimmed.find("```") {
-        let after = &trimmed[start + 3..];
+    // 3. Find the LAST ``` ... ``` block containing a JSON array
+    let mut search = trimmed;
+    while let Some(start) = search.find("```") {
+        let after = &search[start + 3..];
         if let Some(end) = after.find("```") {
             let inner = after[..end].trim();
+            // Skip the "json" language tag if present
+            let inner = inner.strip_prefix("json").map(|s| s.trim()).unwrap_or(inner);
             if inner.starts_with('[') {
-                return Ok(inner.to_string());
+                last_json_fence = Some(inner.to_string());
             }
+            search = &after[end + 3..];
+        } else {
+            break;
         }
     }
+    if let Some(json) = last_json_fence
+        && json.starts_with('[')
+    {
+        return Ok(json);
+    }
 
-    // Last resort: find first [ and last ]
+    // 4. Bracket matching: find first [ and last ]
     if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']'))
         && start < end
     {
@@ -453,6 +514,28 @@ mod tests {
     fn extract_json_no_array_fails() {
         let input = "I can't generate a plan for this.";
         assert!(extract_json(input).is_err());
+    }
+
+    #[test]
+    fn extract_json_two_fences_uses_last() {
+        let input = "Draft:\n```json\n[{\"name\": \"wrong\"}]\n```\nActually:\n```json\n[{\"name\": \"correct\"}]\n```\n";
+        let result = extract_json(input).unwrap();
+        assert!(result.contains("correct"));
+        assert!(!result.contains("wrong"));
+    }
+
+    #[test]
+    fn extract_json_unclosed_fence() {
+        let input = "```json\n[{\"name\": \"truncated\"}]";
+        let result = extract_json(input).unwrap();
+        assert!(result.contains("truncated"));
+    }
+
+    #[test]
+    fn extract_json_bare_fence_with_array() {
+        let input = "```\n[{\"name\": \"bare\"}]\n```";
+        let result = extract_json(input).unwrap();
+        assert!(result.contains("bare"));
     }
 
     // -- parse_execution --
@@ -606,10 +689,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn llm_planner_invalid_json_fails() {
+    async fn llm_planner_invalid_json_retries() {
+        // Fix #22: first call returns garbage, retry also returns garbage → error
         let planner = LlmPlanner::stub("this is not json at all");
         let result = planner.plan("test", &medium_ctx()).await;
         assert!(result.is_err());
+        // Error message should mention "retry"
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("retry"), "error should mention retry: {err}");
+    }
+
+    #[tokio::test]
+    async fn llm_planner_retry_succeeds_on_second_attempt() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        // Custom LLM call that returns garbage first, then valid JSON
+        struct RetryLlm {
+            call_count: Arc<AtomicU32>,
+        }
+
+        #[async_trait]
+        impl LlmCallFn for RetryLlm {
+            async fn call(
+                &self,
+                _system: &str,
+                _user: &str,
+                _max_tokens: u32,
+            ) -> Result<(String, u32), PlannerError> {
+                let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // First call: valid task but mangled JSON
+                    Ok(("oops not json".into(), 50))
+                } else {
+                    // Retry: valid JSON
+                    Ok((r#"[{"name": "fixed", "description": "Works now", "depends_on": []}]"#.into(), 50))
+                }
+            }
+        }
+
+        let planner = LlmPlanner::new(Box::new(RetryLlm {
+            call_count: Arc::new(AtomicU32::new(0)),
+        }));
+        let plan = planner.plan("test", &medium_ctx()).await.unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].name, "fixed");
     }
 
     // -- Replan --
@@ -655,6 +779,54 @@ mod tests {
         assert!(matches!(plan.strategy, PlanStrategy::Replanned { .. }));
     }
 
+    #[tokio::test]
+    async fn replan_preserves_in_progress_steps() {
+        // Fix #21: in-progress steps must survive replan
+        let step1 = PlanStep::new("investigate", "Search code");
+        let mut step2 = PlanStep::new("implement-a", "Write API");
+        step2.depends_on = vec![step1.id];
+        let mut step3 = PlanStep::new("implement-b", "Write tests");
+        step3.depends_on = vec![step1.id];
+
+        let mut original = ExecutionPlan::new(
+            vec![step1, step2, step3],
+            PlanStrategy::Generated {
+                model: "test".into(),
+                tokens_used: 100,
+            },
+        );
+        original.steps[0].status = StepStatus::Completed;
+        original.steps[1].status = StepStatus::InProgress; // currently executing
+        original.steps[2].status = StepStatus::Failed {
+            reason: "compile error".into(),
+        };
+
+        let replan_response = serde_json::json!([
+            {
+                "name": "fix-tests",
+                "description": "Fix and retry tests",
+                "depends_on": [],
+                "verify_after": true
+            }
+        ]);
+
+        let planner = LlmPlanner::stub(replan_response.to_string());
+        let failed = original.steps[2].clone();
+        let plan = planner
+            .replan(&original, &failed, "compile error", &medium_ctx())
+            .await
+            .unwrap();
+
+        // Completed step preserved
+        assert!(plan.steps.iter().any(|s| s.name == "investigate" && s.status == StepStatus::Completed));
+        // In-progress step preserved (NOT dropped or replanned)
+        assert!(plan.steps.iter().any(|s| s.name == "implement-a" && s.status == StepStatus::InProgress));
+        // Failed step marked as Replanned
+        assert!(plan.steps.iter().any(|s| s.name == "implement-b" && s.status == StepStatus::Replanned));
+        // New step added
+        assert!(plan.steps.iter().any(|s| s.name == "fix-tests" && s.status == StepStatus::Pending));
+    }
+
     // -- Team generation --
 
     #[test]
@@ -687,6 +859,70 @@ mod tests {
         let team = LlmPlanner::generate_team(&plan, &ctx).unwrap();
         assert_eq!(team.communication, TeamCommunication::Mesh);
         assert!(team.members.len() >= 2);
+    }
+
+    // -- Toxic scenarios (fix #24) --
+
+    #[tokio::test]
+    async fn duplicate_step_names_disambiguated() {
+        let response = serde_json::json!([
+            {"name": "implement", "description": "First", "depends_on": []},
+            {"name": "implement", "description": "Second", "depends_on": ["implement"]},
+            {"name": "implement", "description": "Third", "depends_on": ["implement-1"]}
+        ]);
+
+        let planner = LlmPlanner::stub(response.to_string());
+        let plan = planner.plan("test", &medium_ctx()).await.unwrap();
+
+        assert_eq!(plan.steps.len(), 3);
+        // Names should be deduplicated
+        let names: Vec<&str> = plan.steps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names[0], "implement");
+        assert_eq!(names[1], "implement-1");
+        assert_eq!(names[2], "implement-2");
+        // Dependencies should resolve correctly
+        assert!(plan.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn circular_dependency_detected() {
+        // LLM produces steps with circular deps via names
+        let response = serde_json::json!([
+            {"name": "a", "description": "Step A", "depends_on": ["b"]},
+            {"name": "b", "description": "Step B", "depends_on": ["a"]}
+        ]);
+
+        let planner = LlmPlanner::stub(response.to_string());
+        let result = planner.plan("test", &medium_ctx()).await;
+        // Should fail validation (cycle detected)
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cycle") || err.contains("invalid DAG"), "error: {err}");
+    }
+
+    #[tokio::test]
+    async fn deeply_nested_deps_accepted() {
+        // 20 steps in a linear chain — should be fine
+        let steps: Vec<serde_json::Value> = (0..20)
+            .map(|i| {
+                let deps = if i == 0 {
+                    vec![]
+                } else {
+                    vec![format!("step-{}", i - 1)]
+                };
+                serde_json::json!({
+                    "name": format!("step-{i}"),
+                    "description": format!("Step {i}"),
+                    "depends_on": deps
+                })
+            })
+            .collect();
+
+        let planner = LlmPlanner::stub(serde_json::to_string(&steps).unwrap());
+        let plan = planner.plan("test", &medium_ctx()).await.unwrap();
+        assert_eq!(plan.steps.len(), 20);
+        assert_eq!(plan.critical_path_length(), 20);
+        assert!(plan.validate().is_ok());
     }
 
     #[test]

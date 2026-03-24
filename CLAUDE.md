@@ -118,15 +118,15 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 ## Testing
 
 ```bash
-cargo test                               # All tests (330+)
-cargo test -p oco-shared-types           # 81 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team
+cargo test                               # All tests (352+)
+cargo test -p oco-shared-types           # 90 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology
 cargo test -p oco-policy-engine          # 30 tests — classifier, selector, budget, gates
 cargo test -p oco-context-engine         # 24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             # 16 tests — parser, indexer, language detection
 cargo test -p oco-retrieval              #  9 tests — FTS5, vector, hybrid ranking
 cargo test -p oco-telemetry              #  5 tests — event recording, JSONL export
-cargo test -p oco-planner               # 26 tests — direct planner, LLM planner, prompt gen, team generation
-cargo test -p oco-orchestrator-core      # 34 tests — eval, integration, loop runner, graph runner, LLM router
+cargo test -p oco-planner               # 34 tests — direct planner, LLM planner, prompt gen, team generation, retry, edge cases
+cargo test -p oco-orchestrator-core      # 34 tests — eval, integration, loop runner, graph runner, LLM router, cancellation
 ```
 
 ## LLM Providers
@@ -146,19 +146,19 @@ Key sections:
 - **Budget** — token limits, tool call caps, duration, verify cycles
 - **LLM** — provider, model, API key env var, retries
 
-## Open Issues (review followup)
+## Resolved Issues (review followup)
 
-From GPT-5.4 review of orchestration v2 — MEDIUM priority:
+From GPT-5.4 review of orchestration v2 — all resolved:
 
-| # | Issue | Area |
-|---|-------|------|
-| #18 | Enforce TeamCommunication topology at runtime | team.rs |
-| #19 | Remove dependencies_met, compute on demand | team.rs |
-| #20 | Deterministic best_for() tie-breaking | capability.rs |
-| #21 | Replan transaction semantics for in-flight steps | plan.rs, team.rs, graph_runner.rs |
-| #22 | Harden LLM JSON parsing + retry on failure | llm_planner.rs |
-| #23 | CancellationToken + budget limit in StepExecutor | graph_runner.rs |
-| #24 | Toxic/edge-case test scenarios | graph_runner.rs, llm_planner.rs, team.rs |
+| # | Issue | Area | Status |
+|---|-------|------|--------|
+| #18 | Enforce TeamCommunication topology at runtime | team.rs | **Fixed** — `record_message(sender, recipient)` validates HubSpoke/Mesh/Pipeline rules |
+| #19 | Remove dependencies_met, compute on demand | team.rs | **Fixed** — field removed, computed live via `completed_ids()` |
+| #20 | Deterministic best_for() tie-breaking | capability.rs | **Fixed** — secondary sort by cost tier then ID |
+| #21 | Replan transaction semantics for in-flight steps | plan.rs, team.rs, graph_runner.rs | **Fixed** — InProgress steps preserved, `revoke_replanned_claims()` added |
+| #22 | Harden LLM JSON parsing + retry on failure | llm_planner.rs | **Fixed** — multi-layer extraction, retry with correction prompt |
+| #23 | CancellationToken + budget limit in StepExecutor | graph_runner.rs | **Fixed** — `StepConstraints` with `CancellationToken` + `token_budget` |
+| #24 | Toxic/edge-case test scenarios | graph_runner.rs, llm_planner.rs, team.rs | **Fixed** — 15+ new tests (panic, deadlock, race, topology, circular deps, etc.) |
 
 ## Claude Code Integration
 

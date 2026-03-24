@@ -37,6 +37,59 @@ pub struct StepResult {
     pub tokens_used: u32,
 }
 
+/// Cooperative cancellation token for step executors (fix #23).
+///
+/// Cloned and shared between the GraphRunner and spawned step tasks.
+/// Check `is_cancelled()` periodically in long-running operations.
+#[derive(Debug, Clone)]
+pub struct CancellationToken {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self {
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// Signal cancellation.
+    pub fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Check if cancellation was requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Constraints for a single step execution (fix #23).
+#[derive(Debug, Clone)]
+pub struct StepConstraints {
+    /// Maximum tokens this step is allowed to consume.
+    pub token_budget: u32,
+    /// Cooperative cancellation token.
+    pub cancel: CancellationToken,
+}
+
+impl StepConstraints {
+    pub fn new(token_budget: u32) -> Self {
+        Self {
+            token_budget,
+            cancel: CancellationToken::new(),
+        }
+    }
+}
+
 /// Trait for executing individual plan steps. Abstracted for testability.
 ///
 /// In production, the real implementation wraps `OrchestratorRuntime` and
@@ -44,11 +97,12 @@ pub struct StepResult {
 /// predetermined results.
 #[async_trait::async_trait]
 pub trait StepExecutor: Send + Sync {
-    /// Execute a single plan step with the given context.
+    /// Execute a single plan step with the given context and constraints.
     async fn execute_step(
         &self,
         step: &PlanStep,
         context: &[String],
+        constraints: &StepConstraints,
     ) -> Result<StepResult, OrchestratorError>;
 
     /// Run verification (tests/build/lint) for a step.
@@ -84,6 +138,7 @@ impl StepExecutor for StubStepExecutor {
         &self,
         step: &PlanStep,
         _context: &[String],
+        _constraints: &StepConstraints,
     ) -> Result<StepResult, OrchestratorError> {
         let (success, output) = self
             .overrides
@@ -334,7 +389,8 @@ impl GraphRunner {
             // Single step — no need for join overhead
             let step = plan.get_step(step_ids[0]).expect("step must exist");
             self.emit_step_started(step);
-            match self.executor.execute_step(step, &[]).await {
+            let constraints = StepConstraints::new(step.estimated_tokens);
+            match self.executor.execute_step(step, &[], &constraints).await {
                 Ok(r) => vec![r],
                 Err(e) => vec![StepResult {
                     step_id: step_ids[0],
@@ -353,8 +409,9 @@ impl GraphRunner {
                 let step = plan.get_step(id).expect("step must exist").clone();
                 self.emit_step_started(&step);
                 let executor = self.executor.clone();
+                let constraints = StepConstraints::new(step.estimated_tokens);
                 handles.push(tokio::spawn(async move {
-                    match executor.execute_step(&step, &[]).await {
+                    match executor.execute_step(&step, &[], &constraints).await {
                         Ok(r) => r,
                         Err(e) => StepResult {
                             step_id: id,
@@ -753,6 +810,122 @@ mod tests {
         let result = runner.execute(plan, &ctx()).await.unwrap();
         assert!(result.is_complete());
         assert!(!result.has_failures());
+    }
+
+    // -- CancellationToken (fix #23) --
+
+    #[test]
+    fn cancellation_token_works() {
+        let token = CancellationToken::new();
+        assert!(!token.is_cancelled());
+        token.cancel();
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn step_constraints_carries_budget() {
+        let c = StepConstraints::new(5000);
+        assert_eq!(c.token_budget, 5000);
+        assert!(!c.cancel.is_cancelled());
+    }
+
+    // -- Toxic scenarios (fix #24) --
+
+    #[tokio::test]
+    async fn panicking_executor_produces_failed_result() {
+        /// Executor that panics only on steps named "panic-step".
+        struct SelectivePanicExecutor;
+
+        #[async_trait::async_trait]
+        impl StepExecutor for SelectivePanicExecutor {
+            async fn execute_step(
+                &self,
+                step: &PlanStep,
+                _context: &[String],
+                _constraints: &StepConstraints,
+            ) -> Result<StepResult, OrchestratorError> {
+                if step.name == "panic-step" {
+                    panic!("executor panic!");
+                }
+                Ok(StepResult {
+                    step_id: step.id,
+                    success: true,
+                    output: format!("Executed: {}", step.name),
+                    duration_ms: 10,
+                    tokens_used: 100,
+                })
+            }
+            async fn verify_step(&self, _step: &PlanStep) -> Result<StepResult, OrchestratorError> {
+                Ok(StepResult {
+                    step_id: Uuid::new_v4(),
+                    success: true,
+                    output: "ok".into(),
+                    duration_ms: 0,
+                    tokens_used: 0,
+                })
+            }
+        }
+
+        // Both steps depend on root → they run in parallel via tokio::spawn
+        // so the panic is caught by JoinError handler (not propagated to test thread)
+        let root = PlanStep::new("root", "Setup");
+        let a = PlanStep::new("panic-step", "Will panic").with_depends_on(vec![root.id]);
+        let b = PlanStep::new("normal-step", "Normal").with_depends_on(vec![root.id]);
+        let plan = make_plan(vec![root, a, b]);
+
+        let executor = Arc::new(SelectivePanicExecutor);
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
+
+        // Should not crash — panic is caught by JoinError handler in parallel branch
+        let result = runner.execute(plan, &ctx()).await.unwrap();
+        // The panic step should be marked as failed with "panicked" in reason
+        assert!(result.steps.iter().any(|s| {
+            matches!(&s.status, StepStatus::Failed { reason } if reason.contains("panic"))
+        }));
+        // The normal step should have completed
+        assert!(result.steps.iter().any(|s| s.name == "normal-step" && s.status == StepStatus::Completed));
+    }
+
+    #[tokio::test]
+    async fn deadlock_detection_breaks_loop() {
+        // Create a plan where after root completes, remaining steps have unresolvable deps
+        let root = PlanStep::new("root", "Setup");
+        let ghost_dep = Uuid::new_v4(); // doesn't exist in plan
+        let stuck = PlanStep::new("stuck", "Blocked forever")
+            .with_depends_on(vec![root.id, ghost_dep]);
+        // Note: validate() would catch this, but GraphRunner should still handle it
+        let mut plan = make_plan(vec![root, stuck]);
+        // Manually skip validation by not calling validate()
+
+        let executor = Arc::new(StubStepExecutor::all_pass());
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
+
+        let result = runner.execute(plan, &ctx()).await.unwrap();
+        // Root should complete, stuck should remain pending (deadlock detected)
+        assert!(result.steps.iter().any(|s| s.name == "root" && s.status == StepStatus::Completed));
+        assert!(result.steps.iter().any(|s| s.name == "stuck" && s.status == StepStatus::Pending));
+    }
+
+    #[tokio::test]
+    async fn verify_fail_then_replan_then_abort() {
+        // Step with verify that fails → triggers replan → DirectPlanner can't help → abort
+        let step = PlanStep::new("implement", "Write code").with_verify();
+        let plan = make_plan(vec![step]);
+
+        let executor = Arc::new(
+            StubStepExecutor::all_pass()
+                .with_failure("verify:implement", "all tests fail"),
+        );
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
+
+        let result = runner.execute(plan, &ctx()).await.unwrap();
+        // Should eventually stop (max replan attempts or no new steps)
+        assert!(result.steps.iter().any(|s| {
+            matches!(s.status, StepStatus::Failed { .. } | StepStatus::Replanned)
+        }));
     }
 
     // -- Output capture --

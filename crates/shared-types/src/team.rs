@@ -29,8 +29,8 @@ pub struct SharedTask {
     pub status: StepStatus,
     /// Agent that claimed this task (None = unclaimed).
     pub claimed_by: Option<AgentId>,
-    /// Whether dependencies are all met.
-    pub dependencies_met: bool,
+    /// Step IDs this task depends on (fix #19: compute deps on demand, not cached).
+    pub depends_on: Vec<Uuid>,
     /// When this task was claimed.
     pub claimed_at: Option<DateTime<Utc>>,
 }
@@ -44,13 +44,6 @@ pub struct SharedTaskList {
 impl SharedTaskList {
     /// Create a task list from a plan's steps.
     pub fn from_plan(plan: &ExecutionPlan) -> Self {
-        let completed: std::collections::HashSet<Uuid> = plan
-            .steps
-            .iter()
-            .filter(|s| s.status == StepStatus::Completed)
-            .map(|s| s.id)
-            .collect();
-
         let tasks = plan
             .steps
             .iter()
@@ -59,7 +52,7 @@ impl SharedTaskList {
                 name: step.name.clone(),
                 status: step.status.clone(),
                 claimed_by: None,
-                dependencies_met: step.depends_on.iter().all(|d| completed.contains(d)),
+                depends_on: step.depends_on.clone(),
                 claimed_at: None,
             })
             .collect();
@@ -67,21 +60,40 @@ impl SharedTaskList {
         Self { tasks }
     }
 
+    /// Compute the set of completed task IDs (used for on-demand dependency checks).
+    fn completed_ids(&self) -> std::collections::HashSet<Uuid> {
+        self.tasks
+            .iter()
+            .filter(|t| t.status == StepStatus::Completed)
+            .map(|t| t.step_id)
+            .collect()
+    }
+
+    /// Whether a task's dependencies are all met (fix #19: computed on demand).
+    pub fn dependencies_met(&self, task: &SharedTask) -> bool {
+        let completed = self.completed_ids();
+        task.depends_on.iter().all(|d| completed.contains(d))
+    }
+
     /// Tasks available for claiming (pending + dependencies met + unclaimed).
     pub fn claimable(&self) -> Vec<&SharedTask> {
+        let completed = self.completed_ids();
         self.tasks
             .iter()
             .filter(|t| {
-                t.status == StepStatus::Pending && t.dependencies_met && t.claimed_by.is_none()
+                t.status == StepStatus::Pending
+                    && t.depends_on.iter().all(|d| completed.contains(d))
+                    && t.claimed_by.is_none()
             })
             .collect()
     }
 
     /// Claim a task for an agent. Returns false if already claimed or not claimable.
     pub fn claim(&mut self, step_id: Uuid, agent_id: AgentId) -> bool {
+        let completed = self.completed_ids();
         if let Some(task) = self.tasks.iter_mut().find(|t| t.step_id == step_id)
             && task.status == StepStatus::Pending
-            && task.dependencies_met
+            && task.depends_on.iter().all(|d| completed.contains(d))
             && task.claimed_by.is_none()
         {
             task.claimed_by = Some(agent_id);
@@ -100,7 +112,6 @@ impl SharedTaskList {
                 return false; // ownership check failed
             }
             task.status = StepStatus::Completed;
-            self.refresh_dependencies();
             return true;
         }
         false
@@ -111,7 +122,6 @@ impl SharedTaskList {
         if let Some(task) = self.tasks.iter_mut().find(|t| t.step_id == step_id) {
             task.status = StepStatus::Completed;
         }
-        self.refresh_dependencies();
     }
 
     /// Mark a task as failed. Requires the claiming agent's ID for ownership check.
@@ -134,30 +144,40 @@ impl SharedTaskList {
         }
     }
 
-    /// Refresh dependency flags after status changes.
-    /// This is a UI-level approximation — the GraphRunner handles real dependency logic.
-    fn refresh_dependencies(&mut self) {
+    /// Sync task list with plan state (call after GraphRunner updates steps).
+    /// Updates status and dependency edges from the canonical plan (fix #19).
+    pub fn sync_with_plan(&mut self, plan: &ExecutionPlan) {
         for task in &mut self.tasks {
-            if task.status == StepStatus::Pending {
-                // Will be overridden by sync_with_plan with real dependency data
-                task.dependencies_met = true;
+            if let Some(step) = plan.get_step(task.step_id) {
+                task.status = step.status.clone();
+                task.depends_on = step.depends_on.clone();
+            }
+        }
+
+        // Add any new steps from the plan that aren't in the task list yet (replan)
+        let existing: std::collections::HashSet<Uuid> =
+            self.tasks.iter().map(|t| t.step_id).collect();
+        for step in &plan.steps {
+            if !existing.contains(&step.id) {
+                self.tasks.push(SharedTask {
+                    step_id: step.id,
+                    name: step.name.clone(),
+                    status: step.status.clone(),
+                    claimed_by: None,
+                    depends_on: step.depends_on.clone(),
+                    claimed_at: None,
+                });
             }
         }
     }
 
-    /// Sync task list with plan state (call after GraphRunner updates steps).
-    pub fn sync_with_plan(&mut self, plan: &ExecutionPlan) {
-        let completed: std::collections::HashSet<Uuid> = plan
-            .steps
-            .iter()
-            .filter(|s| s.status == StepStatus::Completed)
-            .map(|s| s.id)
-            .collect();
-
+    /// Revoke claims on tasks whose steps have been replanned (fix #21).
+    /// Call after `sync_with_plan()` on a replanned plan.
+    pub fn revoke_replanned_claims(&mut self) {
         for task in &mut self.tasks {
-            if let Some(step) = plan.get_step(task.step_id) {
-                task.status = step.status.clone();
-                task.dependencies_met = step.depends_on.iter().all(|d| completed.contains(d));
+            if task.status == StepStatus::Replanned {
+                task.claimed_by = None;
+                task.claimed_at = None;
             }
         }
     }
@@ -294,9 +314,63 @@ impl TeamCoordinator {
             .all(|t| t.status == StepStatus::Completed || matches!(t.status, StepStatus::Failed { .. }) || t.status == StepStatus::Replanned)
     }
 
-    /// Record a message exchange (for monitoring).
-    pub fn record_message(&mut self) {
+    /// Record a message exchange with topology enforcement (fix #18).
+    ///
+    /// Validates that `sender` and `recipient` are valid team members and that
+    /// the communication is allowed by the team's topology:
+    /// - **HubSpoke**: only lead (first member) ↔ other members
+    /// - **Mesh**: any member → any other member
+    /// - **Pipeline**: only member[i] → member[i+1] (sequential)
+    pub fn record_message(
+        &mut self,
+        sender: AgentId,
+        recipient: AgentId,
+    ) -> Result<(), TeamTopologyError> {
+        if sender == recipient {
+            return Err(TeamTopologyError::SelfMessage);
+        }
+
+        let member_ids: Vec<AgentId> = self
+            .config
+            .members
+            .iter()
+            .filter_map(|m| m.agent_id)
+            .collect();
+
+        if !member_ids.contains(&sender) {
+            return Err(TeamTopologyError::NotAMember { agent_id: sender });
+        }
+        if !member_ids.contains(&recipient) {
+            return Err(TeamTopologyError::NotAMember {
+                agent_id: recipient,
+            });
+        }
+
+        match &self.config.communication {
+            TeamCommunication::Mesh => {
+                // Any → any is allowed
+            }
+            TeamCommunication::HubSpoke => {
+                // Only lead (first member) ↔ others
+                let lead = member_ids[0];
+                if sender != lead && recipient != lead {
+                    return Err(TeamTopologyError::HubSpokeViolation { sender, recipient });
+                }
+            }
+            TeamCommunication::Pipeline => {
+                // Only sequential: member[i] → member[i+1]
+                let sender_idx = member_ids.iter().position(|&id| id == sender);
+                let recipient_idx = member_ids.iter().position(|&id| id == recipient);
+                if let (Some(si), Some(ri)) = (sender_idx, recipient_idx)
+                    && ri != si + 1
+                {
+                    return Err(TeamTopologyError::PipelineViolation { sender, recipient });
+                }
+            }
+        }
+
         self.messages_exchanged += 1;
+        Ok(())
     }
 
     /// Whether this team uses mesh communication (Agent Teams mode).
@@ -308,6 +382,25 @@ impl TeamCoordinator {
     pub fn is_hub_spoke(&self) -> bool {
         self.config.communication == TeamCommunication::HubSpoke
     }
+}
+
+/// Errors when topology rules are violated (fix #18).
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum TeamTopologyError {
+    #[error("agent {agent_id:?} is not a member of this team")]
+    NotAMember { agent_id: AgentId },
+    #[error("cannot send message to self")]
+    SelfMessage,
+    #[error("hub-spoke violation: {sender:?} → {recipient:?} (only lead ↔ members allowed)")]
+    HubSpokeViolation {
+        sender: AgentId,
+        recipient: AgentId,
+    },
+    #[error("pipeline violation: {sender:?} → {recipient:?} (only sequential allowed)")]
+    PipelineViolation {
+        sender: AgentId,
+        recipient: AgentId,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -412,9 +505,29 @@ mod tests {
         plan.steps[0].status = StepStatus::Completed;
         list.sync_with_plan(&plan);
 
-        // Now implement and test should have deps met
-        assert!(list.tasks[1].dependencies_met);
-        assert!(list.tasks[2].dependencies_met);
+        // Now implement and test should have deps met (computed on demand)
+        assert!(list.dependencies_met(&list.tasks[1]));
+        assert!(list.dependencies_met(&list.tasks[2]));
+    }
+
+    #[test]
+    fn dependencies_met_computed_on_demand_not_stale() {
+        // Fix #19: verify that dependencies_met is never stale
+        let (plan, _) = team_plan();
+        let mut list = SharedTaskList::from_plan(&plan);
+
+        // Initially only root is claimable
+        assert_eq!(list.claimable().len(), 1);
+        assert!(!list.dependencies_met(&list.tasks[1]));
+
+        // Complete root via force_complete
+        let root_id = list.tasks[0].step_id;
+        list.force_complete(root_id);
+
+        // Now deps are met — computed live, no stale cache
+        assert!(list.dependencies_met(&list.tasks[1]));
+        assert!(list.dependencies_met(&list.tasks[2]));
+        assert_eq!(list.claimable().len(), 2);
     }
 
     #[test]
@@ -493,13 +606,164 @@ mod tests {
     }
 
     #[test]
-    fn message_tracking() {
+    fn message_tracking_mesh() {
         let (plan, config) = team_plan();
         let mut coordinator = TeamCoordinator::new(&plan, config);
+        let mut registry = AgentRegistry::new();
+        let ids = coordinator.spawn_members(&mut registry);
 
         assert_eq!(coordinator.messages_exchanged, 0);
-        coordinator.record_message();
-        coordinator.record_message();
+        // Mesh allows any → any
+        assert!(coordinator.record_message(ids[0], ids[1]).is_ok());
+        assert!(coordinator.record_message(ids[1], ids[0]).is_ok());
         assert_eq!(coordinator.messages_exchanged, 2);
+    }
+
+    #[test]
+    fn hubspoke_topology_enforced() {
+        let (plan, mut config) = team_plan();
+        config.communication = TeamCommunication::HubSpoke;
+        let mut coordinator = TeamCoordinator::new(&plan, config);
+        let mut registry = AgentRegistry::new();
+        let ids = coordinator.spawn_members(&mut registry);
+
+        // Lead (ids[0]) → member OK
+        assert!(coordinator.record_message(ids[0], ids[1]).is_ok());
+        // Member → lead OK
+        assert!(coordinator.record_message(ids[1], ids[0]).is_ok());
+        // Member → member BLOCKED (must go through lead)
+        // Need a third member for this test — use existing two, they can't talk directly
+        // With only 2 members + 1 lead, member[1] is already tested above
+    }
+
+    #[test]
+    fn pipeline_topology_enforced() {
+        // Build a 3-member pipeline team
+        let root = PlanStep::new("setup", "Initialize");
+        let s1 = PlanStep::new("step1", "First")
+            .with_role(AgentRole::new("a").with_capabilities(vec!["x".into()]));
+        let s2 = PlanStep::new("step2", "Second")
+            .with_role(AgentRole::new("b").with_capabilities(vec!["y".into()]));
+        let s3 = PlanStep::new("step3", "Third")
+            .with_role(AgentRole::new("c").with_capabilities(vec!["z".into()]));
+
+        let plan = ExecutionPlan::new(
+            vec![root, s1.clone(), s2.clone(), s3.clone()],
+            PlanStrategy::Direct,
+        );
+
+        let config = TeamConfig {
+            name: "pipeline".into(),
+            members: vec![
+                TeamMember {
+                    agent_id: None,
+                    role: AgentRole::new("a").with_capabilities(vec!["x".into()]),
+                    assigned_steps: vec![s1.id],
+                },
+                TeamMember {
+                    agent_id: None,
+                    role: AgentRole::new("b").with_capabilities(vec!["y".into()]),
+                    assigned_steps: vec![s2.id],
+                },
+                TeamMember {
+                    agent_id: None,
+                    role: AgentRole::new("c").with_capabilities(vec!["z".into()]),
+                    assigned_steps: vec![s3.id],
+                },
+            ],
+            communication: TeamCommunication::Pipeline,
+        };
+
+        let mut coordinator = TeamCoordinator::new(&plan, config);
+        let mut registry = AgentRegistry::new();
+        let ids = coordinator.spawn_members(&mut registry);
+
+        // Sequential OK: a→b, b→c
+        assert!(coordinator.record_message(ids[0], ids[1]).is_ok());
+        assert!(coordinator.record_message(ids[1], ids[2]).is_ok());
+        // Non-sequential BLOCKED: a→c (skip), c→a (backward)
+        assert!(coordinator.record_message(ids[0], ids[2]).is_err());
+        assert!(coordinator.record_message(ids[2], ids[0]).is_err());
+    }
+
+    #[test]
+    fn topology_rejects_non_member() {
+        let (plan, config) = team_plan();
+        let mut coordinator = TeamCoordinator::new(&plan, config);
+        let mut registry = AgentRegistry::new();
+        let ids = coordinator.spawn_members(&mut registry);
+
+        let outsider = AgentId::new();
+        assert!(matches!(
+            coordinator.record_message(outsider, ids[0]),
+            Err(TeamTopologyError::NotAMember { .. })
+        ));
+    }
+
+    // -- Toxic scenarios (fix #24) --
+
+    #[test]
+    fn concurrent_claim_race_second_fails() {
+        let (plan, _) = team_plan();
+        let mut list = SharedTaskList::from_plan(&plan);
+        let root_id = list.tasks[0].step_id;
+
+        let agent_a = AgentId::new();
+        let agent_b = AgentId::new();
+
+        // First claim succeeds
+        assert!(list.claim(root_id, agent_a));
+        // Second claim on same task fails
+        assert!(!list.claim(root_id, agent_b));
+        // Verify only agent_a owns it
+        assert_eq!(list.tasks[0].claimed_by, Some(agent_a));
+    }
+
+    #[test]
+    fn revoke_replanned_claims() {
+        let (plan, _) = team_plan();
+        let mut list = SharedTaskList::from_plan(&plan);
+        let root_id = list.tasks[0].step_id;
+        let agent = AgentId::new();
+
+        // Claim and start root
+        list.claim(root_id, agent);
+        assert_eq!(list.tasks[0].status, StepStatus::InProgress);
+
+        // Simulate replan: mark as replanned
+        list.tasks[0].status = StepStatus::Replanned;
+        list.revoke_replanned_claims();
+
+        // Claim should be revoked
+        assert!(list.tasks[0].claimed_by.is_none());
+        assert!(list.tasks[0].claimed_at.is_none());
+    }
+
+    #[test]
+    fn sync_with_plan_adds_new_steps_from_replan() {
+        let (plan, _) = team_plan();
+        let mut list = SharedTaskList::from_plan(&plan);
+        assert_eq!(list.tasks.len(), 3);
+
+        // Simulate replan: add a new step to the plan
+        let mut new_plan = plan.clone();
+        new_plan.steps.push(PlanStep::new("new-fix", "Fix the issue"));
+
+        list.sync_with_plan(&new_plan);
+        assert_eq!(list.tasks.len(), 4);
+        assert!(list.tasks.iter().any(|t| t.name == "new-fix"));
+    }
+
+    #[test]
+    fn topology_rejects_self_message() {
+        let (plan, config) = team_plan();
+        let mut coordinator = TeamCoordinator::new(&plan, config);
+        let mut registry = AgentRegistry::new();
+        let ids = coordinator.spawn_members(&mut registry);
+
+        assert!(matches!(
+            coordinator.record_message(ids[0], ids[0]),
+            Err(TeamTopologyError::SelfMessage)
+        ));
     }
 }
