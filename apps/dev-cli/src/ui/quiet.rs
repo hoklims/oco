@@ -1,7 +1,8 @@
 use super::Renderer;
 use super::event::UiEvent;
 
-/// Quiet renderer: only emits final results (RunFinished, RunResponse, DoctorSummary).
+/// Quiet renderer: only emits high-level results
+/// (RunFinished, RunResponse, DoctorSummary, IndexCompleted, Error).
 /// Everything else is silently discarded.
 pub struct QuietRenderer {
     term: console::Term,

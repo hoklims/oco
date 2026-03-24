@@ -492,15 +492,21 @@ impl OrchestrationLoop {
             );
         }
 
-        // Emit final stopped event
-        let stop_reason = match state.session.status {
-            oco_shared_types::SessionStatus::Completed => StopReason::TaskComplete,
-            oco_shared_types::SessionStatus::BudgetExhausted => StopReason::BudgetExhausted,
-            oco_shared_types::SessionStatus::Cancelled => StopReason::UserCancelled,
-            _ => StopReason::Error {
-                message: "session ended".into(),
-            },
-        };
+        // Emit final stopped event — derive reason from the terminal Stop action
+        let stop_reason = state
+            .action_history
+            .iter()
+            .rev()
+            .find_map(|a| {
+                if let OrchestratorAction::Stop { reason } = a {
+                    Some(reason.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(StopReason::Error {
+                message: "session ended without explicit stop".into(),
+            });
         self.emit_event(OrchestrationEvent::Stopped {
             reason: stop_reason,
             total_steps: state.session.step_count,

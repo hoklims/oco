@@ -28,4 +28,3 @@ reqwest = { workspace = true }
 uuid = { workspace = true }
 indicatif = { workspace = true }
 console = { workspace = true }
-comfy-table = { workspace = true }

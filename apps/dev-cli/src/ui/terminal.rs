@@ -131,9 +131,10 @@ impl Renderer for TerminalRenderer {
                     _ => style(&action_type).white(),
                 };
 
-                // Truncate reason to fit terminal
-                let reason_display = if reason.len() > 50 {
-                    format!("{}…", &reason[..49])
+                // Truncate reason to fit terminal (UTF-8 safe)
+                let reason_display = if reason.chars().count() > 50 {
+                    let truncated: String = reason.chars().take(49).collect();
+                    format!("{truncated}…")
                 } else {
                     reason
                 };

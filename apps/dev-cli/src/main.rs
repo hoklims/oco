@@ -389,10 +389,15 @@ async fn cmd_run(
     let state = run_handle.await??;
     let run_duration = run_start.elapsed().as_millis() as u64;
 
-    let success = matches!(
-        state.session.status,
-        oco_shared_types::SessionStatus::Completed
-    );
+    // Derive success from the terminal action, not session.status (which may not be updated)
+    let success = state.action_history.iter().rev().any(|a| {
+        matches!(
+            a,
+            oco_shared_types::OrchestratorAction::Stop {
+                reason: oco_shared_types::StopReason::TaskComplete
+            }
+        )
+    });
 
     let session_id = state.session.id.0.to_string();
 
@@ -451,7 +456,14 @@ fn save_run_artifacts(
     success: bool,
     final_response: &Option<String>,
 ) -> Result<()> {
-    let run_dir = PathBuf::from(".oco").join("runs").join(session_id);
+    // Write under workspace root when available (matches where `runs show/list` looks)
+    let base = state
+        .session
+        .workspace_root
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let run_dir = base.join(".oco").join("runs").join(session_id);
     std::fs::create_dir_all(&run_dir)?;
 
     // trace.jsonl — one event per line
@@ -1189,8 +1201,9 @@ fn cmd_runs_list(r: &mut dyn Renderer, workspace: String, limit: usize) -> Resul
             let duration = summary["duration_ms"].as_u64().unwrap_or(0);
 
             let status = if success { "ok" } else { "fail" };
-            let req_display = if request.len() > 50 {
-                format!("{}…", &request[..49])
+            let req_display = if request.chars().count() > 50 {
+                let prefix: String = request.chars().take(49).collect();
+                format!("{prefix}…")
             } else {
                 request.to_string()
             };

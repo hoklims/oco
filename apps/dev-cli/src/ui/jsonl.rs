@@ -17,9 +17,11 @@ impl JsonlRenderer {
                 obj[&k] = v;
             }
         }
-        // Intentionally ignore write errors (broken pipe, etc.)
-        let _ = serde_json::to_writer(std::io::stdout().lock(), &obj);
-        println!();
+        // Write JSON + newline on the same locked handle to prevent interleaving
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let _ = serde_json::to_writer(&mut out, &obj);
+        let _ = out.write_all(b"\n");
     }
 }
 
