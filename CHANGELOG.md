@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.6] — 2026-03-25
+
+### Fixed
+- Stop hook false positives on non-source files: exclude `.sh`, `.bash`, `.zsh`, `Makefile`, `Dockerfile`, `.env`, `.lock`, `.gitignore`, `.editorconfig`, `.prettierrc`, `.eslintrc`
+
 ## [0.3.5] — 2026-03-25
 
 ### Fixed

@@ -70,7 +70,7 @@ try {
 
   // Ignore non-source files (hooks, configs, docs) — no verification needed
   // Paths may be absolute; match against full path patterns
-  const nonSourcePatterns = [/[/\\]\.claude[/\\]/, /[/\\]\.github[/\\]/, /[/\\]docs[/\\]/, /\.md$/i, /\.json$/i, /\.ya?ml$/i, /\.toml$/i, /\.mjs$/i, /\.cjs$/i];
+  const nonSourcePatterns = [/[/\\]\.claude[/\\]/, /[/\\]\.github[/\\]/, /[/\\]docs[/\\]/, /\.md$/i, /\.json$/i, /\.ya?ml$/i, /\.toml$/i, /\.mjs$/i, /\.cjs$/i, /\.sh$/i, /\.bash$/i, /\.zsh$/i, /Makefile$/i, /Dockerfile$/i, /\.dockerignore$/i, /\.env/i, /\.gitignore$/i, /\.editorconfig$/i, /\.prettierrc/i, /\.eslintrc/i, /\.lock$/i];
   const sourceFiles = modifiedFiles.filter(f => !nonSourcePatterns.some(p => p.test(f)));
   if (sourceFiles.length === 0) process.exit(0);
 
