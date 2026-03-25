@@ -10,8 +10,7 @@ use std::path::{Path, PathBuf};
 
 /// Returns the workspace root (two levels up from this test file's OUT_DIR).
 fn workspace_root() -> PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR not set");
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     PathBuf::from(manifest)
 }
 
@@ -65,10 +64,7 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
         "oco-context-engine",
         vec!["oco-shared-types", "oco-retrieval", "oco-code-intel"],
     );
-    g.insert(
-        "oco-planner",
-        vec!["oco-shared-types", "oco-policy-engine"],
-    );
+    g.insert("oco-planner", vec!["oco-shared-types", "oco-policy-engine"]);
 
     // Layer 3 — Aggregator
     g.insert(
