@@ -19,7 +19,7 @@ import { execSync } from 'node:child_process';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_SRC = join(__dirname, 'plugin');
 const MANIFEST_FILE = '.oco-install-manifest.json';
-const VERSION = '0.1.0';
+const VERSION = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf8')).version;
 
 // --- CLI Argument Parsing ---
 
@@ -66,9 +66,14 @@ async function install() {
       continue;
     }
 
-    cpSync(src, dest);
-    copied++;
-    console.log(`  copy  ${relPath}`);
+    try {
+      cpSync(src, dest, { force: true });
+      copied++;
+      console.log(`  copy  ${relPath}`);
+    } catch (err) {
+      skipped++;
+      console.log(`  skip  ${relPath} (${err.code || 'copy failed'})`);
+    }
   }
 
   // 3. Merge settings.json
