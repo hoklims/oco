@@ -46,6 +46,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 | 11 | `orchestrator-core` | State machine, action loop, **GraphRunner (DAG execution)**, **LlmRouter (multi-model)**, LLM providers, runtime, eval runner, repo profiles |
 | 12 | `mcp-server` | Axum HTTP + MCP server, session management |
 | 13 | `dev-cli` | CLI binary (index, search, run, serve, eval, doctor, runs) — event-driven UI with Terminal/JSONL/Quiet renderers |
+| — | `architecture-tests` | Architecture fitness tests — enforces crate dependency DAG, layer violations, foundation isolation |
 
 ### Orchestration v2 — Emergent Plan Engine
 
@@ -137,6 +138,7 @@ cargo test -p oco-retrieval              #  9 tests — FTS5, vector, hybrid ran
 cargo test -p oco-telemetry              #  5 tests — event recording, JSONL export
 cargo test -p oco-planner               # 34 tests — direct planner, LLM planner, prompt gen, team generation, retry, edge cases
 cargo test -p oco-orchestrator-core      # 34 tests — eval, integration, loop runner, graph runner, LLM router, cancellation
+cargo test -p oco-architecture-tests     #  4 tests — dependency DAG, layer violations, foundation isolation, coverage
 ```
 
 ## LLM Providers
@@ -199,6 +201,7 @@ oco/
 │   ├── telemetry/                # Tracing + events
 │   ├── mcp-server/               # HTTP + MCP server
 │   ├── shared-proto/             # Protobuf defs
+│   ├── architecture-tests/       # Architecture fitness tests (DAG enforcement)
 │   └── ...
 ├── docs/
 │   ├── adr/                      # Architecture Decision Records

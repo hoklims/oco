@@ -13,6 +13,7 @@ members = [
     "crates/mcp-server",
     "crates/shared-types",
     "crates/shared-proto",
+    "crates/architecture-tests",
     "apps/dev-cli",
 ]
 
