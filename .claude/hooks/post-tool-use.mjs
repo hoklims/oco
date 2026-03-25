@@ -68,18 +68,30 @@ try {
   // --- Detect verification commands ---
   if (!toolError && (toolName === 'Bash' || toolName === 'bash')) {
     const command = (input.tool_input?.command || '').toLowerCase();
-    const verifyCmds = [
-      'cargo test', 'cargo build', 'cargo check', 'cargo clippy', 'cargo fmt',
-      'npm test', 'npm run build', 'npm run lint', 'npm run test',
-      'npx vitest', 'vitest run', 'vitest',
-      'npx playwright test', 'playwright test',
-      'npx jest', 'jest',
-      'pytest', 'python -m pytest', 'go test', 'go build',
-      'tsc --noemit', 'npx tsc', 'mypy', 'ruff check',
-      'dotnet test', 'dotnet build',
+    // Patterns match anywhere in the command (handles &&, ;, pipes, cd prefix, etc.)
+    // Covers npm/pnpm/yarn/bun variants, monorepo filters, and common test runners
+    const verifyPatterns = [
+      // Rust
+      /cargo\s+(test|build|check|clippy|fmt)/,
+      // JS/TS package managers — npm, pnpm, yarn, bun (with optional --filter, -w, etc.)
+      /(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|type-check|check)/,
+      /(?:npm|pnpm|yarn|bun)\s+(?:--filter\s+\S+\s+)?(?:test|build|lint|typecheck|type-check)/,
+      // Direct test runners
+      /(?:npx\s+)?(?:vitest|jest|playwright\s+test|mocha|ava)/,
+      // Python
+      /(?:python\s+-m\s+)?pytest/,
+      /mypy/, /ruff\s+check/,
+      // Go
+      /go\s+(?:test|build|vet)/,
+      // .NET
+      /dotnet\s+(?:test|build)/,
+      // TypeScript
+      /(?:npx\s+)?tsc(?:\s|$)/,
+      // Make
+      /make\s+(?:test|check|lint|build)/,
     ];
-    for (const vc of verifyCmds) {
-      if (command.startsWith(vc) || command.includes(` && ${vc}`) || command.includes(`; ${vc}`)) {
+    for (const pat of verifyPatterns) {
+      if (pat.test(command)) {
         writeState(stateDir, 'verify-done', String(now));
         break;
       }

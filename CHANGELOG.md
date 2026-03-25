@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.5] — 2026-03-25
+
+### Fixed
+- Verify detection rewritten with regex patterns instead of prefix matching — now covers all package managers (npm, pnpm, yarn, bun), monorepo filters (`--filter`), and additional runners (mocha, ava, make)
+- Eliminates the "false positive loop" where `pnpm build`/`pnpm type-check` were not recognized as verification
+
 ## [0.3.4] — 2026-03-25
 
 ### Fixed
