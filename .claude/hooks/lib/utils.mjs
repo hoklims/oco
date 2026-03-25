@@ -46,7 +46,10 @@ export function getStateDir() {
   }
 
   const hash = createHash('md5').update(workspaceRoot).digest('hex').slice(0, 12);
-  const cacheRoot = process.env.XDG_RUNTIME_DIR || join(homedir(), '.cache', 'oco');
+  const cacheRoot = process.env.XDG_RUNTIME_DIR
+    || (process.platform === 'win32'
+      ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'oco')
+      : join(homedir(), '.cache', 'oco'));
 
   const stateDir = join(cacheRoot, `session-${hash}`);
   try {

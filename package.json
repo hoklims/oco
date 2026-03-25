@@ -1,6 +1,6 @@
 {
   "name": "oco-claude-plugin",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "OCO Claude Code plugin — safety hooks, skills, agents, and MCP tools for any project",
   "type": "module",
   "bin": {

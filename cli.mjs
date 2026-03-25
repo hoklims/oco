@@ -254,7 +254,6 @@ function resolveTarget() {
 function findProjectRoot(dir) {
   const markers = ['package.json', 'Cargo.toml', 'pyproject.toml', 'go.mod', '.git'];
   let current = resolve(dir);
-  const { root } = new URL('file:///' + current.replace(/\\/g, '/'));
 
   while (true) {
     for (const marker of markers) {

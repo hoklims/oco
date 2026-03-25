@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3] — 2026-03-25
+
+### Fixed
+- Cross-platform cache dir: use `%LOCALAPPDATA%\oco` on Windows, `~/.cache/oco` on Linux/Mac
+- Remove dead code in `findProjectRoot` (unused URL parsing)
+- Fix cache path in all 8 hook files (plugin/ + .claude/) for Windows compatibility
+
 ## [0.3.2] — 2026-03-25
 
 ### Fixed
