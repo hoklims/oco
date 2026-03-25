@@ -1,7 +1,7 @@
 // OCO Hook: PostToolUse (cross-platform)
 // Records observations, tracks modifications and verification timestamps.
 // MUST exit within 4s no matter what.
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -15,7 +15,7 @@ process.on('unhandledRejection', () => process.exit(0));
 // --- Helpers (inlined) ---
 function getStateDir() {
   let root;
-  try { root = require('node:child_process').execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim(); } catch { root = process.env.CLAUDE_PROJECT_DIR || process.cwd(); }
+  try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim(); } catch { root = process.env.CLAUDE_PROJECT_DIR || process.cwd(); }
   const hash = createHash('md5').update(root).digest('hex').slice(0, 12);
   const cacheRoot = process.env.XDG_RUNTIME_DIR
     || (process.platform === 'win32'
@@ -69,10 +69,14 @@ try {
   if (!toolError && (toolName === 'Bash' || toolName === 'bash')) {
     const command = (input.tool_input?.command || '').toLowerCase();
     const verifyCmds = [
-      'cargo test', 'cargo build', 'cargo check', 'cargo clippy',
-      'npm test', 'npm run build', 'npm run lint',
+      'cargo test', 'cargo build', 'cargo check', 'cargo clippy', 'cargo fmt',
+      'npm test', 'npm run build', 'npm run lint', 'npm run test',
+      'npx vitest', 'vitest run', 'vitest',
+      'npx playwright test', 'playwright test',
+      'npx jest', 'jest',
       'pytest', 'python -m pytest', 'go test', 'go build',
       'tsc --noemit', 'npx tsc', 'mypy', 'ruff check',
+      'dotnet test', 'dotnet build',
     ];
     for (const vc of verifyCmds) {
       if (command.startsWith(vc) || command.includes(` && ${vc}`) || command.includes(`; ${vc}`)) {

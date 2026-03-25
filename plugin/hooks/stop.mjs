@@ -59,6 +59,15 @@ try {
 
   if (modifiedFiles.length === 0) process.exit(0);
 
+  // Filter to only files under the current project's git root
+  // Prevents cross-project false positives (e.g. pathvisa files flagged in supertools)
+  let gitRoot;
+  try { gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim().replace(/\\/g, '/'); } catch { gitRoot = null; }
+  if (gitRoot) {
+    modifiedFiles = modifiedFiles.filter(f => f.replace(/\\/g, '/').startsWith(gitRoot));
+    if (modifiedFiles.length === 0) process.exit(0);
+  }
+
   // Ignore non-source files (hooks, configs, docs) — no verification needed
   // Paths may be absolute; match against full path patterns
   const nonSourcePatterns = [/[/\\]\.claude[/\\]/, /[/\\]\.github[/\\]/, /[/\\]docs[/\\]/, /\.md$/i, /\.json$/i, /\.ya?ml$/i, /\.toml$/i, /\.mjs$/i, /\.cjs$/i];
