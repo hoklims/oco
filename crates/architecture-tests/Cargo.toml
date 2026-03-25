@@ -1,0 +1,10 @@
+[package]
+name = "oco-architecture-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Architecture fitness tests — enforces the crate dependency DAG"
+
+[dev-dependencies]
+toml = { workspace = true }
