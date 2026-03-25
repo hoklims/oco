@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.2] — 2026-03-25
+
+### Fixed
+- Skill descriptions rewritten with "Auto-activates when..." pattern for Claude Code auto-trigger (#30)
+
+## [0.3.1] — 2026-03-25
+
+### Fixed
+- CLI installer robust across environments (Windows/macOS/Linux path handling) (#29)
+
+## [0.3.0] — 2026-03-25
+
+### Added
+- **Observable plans**: `ExecutionPlan` DAG with `ready_steps()`, `parallel_groups()`, `critical_path_length()`
+- **Step enforcement**: `GraphRunner` with parallel execution, verify gates, budget pre-reservation
+- **Replan budget guard**: max 3 replan attempts, 5% budget per call
+- **Semantic plan validation**: `validate_semantic()` checks dep coherence, role consistency
+- **Multi-model routing**: `LlmRouter` per-step model selection (opus/sonnet/haiku)
+- **Step-scoped context**: `StepContextBuilder` with dependency outputs, error context (Manus pattern)
+
+### Changed
+- Medium+ tasks now get unique ExecutionPlan DAG instead of flat loop
+- Planner generates plans from task + repo context + available capabilities
+
 ## [0.2.0] — 2026-03-24
 
 ### Added
