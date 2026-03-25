@@ -8,10 +8,27 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// Returns the workspace root (two levels up from this test file's OUT_DIR).
+/// Returns the workspace root (two levels up from this crate's CARGO_MANIFEST_DIR).
 fn workspace_root() -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-    PathBuf::from(manifest)
+    let crate_dir = PathBuf::from(manifest);
+
+    let workspace_dir = crate_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or_else(|| {
+            panic!(
+                "Failed to compute workspace root from CARGO_MANIFEST_DIR: {}",
+                crate_dir.display()
+            )
+        });
+
+    std::fs::canonicalize(workspace_dir).unwrap_or_else(|e| {
+        panic!(
+            "Failed to canonicalize workspace root {}: {e}",
+            workspace_dir.display()
+        )
+    })
 }
 
 /// Parse a Cargo.toml and extract internal (oco-*) dependency names.
@@ -87,6 +104,20 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
         "oco-mcp-server",
         vec!["oco-shared-types", "oco-orchestrator-core"],
     );
+    g.insert(
+        "oco-dev-cli",
+        vec![
+            "oco-shared-types",
+            "oco-orchestrator-core",
+            "oco-telemetry",
+            "oco-mcp-server",
+            "oco-policy-engine",
+            "oco-verifier",
+        ],
+    );
+
+    // Meta — test-only crates (no internal deps)
+    g.insert("oco-architecture-tests", vec![]);
 
     g
 }
@@ -100,12 +131,18 @@ fn discover_crates(root: &Path) -> Vec<(String, PathBuf)> {
         if !base.exists() {
             continue;
         }
-        for entry in std::fs::read_dir(&base).unwrap() {
-            let entry = entry.unwrap();
+        for entry in std::fs::read_dir(&base)
+            .unwrap_or_else(|e| panic!("Failed to read directory {}: {e}", base.display()))
+        {
+            let entry =
+                entry.unwrap_or_else(|e| panic!("Failed to read entry in {}: {e}", base.display()));
             let cargo_toml = entry.path().join("Cargo.toml");
             if cargo_toml.exists() {
-                let content = std::fs::read_to_string(&cargo_toml).unwrap();
-                let parsed: toml::Value = content.parse().unwrap();
+                let content = std::fs::read_to_string(&cargo_toml)
+                    .unwrap_or_else(|e| panic!("Failed to read {}: {e}", cargo_toml.display()));
+                let parsed: toml::Value = content
+                    .parse()
+                    .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", cargo_toml.display()));
                 if let Some(name) = parsed
                     .get("package")
                     .and_then(|p| p.get("name"))
@@ -129,11 +166,6 @@ fn crate_dependency_dag_is_enforced() {
     let mut violations = Vec::new();
 
     for (crate_name, cargo_toml_path) in &crates {
-        // Skip the CLI binary — it's an app, not a library crate
-        if crate_name == "oco-dev-cli" {
-            continue;
-        }
-
         let actual_deps = extract_internal_deps(cargo_toml_path);
 
         let Some(allowed_deps) = allowed.get(crate_name.as_str()) else {
@@ -242,10 +274,6 @@ fn all_workspace_crates_are_covered_by_graph() {
     let mut missing = Vec::new();
 
     for (name, _) in &crates {
-        // dev-cli is excluded (app binary)
-        if name == "oco-dev-cli" {
-            continue;
-        }
         if !covered.contains(name.as_str()) {
             missing.push(name.as_str());
         }
