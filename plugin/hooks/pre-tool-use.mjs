@@ -17,7 +17,11 @@ function getStateDir() {
   let root;
   try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim(); } catch { root = process.env.CLAUDE_PROJECT_DIR || process.cwd(); }
   const hash = createHash('md5').update(root).digest('hex').slice(0, 12);
-  const dir = join(process.env.XDG_RUNTIME_DIR || join(homedir(), '.cache', 'oco'), `session-${hash}`);
+  const cacheRoot = process.env.XDG_RUNTIME_DIR
+    || (process.platform === 'win32'
+      ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'oco')
+      : join(homedir(), '.cache', 'oco'));
+  const dir = join(cacheRoot, `session-${hash}`);
   try { mkdirSync(dir, { recursive: true }); if (lstatSync(dir).isSymbolicLink()) return join(tmpdir(), 'oco-fallback'); } catch {}
   return dir;
 }
