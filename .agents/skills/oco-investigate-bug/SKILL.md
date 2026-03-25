@@ -1,6 +1,12 @@
 ---
 name: oco-investigate-bug
-description: Systematic bug investigation without a full stacktrace. Enforces evidence-first debugging with reproduction and root cause analysis.
+description: >
+  Systematic evidence-first bug investigation without a full stacktrace.
+  Auto-activates when the user reports a bug, broken behavior, unexpected results, a regression,
+  something not working, or a problem without a clear error message.
+  Enforces strict workflow: understand symptom → narrow scope → gather evidence → reproduce →
+  root cause analysis → fix ONLY after proof. Never guess at fixes.
+  Also auto-activates after 2 failed attempts to fix the same problem.
 triggers:
   - "debug"
   - "bug"

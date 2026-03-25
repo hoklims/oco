@@ -1,6 +1,11 @@
 ---
 name: oco-trace-stack
-description: Analyze a stack trace or runtime error to identify root cause. Use when a stacktrace or runtime error is present.
+description: >
+  Stack trace and runtime error analysis to identify root cause.
+  Auto-activates when the user pastes a stacktrace, traceback, panic, exception, crash,
+  or error with line number. Also detects runtime errors in command output (build, test, run).
+  Enforces workflow: parse trace → map to code → inspect suspect regions → ranked hypotheses →
+  verify before fixing. Never propose a fix without reading the failing code.
 triggers:
   - "stacktrace"
   - "stack trace"

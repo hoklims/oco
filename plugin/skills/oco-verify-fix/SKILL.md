@@ -1,6 +1,12 @@
 ---
 name: oco-verify-fix
-description: Run verification suite after code changes. Enforces build, test, lint, typecheck discipline with evidence-based completion.
+description: >
+  Mandatory verification suite after any code change.
+  Auto-activates after every source file modification, even trivial ones (one-liner).
+  Detects project type (Cargo.toml, package.json, pyproject.toml, go.mod, .csproj) and runs
+  in order: build → types → lint → tests. Produces a PASS/FAIL/PARTIAL verdict.
+  NON-NEGOTIABLE: never consider a change complete without running this skill.
+  Also activates when the user asks to verify, test, validate, or check their changes.
 triggers:
   - "verify"
   - "check my changes"
