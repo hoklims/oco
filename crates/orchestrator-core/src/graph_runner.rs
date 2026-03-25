@@ -20,7 +20,9 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use oco_planner::{Planner, PlanningContext};
-use oco_shared_types::{ExecutionPlan, OrchestrationEvent, PlanStep, StepStatus};
+use oco_shared_types::{
+    CheckResult, ExecutionPlan, OrchestrationEvent, PlanStep, StepStatus, StepSummary, TeamSummary,
+};
 
 use crate::error::OrchestratorError;
 
@@ -241,7 +243,10 @@ impl GraphRunner {
                         warn!("max replan attempts reached, aborting");
                         break;
                     }
-                    match self.try_replan(&mut plan, planning_context).await {
+                    match self
+                        .try_replan(&mut plan, planning_context, replan_count)
+                        .await
+                    {
                         Ok(true) => {
                             replan_count += 1;
                             continue;
@@ -345,6 +350,14 @@ impl GraphRunner {
                                 &step_name,
                                 true,
                                 result.duration_ms,
+                                result.tokens_used,
+                            );
+                            self.emit_verify_gate_result(
+                                result.step_id,
+                                &step_name,
+                                &vr.output,
+                                true,
+                                false,
                             );
                         }
                         Ok(vr) => {
@@ -357,12 +370,14 @@ impl GraphRunner {
                                 &step_name,
                                 false,
                                 result.duration_ms,
+                                result.tokens_used,
                             );
-                            self.emit_verify_gate_failed(
+                            self.emit_verify_gate_result(
                                 result.step_id,
                                 &step_name,
                                 &vr.output,
-                                replan_count,
+                                false,
+                                replan_count < MAX_REPLAN_ATTEMPTS,
                             );
                         }
                         Err(e) => {
@@ -375,22 +390,38 @@ impl GraphRunner {
                                 &step_name,
                                 false,
                                 result.duration_ms,
+                                result.tokens_used,
                             );
                         }
                     }
                 } else {
                     let step_name = step.name.clone();
                     step.status = StepStatus::Completed;
-                    self.emit_step_completed(result.step_id, &step_name, true, result.duration_ms);
+                    self.emit_step_completed(
+                        result.step_id,
+                        &step_name,
+                        true,
+                        result.duration_ms,
+                        result.tokens_used,
+                    );
                 }
             } else {
                 let step_name = step.name.clone();
                 step.status = StepStatus::Failed {
                     reason: result.output.clone(),
                 };
-                self.emit_step_completed(result.step_id, &step_name, false, result.duration_ms);
+                self.emit_step_completed(
+                    result.step_id,
+                    &step_name,
+                    false,
+                    result.duration_ms,
+                    result.tokens_used,
+                );
             }
         }
+
+        // Emit progress after processing all results in a batch
+        self.emit_progress(plan);
     }
 
     /// Execute multiple steps in parallel.
@@ -459,9 +490,10 @@ impl GraphRunner {
 
     /// Attempt to replan after a failure. Returns true if new steps were added.
     async fn try_replan(
-        &self,
+        &mut self,
         plan: &mut ExecutionPlan,
         context: &PlanningContext,
+        replan_count: u32,
     ) -> Result<bool, OrchestratorError> {
         let failed = plan
             .steps
@@ -478,11 +510,25 @@ impl GraphRunner {
             _ => "unknown failure".into(),
         };
 
+        // Budget pre-check: ensure we have at least 15% remaining for replan + new steps
+        let remaining = self.token_budget.saturating_sub(self.tokens_used);
+        let min_required = self.token_budget / 7; // ~15%
+        if remaining < min_required {
+            warn!(
+                remaining,
+                min_required, "insufficient budget for replan, skipping"
+            );
+            return Ok(false);
+        }
+
         info!(
             step = %failed_step.name,
             error = %error_context,
             "attempting replan"
         );
+
+        let failed_step_name = failed_step.name.clone();
+        let old_plan_snapshot = plan.clone();
 
         let new_plan = self
             .planner
@@ -501,10 +547,17 @@ impl GraphRunner {
             return Ok(false);
         }
 
-        // Replace the plan
-        *plan = new_plan;
+        self.emit_replan_triggered(
+            &failed_step_name,
+            replan_count + 1,
+            &old_plan_snapshot,
+            &new_plan,
+        );
 
-        self.emit_replan_triggered(plan);
+        // Replace the plan and emit updated plan overview
+        *plan = new_plan;
+        self.emit_plan_generated(plan);
+
         Ok(true)
     }
 
@@ -512,44 +565,88 @@ impl GraphRunner {
 
     fn emit_plan_generated(&self, plan: &ExecutionPlan) {
         if let Some(ref tx) = self.event_tx {
-            // Use existing StepCompleted variant with synthetic data for now.
-            // TODO(#15): add PlanGenerated event variant
-            let _ = tx.send(OrchestrationEvent::StepCompleted {
-                step: 0,
-                action: oco_shared_types::OrchestratorAction::Plan {
-                    request: format!(
-                        "Generated plan with {} steps, {} parallel groups",
-                        plan.steps.len(),
-                        plan.parallel_groups().len()
-                    ),
-                },
-                reason: format!("strategy: {:?}", plan.strategy),
-                duration_ms: 0,
-                budget_snapshot: oco_shared_types::BudgetSnapshot {
-                    tokens_used: self.tokens_used,
-                    tokens_remaining: self.token_budget.saturating_sub(self.tokens_used),
-                    tool_calls_used: 0,
-                    tool_calls_remaining: 0,
-                    retrievals_used: 0,
-                    verify_cycles_used: 0,
-                    elapsed_secs: 0,
-                },
-                knowledge_confidence: 0.5,
-                success: true,
+            let execution_mode_str = |step: &PlanStep| -> String {
+                match &step.execution {
+                    oco_shared_types::StepExecution::Inline => "inline".into(),
+                    oco_shared_types::StepExecution::Subagent { model } => {
+                        format!("subagent({})", model.as_deref().unwrap_or("default"))
+                    }
+                    oco_shared_types::StepExecution::Teammate { team_name } => {
+                        format!("teammate({team_name})")
+                    }
+                    oco_shared_types::StepExecution::McpTool { server, tool } => {
+                        format!("mcp({server}/{tool})")
+                    }
+                }
+            };
+
+            let steps: Vec<StepSummary> = plan
+                .steps
+                .iter()
+                .filter(|s| s.status != StepStatus::Replanned)
+                .map(|s| StepSummary {
+                    id: s.id,
+                    name: s.name.clone(),
+                    description: s.description.clone(),
+                    role: s.agent_role.name.clone(),
+                    execution_mode: execution_mode_str(s),
+                    depends_on: s.depends_on.clone(),
+                    verify_after: s.verify_after,
+                    estimated_tokens: s.estimated_tokens,
+                    preferred_model: s.agent_role.preferred_model.clone(),
+                })
+                .collect();
+
+            let team = plan.team.as_ref().map(|t| TeamSummary {
+                name: t.name.clone(),
+                topology: format!("{:?}", t.communication),
+                member_count: t.members.len(),
+            });
+
+            let _ = tx.send(OrchestrationEvent::PlanGenerated {
+                plan_id: plan.id,
+                step_count: steps.len(),
+                parallel_group_count: plan.parallel_groups().len(),
+                critical_path_length: plan.critical_path_length(),
+                estimated_total_tokens: plan.estimated_total_tokens(),
+                strategy: format!("{:?}", plan.strategy),
+                team,
+                steps,
             });
         }
     }
 
     fn emit_step_started(&self, step: &PlanStep) {
+        let mode = match &step.execution {
+            oco_shared_types::StepExecution::Inline => "inline",
+            oco_shared_types::StepExecution::Subagent { .. } => "subagent",
+            oco_shared_types::StepExecution::Teammate { .. } => "teammate",
+            oco_shared_types::StepExecution::McpTool { .. } => "mcp_tool",
+        };
         debug!(
             step_id = %step.id,
             step_name = %step.name,
             execution = ?step.execution,
             "step started"
         );
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(OrchestrationEvent::PlanStepStarted {
+                step_id: step.id,
+                step_name: step.name.clone(),
+                role: step.agent_role.name.clone(),
+                execution_mode: mode.into(),
+            });
+        }
     }
 
-    fn emit_step_completed(&self, step_id: Uuid, step_name: &str, success: bool, duration_ms: u64) {
+    fn emit_step_completed(
+        &self,
+        step_id: Uuid,
+        step_name: &str,
+        success: bool,
+        duration_ms: u64,
+        tokens_used: u32,
+    ) {
         if success {
             info!(step_name, duration_ms, "step completed");
         } else {
@@ -557,59 +654,126 @@ impl GraphRunner {
         }
 
         if let Some(ref tx) = self.event_tx {
-            let action = if success {
-                oco_shared_types::OrchestratorAction::Delegate {
-                    step_id,
-                    agent_role: oco_shared_types::AgentRole::new(step_name),
-                    context: vec![],
-                }
-            } else {
-                oco_shared_types::OrchestratorAction::Replan {
-                    failed_step_id: step_id,
-                    error_context: "step failed".into(),
-                }
-            };
-
-            let _ = tx.send(OrchestrationEvent::StepCompleted {
-                step: 0, // TODO: track global step counter
-                action,
-                reason: format!(
-                    "step {step_name}: {}",
-                    if success { "ok" } else { "failed" }
-                ),
-                duration_ms,
-                budget_snapshot: oco_shared_types::BudgetSnapshot {
-                    tokens_used: self.tokens_used,
-                    tokens_remaining: self.token_budget.saturating_sub(self.tokens_used),
-                    tool_calls_used: 0,
-                    tool_calls_remaining: 0,
-                    retrievals_used: 0,
-                    verify_cycles_used: 0,
-                    elapsed_secs: 0,
-                },
-                knowledge_confidence: 0.5,
+            let _ = tx.send(OrchestrationEvent::PlanStepCompleted {
+                step_id,
+                step_name: step_name.into(),
                 success,
+                duration_ms,
+                tokens_used,
             });
         }
     }
 
-    fn emit_verify_gate_failed(
-        &self,
-        _step_id: Uuid,
-        step_name: &str,
-        _failures: &str,
-        replan_attempt: u32,
-    ) {
-        warn!(step_name, replan_attempt, "verify gate failed");
-        // TODO(#15): emit a dedicated VerifyGateFailed event
+    fn emit_progress(&self, plan: &ExecutionPlan) {
+        if let Some(ref tx) = self.event_tx {
+            let completed = plan
+                .steps
+                .iter()
+                .filter(|s| s.status == StepStatus::Completed)
+                .count();
+            let total = plan
+                .steps
+                .iter()
+                .filter(|s| s.status != StepStatus::Replanned)
+                .count();
+            let active: Vec<(Uuid, String)> = plan
+                .steps
+                .iter()
+                .filter(|s| s.status == StepStatus::InProgress)
+                .map(|s| (s.id, s.name.clone()))
+                .collect();
+            let budget_used_pct = if self.token_budget > 0 {
+                self.tokens_used as f32 / self.token_budget as f32 * 100.0
+            } else {
+                0.0
+            };
+
+            let _ = tx.send(OrchestrationEvent::PlanProgress {
+                completed,
+                total,
+                active_steps: active,
+                budget_used_pct,
+            });
+        }
     }
 
-    fn emit_replan_triggered(&self, plan: &ExecutionPlan) {
+    fn emit_verify_gate_result(
+        &self,
+        step_id: Uuid,
+        step_name: &str,
+        output: &str,
+        passed: bool,
+        replan_triggered: bool,
+    ) {
+        if let Some(ref tx) = self.event_tx {
+            // Parse verification output into individual checks when possible.
+            // For now, treat the entire output as a single check result.
+            let checks = vec![CheckResult {
+                check_type: "verification".into(),
+                passed,
+                summary: if output.len() > 200 {
+                    format!("{}...", &output[..197])
+                } else {
+                    output.into()
+                },
+            }];
+
+            let _ = tx.send(OrchestrationEvent::VerifyGateResult {
+                step_id,
+                step_name: step_name.into(),
+                checks,
+                overall_passed: passed,
+                replan_triggered,
+            });
+        }
+    }
+
+    fn emit_replan_triggered(
+        &self,
+        failed_step_name: &str,
+        replan_count: u32,
+        old_plan: &ExecutionPlan,
+        new_plan: &ExecutionPlan,
+    ) {
+        let preserved = old_plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s.status, StepStatus::Completed | StepStatus::InProgress))
+            .count();
+        let removed = old_plan
+            .steps
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.status,
+                    StepStatus::Failed { .. } | StepStatus::Pending | StepStatus::Blocked
+                )
+            })
+            .count();
+        let added = new_plan
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Pending)
+            .count();
+
         info!(
-            plan_id = %plan.id,
-            new_pending = plan.steps.iter().filter(|s| s.status == StepStatus::Pending).count(),
+            plan_id = %new_plan.id,
+            preserved,
+            removed,
+            added,
             "replan triggered"
         );
+
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(OrchestrationEvent::ReplanTriggered {
+                failed_step_name: failed_step_name.into(),
+                attempt: replan_count,
+                max_attempts: MAX_REPLAN_ATTEMPTS,
+                steps_preserved: preserved,
+                steps_removed: removed,
+                steps_added: added,
+            });
+        }
     }
 }
 

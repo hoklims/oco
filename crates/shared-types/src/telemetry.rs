@@ -145,6 +145,36 @@ pub struct InterventionSummary {
 
 // ── Live orchestration events ─────────────────────────────
 
+/// Summary of a single step for plan overview display.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub role: String,
+    pub execution_mode: String,
+    pub depends_on: Vec<Uuid>,
+    pub verify_after: bool,
+    pub estimated_tokens: u32,
+    pub preferred_model: Option<String>,
+}
+
+/// Summary of a team configuration for plan overview display.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamSummary {
+    pub name: String,
+    pub topology: String,
+    pub member_count: usize,
+}
+
+/// Result of a single verification check within a verify gate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckResult {
+    pub check_type: String,
+    pub passed: bool,
+    pub summary: String,
+}
+
 /// Events emitted by the orchestration loop in real time via channel.
 /// Decoupled from UI — the CLI converts these to UiEvents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +190,63 @@ pub enum OrchestrationEvent {
         knowledge_confidence: f64,
         success: bool,
     },
+
+    /// An execution plan was generated (or regenerated after replan).
+    PlanGenerated {
+        plan_id: Uuid,
+        step_count: usize,
+        parallel_group_count: usize,
+        critical_path_length: u32,
+        estimated_total_tokens: u32,
+        strategy: String,
+        team: Option<TeamSummary>,
+        steps: Vec<StepSummary>,
+    },
+
+    /// A plan step started executing.
+    PlanStepStarted {
+        step_id: Uuid,
+        step_name: String,
+        role: String,
+        execution_mode: String,
+    },
+
+    /// A plan step completed (success or failure).
+    PlanStepCompleted {
+        step_id: Uuid,
+        step_name: String,
+        success: bool,
+        duration_ms: u64,
+        tokens_used: u32,
+    },
+
+    /// Live progress update during plan execution.
+    PlanProgress {
+        completed: usize,
+        total: usize,
+        active_steps: Vec<(Uuid, String)>,
+        budget_used_pct: f32,
+    },
+
+    /// A verify gate was evaluated after a step.
+    VerifyGateResult {
+        step_id: Uuid,
+        step_name: String,
+        checks: Vec<CheckResult>,
+        overall_passed: bool,
+        replan_triggered: bool,
+    },
+
+    /// Replanning was triggered after a verification failure.
+    ReplanTriggered {
+        failed_step_name: String,
+        attempt: u32,
+        max_attempts: u32,
+        steps_preserved: usize,
+        steps_removed: usize,
+        steps_added: usize,
+    },
+
     /// Budget crossed a warning threshold.
     BudgetWarning { resource: String, utilization: f64 },
     /// The orchestration loop stopped.

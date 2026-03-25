@@ -241,6 +241,10 @@ impl Planner for LlmPlanner {
             PlannerError::ValidationError(format!("generated plan has invalid DAG: {e}"))
         })?;
 
+        // Enforce hard step count limit per complexity tier
+        plan.check_step_limit(context.task_complexity)
+            .map_err(|e| PlannerError::ValidationError(format!("plan exceeds step limit: {e}")))?;
+
         // Generate team config if warranted
         plan.team = Self::generate_team(&plan, context);
 
@@ -934,8 +938,8 @@ mod tests {
 
     #[tokio::test]
     async fn deeply_nested_deps_accepted() {
-        // 20 steps in a linear chain — should be fine
-        let steps: Vec<serde_json::Value> = (0..20)
+        // 7 steps in a linear chain — matches Medium complexity max (7 steps)
+        let steps: Vec<serde_json::Value> = (0..7)
             .map(|i| {
                 let deps = if i == 0 {
                     vec![]
@@ -952,9 +956,57 @@ mod tests {
 
         let planner = LlmPlanner::stub(serde_json::to_string(&steps).unwrap());
         let plan = planner.plan("test", &medium_ctx()).await.unwrap();
-        assert_eq!(plan.steps.len(), 20);
-        assert_eq!(plan.critical_path_length(), 20);
+        assert_eq!(plan.steps.len(), 7);
+        assert_eq!(plan.critical_path_length(), 7);
         assert!(plan.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn step_limit_rejects_over_planned() {
+        // 10 steps for Medium complexity (max 7) — should be rejected
+        let steps: Vec<serde_json::Value> = (0..10)
+            .map(|i| {
+                let deps = if i == 0 {
+                    vec![]
+                } else {
+                    vec![format!("step-{}", i - 1)]
+                };
+                serde_json::json!({
+                    "name": format!("step-{i}"),
+                    "description": format!("Step {i}"),
+                    "depends_on": deps
+                })
+            })
+            .collect();
+
+        let planner = LlmPlanner::stub(serde_json::to_string(&steps).unwrap());
+        let result = planner.plan("test", &medium_ctx()).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("step limit"), "error: {err}");
+    }
+
+    #[tokio::test]
+    async fn high_complexity_allows_more_steps() {
+        // 10 steps for High complexity (max 10) — should be accepted
+        let steps: Vec<serde_json::Value> = (0..10)
+            .map(|i| {
+                let deps = if i == 0 {
+                    vec![]
+                } else {
+                    vec![format!("step-{}", i - 1)]
+                };
+                serde_json::json!({
+                    "name": format!("step-{i}"),
+                    "description": format!("Step {i}"),
+                    "depends_on": deps
+                })
+            })
+            .collect();
+
+        let planner = LlmPlanner::stub(serde_json::to_string(&steps).unwrap());
+        let plan = planner.plan("test", &high_ctx()).await.unwrap();
+        assert_eq!(plan.steps.len(), 10);
     }
 
     #[test]

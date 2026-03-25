@@ -190,18 +190,47 @@ impl Renderer for JsonlRenderer {
                 serde_json::json!({ "host": host, "port": port }),
             ),
 
-            UiEvent::PlanGenerated {
+            UiEvent::PlanOverview {
                 step_count,
                 parallel_groups,
+                critical_path_length,
+                estimated_tokens,
+                budget_tokens,
                 strategy,
-                has_team,
-            } => self.emit_json(
-                "plan_generated",
-                serde_json::json!({
-                    "step_count": step_count, "parallel_groups": parallel_groups,
-                    "strategy": strategy, "has_team": has_team,
-                }),
-            ),
+                team,
+                steps,
+            } => {
+                let step_data: Vec<serde_json::Value> = steps
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "id": s.id.to_string(),
+                            "name": s.name,
+                            "role": s.role,
+                            "mode": s.execution_mode,
+                            "depends_on": s.depends_on.iter().map(|d| d.to_string()).collect::<Vec<_>>(),
+                            "verify_after": s.verify_after,
+                            "estimated_tokens": s.estimated_tokens,
+                            "preferred_model": s.preferred_model,
+                        })
+                    })
+                    .collect();
+                self.emit_json(
+                    "plan_overview",
+                    serde_json::json!({
+                        "step_count": step_count,
+                        "parallel_groups": parallel_groups,
+                        "critical_path_length": critical_path_length,
+                        "estimated_tokens": estimated_tokens,
+                        "budget_tokens": budget_tokens,
+                        "strategy": strategy,
+                        "team": team.as_ref().map(|(name, topo, count)| serde_json::json!({
+                            "name": name, "topology": topo, "members": count,
+                        })),
+                        "steps": step_data,
+                    }),
+                );
+            }
             UiEvent::PlanStepStarted {
                 step_name,
                 role,
@@ -216,26 +245,60 @@ impl Renderer for JsonlRenderer {
                 step_name,
                 success,
                 duration_ms,
+                tokens_used,
             } => self.emit_json(
                 "plan_step_completed",
                 serde_json::json!({
-                    "step": step_name, "success": success, "duration_ms": duration_ms,
+                    "step": step_name, "success": success,
+                    "duration_ms": duration_ms, "tokens_used": tokens_used,
                 }),
             ),
+            UiEvent::PlanProgress {
+                completed,
+                total,
+                active_steps,
+                budget_used_pct,
+            } => self.emit_json(
+                "plan_progress",
+                serde_json::json!({
+                    "completed": completed, "total": total,
+                    "active_steps": active_steps, "budget_used_pct": budget_used_pct,
+                }),
+            ),
+            UiEvent::PlanVerifyGateResult {
+                step_name,
+                checks,
+                overall_passed,
+                replan_triggered,
+            } => {
+                let check_data: Vec<serde_json::Value> = checks
+                    .iter()
+                    .map(|(ct, passed, summary)| {
+                        serde_json::json!({"check": ct, "passed": passed, "summary": summary})
+                    })
+                    .collect();
+                self.emit_json(
+                    "plan_verify_gate",
+                    serde_json::json!({
+                        "step": step_name, "checks": check_data,
+                        "passed": overall_passed, "replan_triggered": replan_triggered,
+                    }),
+                );
+            }
             UiEvent::PlanReplanTriggered {
                 failed_step,
                 attempt,
-                new_step_count,
+                max_attempts,
+                steps_preserved,
+                steps_removed,
+                steps_added,
             } => self.emit_json(
                 "plan_replan",
                 serde_json::json!({
-                    "failed_step": failed_step, "attempt": attempt, "new_steps": new_step_count,
-                }),
-            ),
-            UiEvent::PlanVerifyGateFailed { step_name, error } => self.emit_json(
-                "plan_verify_failed",
-                serde_json::json!({
-                    "step": step_name, "error": error,
+                    "failed_step": failed_step, "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "preserved": steps_preserved, "removed": steps_removed,
+                    "added": steps_added,
                 }),
             ),
             UiEvent::TeamStatus {
