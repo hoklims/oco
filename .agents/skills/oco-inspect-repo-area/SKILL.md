@@ -1,6 +1,12 @@
 ---
 name: oco-inspect-repo-area
-description: Explore and understand a specific area of the repository using OCO-backed code intelligence. Use when the task is exploratory and repo-specific.
+description: >
+  Structured codebase exploration with OCO-backed code intelligence.
+  Auto-activates when the user asks to explore, understand, explain how a module works,
+  a feature, an architecture, a data flow, or asks "how does this work", "where is",
+  "show me", "what is this module". Uses yoyo search/inspect for symbol-aware results
+  instead of raw grep. Enforces: compact summary before any action, selective reading
+  (no directory dumps), explicit confidence level.
 triggers:
   - "explore"
   - "understand"

@@ -1,6 +1,12 @@
 ---
 name: oco-safe-refactor
-description: Structured refactoring with impact analysis, staged changes, and verification. Use for renames, restructuring, module extraction.
+description: >
+  Structured refactoring with impact analysis, staged changes, and verification.
+  Auto-activates when the user asks to refactor, rename, restructure, extract, move, reorganize,
+  decouple, or split code. Enforces a strict workflow: impact analysis before any change, staged
+  modifications (implementation → consumers → tests → docs), full verification after each stage,
+  subagent review if >10 files impacted. MANDATORY for all refactoring — never rename/move without
+  this skill.
 triggers:
   - "refactor"
   - "rename"
