@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4] — 2026-03-25
+
+### Fixed
+- Stop hook cross-project false positives: filter modified files by git root (Windows backslash-safe)
+- Verification detection: add `npx vitest`, `playwright test`, `jest`, `cargo fmt`, `dotnet test/build` to recognized commands
+- Fix `require()` in ESM: replace `require('node:child_process')` with proper import in post-tool-use hook
+
 ## [0.3.3] — 2026-03-25
 
 ### Fixed
