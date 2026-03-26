@@ -886,7 +886,9 @@ async fn cmd_eval(
     let metrics = oco_orchestrator_core::eval::aggregate_metrics(&results);
 
     if let Some(ref output_path) = output {
-        let json = serde_json::to_string_pretty(&metrics)?;
+        // Write full ScenarioResult (includes actions, errors, expected_match)
+        // for debugging. EvaluationMetrics is the reduced form for display.
+        let json = serde_json::to_string_pretty(&results)?;
         std::fs::write(output_path, json)?;
         r.emit(UiEvent::EvalSaved {
             path: output_path.clone(),

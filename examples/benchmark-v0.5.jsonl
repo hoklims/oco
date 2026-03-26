@@ -1,0 +1,63 @@
+# ─── OCO v0.5 Benchmark — post-merge regression + new feature validation ───
+# Run: oco eval examples/benchmark-v0.5.jsonl --provider stub --output bench-results.json
+# Live: oco eval examples/benchmark-v0.5.jsonl --provider claude-code --output bench-live.json
+#
+# Covers: baseline orchestration, effort routing, hook endpoints, capability registry,
+#         elicitation types, agent teams scaffold, budget enforcement, context engine.
+#
+# ──────────────────────────────────────────────────────────────────────────────
+# TIER 1 — Baseline regression (existing features that must still work)
+# ──────────────────────────────────────────────────────────────────────────────
+
+{"name":"baseline_trivial_respond","description":"Trivial question — should respond in 1 step, no retrieval","user_request":"What does the main function do in this project?","workspace":"./examples/sample-repo-small","expected_actions":["respond"],"tags":["baseline","trivial","regression"],"config_overrides":{"max_steps":5,"max_total_tokens":50000}}
+{"name":"baseline_retrieval_then_respond","description":"Medium task — needs retrieval before answering","user_request":"Explain all error handling patterns used in this codebase","workspace":"./examples/sample-repo-small","expected_actions":["retrieve","respond"],"tags":["baseline","medium","retrieval","regression"],"config_overrides":{"max_steps":10,"max_total_tokens":100000}}
+{"name":"baseline_multi_file_analysis","description":"Cross-file analysis — should retrieve from auth.rs and cache.rs","user_request":"Compare the design patterns in the auth module vs the cache module. Which follows better Rust idioms?","workspace":"./examples/sample-repo-small","expected_actions":["retrieve","respond"],"tags":["baseline","medium","analysis","regression"],"config_overrides":{"max_steps":10,"max_total_tokens":100000}}
+{"name":"baseline_write_task","description":"Write task with verification — should plan then respond","user_request":"Add a TTL-based expiration check to the cache module","workspace":"./examples/sample-repo-small","expected_actions":["retrieve","respond"],"tags":["baseline","write","verification","regression"],"config_overrides":{"max_steps":15,"max_total_tokens":200000}}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TIER 2 — Budget enforcement & edge cases
+# ──────────────────────────────────────────────────────────────────────────────
+
+{"name":"budget_tight_token_limit","description":"Tight token budget — should still complete gracefully, not crash","user_request":"List all public functions in the project","workspace":"./examples/sample-repo-small","expected_actions":["respond"],"tags":["budget","edge-case","regression"],"config_overrides":{"max_steps":3,"max_total_tokens":5000,"max_duration_secs":30}}
+{"name":"budget_single_step_cap","description":"Only 1 step allowed — must respond immediately","user_request":"What language is this project written in?","workspace":"./examples/sample-repo-small","expected_actions":["respond"],"tags":["budget","trivial","edge-case"],"config_overrides":{"max_steps":1,"max_total_tokens":20000}}
+{"name":"budget_zero_retrievals","description":"No retrievals allowed — should still attempt to respond from context","user_request":"Describe the project structure","workspace":"./examples/sample-repo-small","expected_actions":["respond"],"tags":["budget","edge-case"],"config_overrides":{"max_steps":5,"max_total_tokens":50000,"max_retrievals":0}}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TIER 3 — PR #52: Effort routing + ClaudeCode provider
+# ──────────────────────────────────────────────────────────────────────────────
+
+{"name":"effort_high_architecture_task","description":"Architecture task — should route to high effort (opus) via role heuristic","user_request":"Design a plugin system architecture for this project with trait-based extensibility","workspace":"./examples/sample-repo-small","expected_actions":["plan","respond"],"tags":["effort-routing","high","architecture","pr52"],"config_overrides":{"max_steps":15,"max_total_tokens":300000}}
+{"name":"effort_low_exploration_task","description":"Exploration task — should route to low effort (haiku) via role heuristic","user_request":"Find where TOKEN_EXPIRY_SECS is defined","workspace":"./examples/sample-repo-small","expected_actions":["retrieve","respond"],"tags":["effort-routing","low","exploration","pr52"],"config_overrides":{"max_steps":5,"max_total_tokens":30000}}
+{"name":"effort_budget_downgrade","description":"Medium task with very tight budget — effort should downgrade to low","user_request":"Refactor the cache module to use generics","workspace":"./examples/sample-repo-small","expected_actions":["retrieve","respond"],"tags":["effort-routing","budget-downgrade","pr52"],"config_overrides":{"max_steps":8,"max_total_tokens":10000}}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TIER 4 — PR #53: HTTP hooks integration
+# ──────────────────────────────────────────────────────────────────────────────
+
+{"name":"hooks_compatible_session","description":"Session lifecycle — hooks module should not break session creation/completion","user_request":"What modules exist in this project?","workspace":"./examples/sample-repo-small","expected_actions":["respond"],"tags":["hooks","session","regression","pr53"],"config_overrides":{"max_steps":5,"max_total_tokens":50000}}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TIER 5 — PR #54: Deferred tool schema (CapabilityRegistry)
+# ──────────────────────────────────────────────────────────────────────────────
+
+{"name":"capability_aware_planning","description":"Medium+ task — planner should see available capabilities in context","user_request":"Search the codebase for security vulnerabilities and suggest fixes","workspace":"./examples/sample-repo-small","expected_actions":["retrieve","respond"],"tags":["capability","planning","pr54"],"config_overrides":{"max_steps":12,"max_total_tokens":200000}}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TIER 6 — PR #55: Elicitation types (types only, no runtime test)
+# ──────────────────────────────────────────────────────────────────────────────
+
+{"name":"elicitation_replan_scenario","description":"Task that might trigger replanning — verify orchestrator handles plan failure gracefully","user_request":"Implement a complete REST API server with authentication, rate limiting, and database integration for this project","workspace":"./examples/sample-repo-small","expected_actions":["plan"],"tags":["elicitation","replan","complex","pr55"],"config_overrides":{"max_steps":20,"max_total_tokens":300000,"max_verify_cycles":2}}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TIER 7 — PR #56: Agent Teams scaffold
+# ──────────────────────────────────────────────────────────────────────────────
+
+{"name":"agent_teams_parallel_candidate","description":"Multi-concern task — would benefit from parallel agent execution","user_request":"Add unit tests for both the auth module and the cache module simultaneously","workspace":"./examples/sample-repo-small","expected_actions":["plan","respond"],"tags":["agent-teams","parallel","pr56"],"config_overrides":{"max_steps":15,"max_total_tokens":200000,"subagents":true}}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TIER 8 — Cross-feature integration
+# ──────────────────────────────────────────────────────────────────────────────
+
+{"name":"integration_full_pipeline","description":"End-to-end: classify → plan → retrieve → respond → verify — exercises all new subsystems","user_request":"The refresh_token function in auth.rs has a bug: it returns a token with a hardcoded timestamp of 42 instead of the real time. Fix the bug, add a proper timestamp implementation, and add a unit test.","workspace":"./examples/sample-repo-small","expected_actions":["retrieve","respond"],"tags":["integration","e2e","all-features"],"config_overrides":{"max_steps":20,"max_total_tokens":300000,"max_verify_cycles":3}}
+{"name":"integration_complex_refactor","description":"Complex refactor — tests planning, effort routing, capability awareness, verification","user_request":"Refactor the Cache struct to be generic over value types (Cache<V>) and add proper LRU ordering with a VecDeque. Keep backward compatibility with the existing get() function.","workspace":"./examples/sample-repo-small","expected_actions":["retrieve","plan","respond"],"tags":["integration","refactor","e2e"],"config_overrides":{"max_steps":20,"max_total_tokens":300000,"max_verify_cycles":2}}
+{"name":"integration_adversarial_empty_workspace","description":"Adversarial — empty workspace path, should degrade gracefully","user_request":"Analyze the code quality of this project","workspace":"","expected_actions":["respond"],"tags":["integration","adversarial","edge-case"],"config_overrides":{"max_steps":5,"max_total_tokens":30000}}

@@ -414,8 +414,29 @@ impl OrchestrationLoop {
                 metrics.record_step(duration_ms);
             }
 
-            // Push action to history
-            state.push_action(action.clone());
+            // Push action to history.
+            // For Respond, fill the content from the LLM observation so that
+            // action_history accurately reflects what was generated.
+            let action_to_record = if action_succeeded {
+                if let OrchestratorAction::Respond { .. } = &action {
+                    if let Some(obs) = state.observations.back() {
+                        if let ObservationKind::Text { content, .. } = &obs.kind {
+                            OrchestratorAction::Respond {
+                                content: content.clone(),
+                            }
+                        } else {
+                            action.clone()
+                        }
+                    } else {
+                        action.clone()
+                    }
+                } else {
+                    action.clone()
+                }
+            } else {
+                action.clone()
+            };
+            state.push_action(action_to_record);
 
             // Update state flags based on action.
             // Only debit budgets and mark terminal states when the action
@@ -753,7 +774,11 @@ impl OrchestrationLoop {
         let complexity = state.task_complexity;
         let category = state.task_category();
 
-        let planning_ctx = PlanningContext::minimal(complexity, category);
+        let mut planning_ctx = PlanningContext::minimal(complexity, category);
+        // Use the session's actual budget, not the complexity default.
+        // DirectPlanner uses this to estimate step tokens — if the estimate
+        // exceeds the GraphRunner's real budget, pre-reservation trims all steps.
+        planning_ctx.budget = state.session.budget.clone();
 
         // Use DirectPlanner for now — LlmPlanner requires a real LLM call function.
         // DirectPlanner still creates a structured plan with role, tools, and verify gates.
@@ -803,11 +828,13 @@ impl OrchestrationLoop {
             state.push_observation(Observation::new(
                 ObservationSource::LlmResponse,
                 ObservationKind::Text {
-                    content: combined,
+                    content: combined.clone(),
                     metadata: None,
                 },
                 total_tokens as u32,
             ));
+            // Surface the plan output as a Respond action so eval detects response_generated.
+            state.push_action(OrchestratorAction::Respond { content: combined });
         } else if completed_plan.has_failures() {
             // No outputs at all — report failures
             let failed: Vec<String> = completed_plan
