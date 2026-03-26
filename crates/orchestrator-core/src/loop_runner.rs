@@ -265,6 +265,12 @@ impl OrchestrationLoop {
                 },
             };
 
+            state.session.status = match &stop_reason {
+                StopReason::TaskComplete => oco_shared_types::SessionStatus::Completed,
+                StopReason::Error { .. } => oco_shared_types::SessionStatus::Failed,
+                _ => oco_shared_types::SessionStatus::Completed,
+            };
+
             state.push_action(OrchestratorAction::Stop {
                 reason: stop_reason.clone(),
             });
@@ -571,6 +577,14 @@ impl OrchestrationLoop {
             .unwrap_or(StopReason::Error {
                 message: "session ended without explicit stop".into(),
             });
+        // Update session status based on stop reason.
+        state.session.status = match &stop_reason {
+            StopReason::TaskComplete => oco_shared_types::SessionStatus::Completed,
+            StopReason::BudgetExhausted => oco_shared_types::SessionStatus::BudgetExhausted,
+            StopReason::Error { .. } => oco_shared_types::SessionStatus::Failed,
+            _ => oco_shared_types::SessionStatus::Completed,
+        };
+
         self.emit_event(OrchestrationEvent::Stopped {
             reason: stop_reason,
             total_steps: state.session.step_count,
