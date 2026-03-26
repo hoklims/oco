@@ -9,6 +9,7 @@
 //! 6. Updates state
 //! 7. Repeats until stop condition
 
+pub mod agent_teams;
 pub mod config;
 pub mod error;
 pub mod eval;
