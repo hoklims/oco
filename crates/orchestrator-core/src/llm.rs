@@ -369,7 +369,7 @@ impl ClaudeCodeConfig {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(300),
         }
     }
 
@@ -418,6 +418,10 @@ struct ClaudeCodeUsage {
     input_tokens: u32,
     #[serde(default)]
     output_tokens: u32,
+    #[serde(default)]
+    cache_creation_input_tokens: u32,
+    #[serde(default)]
+    cache_read_input_tokens: u32,
 }
 
 #[async_trait]
@@ -435,7 +439,6 @@ impl LlmProvider for ClaudeCodeProvider {
 
         let mut cmd = Command::new("claude");
         cmd.args([
-            "--bare",
             "-p",
             &prompt,
             "--output-format",
@@ -498,10 +501,14 @@ impl LlmProvider for ClaudeCodeProvider {
         }
 
         let usage = resp.usage.unwrap_or_default();
+        // Claude Code counts cache tokens separately — include them in total.
+        let total_input = usage.input_tokens
+            + usage.cache_creation_input_tokens
+            + usage.cache_read_input_tokens;
 
         Ok(LlmResponse {
             content: resp.result.unwrap_or_default(),
-            input_tokens: usage.input_tokens,
+            input_tokens: total_input,
             output_tokens: usage.output_tokens,
             model: self.config.model.clone(),
             stop_reason: resp.stop_reason,
