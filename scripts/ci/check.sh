@@ -4,6 +4,10 @@ set -euo pipefail
 echo "=== OCO CI Checks ==="
 
 echo ""
+echo "--- Version sync ---"
+bash "$(dirname "$0")/check-versions.sh"
+
+echo ""
 echo "--- Rust: cargo check ---"
 cargo check --all-targets
 
