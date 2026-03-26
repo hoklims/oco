@@ -4,7 +4,7 @@
 
 ```bash
 cargo build                              # Build all crates
-cargo test                               # Run full test suite (330+ tests)
+cargo test                               # Run full test suite (421+ tests)
 cargo run -p oco-dev-cli -- --help       # CLI help
 
 oco index ./path                         # Index a workspace
@@ -33,7 +33,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 | # | Crate | Role |
 |---|-------|------|
-| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent |
+| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel** |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
 | 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer |
@@ -43,8 +43,8 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 | 8 | `telemetry` | Tracing init, decision trace collector, event recording |
 | 9 | `context-engine` | Context assembly, dedup, compression, staleness decay, category budgets, **step-scoped filtering** |
 | 10 | **`planner`** | **Task decomposition: DirectPlanner (Trivial/Low) + LlmPlanner (Medium+) → ExecutionPlan DAG** |
-| 11 | `orchestrator-core` | State machine, action loop, **GraphRunner (DAG execution)**, **LlmRouter (multi-model)**, LLM providers, runtime, eval runner, repo profiles |
-| 12 | `mcp-server` | Axum HTTP + MCP server, session management |
+| 11 | `orchestrator-core` | State machine, action loop, **GraphRunner (DAG execution)**, **LlmRouter (multi-model + effort)**, **AgentTeamsExecutor**, LLM providers, runtime, eval runner, repo profiles |
+| 12 | `mcp-server` | Axum HTTP + MCP server, session management, **HTTP hook endpoints** (Claude Code v2.1.63+) |
 | 13 | `dev-cli` | CLI binary (index, search, run, serve, eval, doctor, runs) — event-driven UI with Terminal/JSONL/Quiet renderers |
 | — | `architecture-tests` | Architecture fitness tests — enforces crate dependency DAG, layer violations, foundation isolation |
 
@@ -69,7 +69,8 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - `ExecutionPlan` — DAG with `ready_steps()`, `parallel_groups()`, `critical_path_length()`, `validate()`, `validate_semantic()`
 - `PlanStep` — node with `AgentRole`, `StepExecution` (Inline/Subagent/Teammate/McpTool), `verify_after`
 - `EffortLevel` — Low/Medium/High, maps to Claude Code `--effort` flag
-- `CapabilityRegistry` — unified catalog of tools/MCP/agents/skills/LLMs, `query()`, `best_for()`, `sanitize_for_prompt()`
+- `CapabilityRegistry` — unified catalog of tools/MCP/agents/skills/LLMs, `query()`, `best_for()`, `sanitize_for_prompt()`, `deferred_tool_names()`, `resolve_deferred_tool()`
+- `ElicitationRequest` — MCP elicitation dialogs for replan/verify-gate/ambiguity decisions (v2.1.76+)
 - `TeamCoordinator` — spawns members (plan-scoped), shared task list, teardown
 - `SharedTaskList` — claimable/claim(ownership)/complete(ownership)/force_complete
 - `TeamCommunication` — HubSpoke (subagents) / Mesh (Agent Teams) / Pipeline (Factory)
@@ -78,6 +79,9 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan)
 - `orchestrator-core/graph_runner.rs` — `GraphRunner` with parallel execution (tokio::spawn), verify gates, budget pre-reservation, no-progress guard, JoinError→Failed
 - `orchestrator-core/llm_router.rs` — `LlmRouter` per-step model + effort selection (`RoutingDecision`), role heuristic + budget downgrade
+- `orchestrator-core/agent_teams.rs` — `AgentTeamsExecutor` maps PlanSteps to Claude Code Agent Teams (worktree isolation, async lifecycle, typed errors)
+- `mcp-server/hooks.rs` — HTTP hook handlers (PostToolUse, TaskCompleted, FileChanged, PostCompact, Stop) with Bearer auth + body limit
+- `shared-types/elicitation.rs` — `ElicitationRequest`/`ElicitationResponse` for interactive MCP decisions
 - `context-engine/step_scope.rs` — `StepContextBuilder` with dependency outputs, error context (Manus pattern), shared memory
 
 ### Python (`py/`)
@@ -131,16 +135,18 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (368+)
-cargo test -p oco-shared-types           # 94 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology
-cargo test -p oco-policy-engine          # 30 tests — classifier, selector, budget, gates
-cargo test -p oco-context-engine         # 24 tests — assembler, dedup, compression, staleness, step-scoped context
-cargo test -p oco-code-intel             # 16 tests — parser, indexer, language detection
-cargo test -p oco-retrieval              #  9 tests — FTS5, vector, hybrid ranking
-cargo test -p oco-telemetry              #  5 tests — event recording, JSONL export
-cargo test -p oco-planner               # 34 tests — direct planner, LLM planner, prompt gen, team generation, retry, edge cases
-cargo test -p oco-orchestrator-core      # 40 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, cancellation
-cargo test -p oco-architecture-tests     #  4 tests — dependency DAG, layer violations, foundation isolation, coverage
+cargo test                               # All tests (421+)
+cargo test -p oco-shared-types           # 121 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level
+cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
+cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
+cargo test -p oco-code-intel             #  29 tests — parser, indexer, language detection
+cargo test -p oco-retrieval              #   9 tests — FTS5, vector, hybrid ranking
+cargo test -p oco-telemetry              #  13 tests — event recording, JSONL export, hook telemetry
+cargo test -p oco-planner               #  36 tests — direct planner, LLM planner, prompt gen, team generation, retry, edge cases
+cargo test -p oco-orchestrator-core      #  62 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation
+cargo test -p oco-mcp-server             #  14 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management
+cargo test -p oco-verifier               #  32 tests — test/build/lint/typecheck runners, auto-detection
+cargo test -p oco-architecture-tests     #   4 tests — dependency DAG, layer violations, foundation isolation, coverage
 ```
 
 ## LLM Providers
@@ -199,9 +205,9 @@ oco/
 │   ├── dev-cli/                  # CLI binary
 │   └── vscode-extension/         # VS Code extension
 ├── crates/                       # 13 Rust crates (see table above)
-│   ├── shared-types/             # Domain types + ExecutionPlan + CapabilityRegistry + Team
-│   ├── planner/                  # NEW — DirectPlanner + LlmPlanner
-│   ├── orchestrator-core/        # State machine + GraphRunner + LlmRouter
+│   ├── shared-types/             # Domain types + ExecutionPlan + CapabilityRegistry + Team + Elicitation + EffortLevel
+│   ├── planner/                  # DirectPlanner + LlmPlanner
+│   ├── orchestrator-core/        # State machine + GraphRunner + LlmRouter + AgentTeamsExecutor
 │   ├── context-engine/           # Context assembly + StepContextBuilder
 │   ├── policy-engine/            # Action selection + classification
 │   ├── code-intel/               # Tree-sitter parsing
@@ -209,7 +215,7 @@ oco/
 │   ├── tool-runtime/             # Shell/file executors
 │   ├── verifier/                 # Test/build/lint runners
 │   ├── telemetry/                # Tracing + events
-│   ├── mcp-server/               # HTTP + MCP server
+│   ├── mcp-server/               # HTTP + MCP server + Claude Code hook endpoints
 │   ├── shared-proto/             # Protobuf defs
 │   ├── architecture-tests/       # Architecture fitness tests (DAG enforcement)
 │   └── ...

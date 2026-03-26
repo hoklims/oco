@@ -58,26 +58,31 @@ Request → Classifier → Trivial/Low: flat action loop
                          ├── Verify gates after implementation steps
                          ├── Replan on failure (max 3 attempts, budget pre-check)
                          ├── Multi-model routing (opus/sonnet/haiku per step)
+                         ├── Effort-level routing (low/medium/high per step)
                          ├── Agent Teams (Mesh/HubSpoke/Pipeline topologies)
+                         ├── HTTP hooks for Claude Code event integration
+                         ├── MCP elicitation for interactive decisions
                          └── Cooperative cancellation + per-step budget limits
 ```
 
-### Rust Crates (13)
+### Rust Crates (15)
 
 | Crate | Role |
 |-------|------|
-| `shared-types` | Domain types, ExecutionPlan DAG, CapabilityRegistry, TeamCoordinator |
-| `policy-engine` | Deterministic action selection, budget enforcement |
+| `shared-types` | Domain types, ExecutionPlan DAG, CapabilityRegistry, TeamCoordinator, ElicitationRequest, EffortLevel |
+| `shared-proto` | Protobuf definitions (gRPC IPC) |
+| `policy-engine` | Deterministic action selection, budget enforcement, zero-limit guards |
 | `code-intel` | Tree-sitter parser, symbol indexer |
 | `retrieval` | SQLite FTS5, vector search, hybrid RRF ranking |
 | `context-engine` | Context assembly, dedup, step-scoped filtering |
 | `planner` | DirectPlanner (trivial) + LlmPlanner (Medium+ DAG generation) |
-| `orchestrator-core` | GraphRunner (DAG execution), LlmRouter (multi-model) |
+| `orchestrator-core` | GraphRunner (DAG execution), LlmRouter (multi-model + effort), AgentTeamsExecutor |
 | `tool-runtime` | Shell/file executors |
 | `verifier` | Test/build/lint/typecheck runners |
 | `telemetry` | Tracing, event recording |
-| `mcp-server` | Axum HTTP + MCP server |
+| `mcp-server` | Axum HTTP + MCP server, Claude Code HTTP hook endpoints |
 | `dev-cli` | CLI binary with Terminal/JSONL/Quiet renderers |
+| `architecture-tests` | Crate dependency DAG enforcement, layer violation detection |
 
 ## Key Principles
 
@@ -89,7 +94,9 @@ Request → Classifier → Trivial/Low: flat action loop
 - **Bounded** — explicit token, time, and tool-call budgets with per-step cancellation and step count limits
 - **Deterministic policy** — no LLM calls for routing decisions
 - **Multi-model routing** — opus for architecture, sonnet for implementation, haiku for exploration
+- **Effort-level routing** — automatic `--effort` selection per step role, budget-aware downgrade
 - **Agent Teams native** — Mesh, HubSpoke, Pipeline topologies with runtime enforcement
+- **Interactive decisions** — MCP elicitation for replan confirmation, architecture choices, verify gate failures
 - **Event-driven UI** — core emits structured events, CLI renders via pluggable renderers
 
 ## Stack
@@ -124,7 +131,7 @@ cd oco
 # Build all Rust crates
 cargo build
 
-# Run the test suite (358+ tests)
+# Run the test suite (421+ tests)
 cargo test
 
 # Run the CLI
@@ -170,6 +177,7 @@ Runtime config in `oco.toml`. See [`examples/oco.toml`](examples/oco.toml) for a
 
 | Provider | Config | Requirements |
 |----------|--------|--------------|
+| `claude-code` | `provider = "claude-code"` **(default)** | `claude` CLI on PATH |
 | `stub` | `provider = "stub"` | None |
 | `anthropic` | `provider = "anthropic"` | `ANTHROPIC_API_KEY` env var |
 | `ollama` | `provider = "ollama"` | Local Ollama at `localhost:11434` |

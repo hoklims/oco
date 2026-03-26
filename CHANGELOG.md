@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0] — 2026-03-26
+
+### Added
+- **Effort-level routing** — `EffortLevel` (Low/Medium/High) maps to Claude Code `--effort` flag; `LlmRouter.route_step()` returns `RoutingDecision` (model + effort) with role heuristics and budget-aware downgrade (#52)
+- **Claude Code `--bare` optimization** — 14% faster subprocess startup, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` and `CLAUDE_STREAM_IDLE_TIMEOUT_MS` env var support (#52)
+- **HTTP hook endpoints** — `/api/v1/hooks/{post-tool,task-completed,file-changed,post-compact,stop}` for Claude Code v2.1.63+ event integration, with Bearer auth middleware and 64KB body limit (#53)
+- **Deferred tool schema** — `CapabilityRegistry.deferred_tool_names()`, `to_tool_schemas()`, `resolve_deferred_tool()` expose OCO capabilities as Claude Code deferred tools via ToolSearch, with bijective ID encoding and sanitized descriptions (#54)
+- **MCP elicitation types** — `ElicitationRequest`/`ElicitationResponse` for interactive orchestration decisions (replan, verify gate, ambiguity) via Claude Code MCP elicitation v2.1.76+ (#55)
+- **Agent Teams executor scaffold** — `AgentTeamsExecutor` maps PlanSteps to Claude Code Agent Teams with async lifecycle (`RwLock`), worktree isolation heuristic, typed errors, `TeammateStatus` state machine (#56)
+- **Benchmark suite** — `examples/benchmark-v0.5.jsonl` with 17 scenarios across 8 tiers (baseline, budget, effort routing, hooks, capabilities, elicitation, agent teams, integration)
+
+### Fixed
+- **Eval pipeline** — `run_with_plan()` now pushes `OrchestratorAction::Respond` with plan output content; flat loop enriches `Respond` action with LLM content before recording; `PlanningContext` uses session budget instead of complexity default; CLI writes full `ScenarioResult` instead of reduced `EvaluationMetrics` (#57)
+- **Zero-limit budget guards** — `max_retrievals: 0` or `max_verify_cycles: 0` no longer kills the entire session; only the specific action type is blocked (#57)
+
 ## [0.4.0] — 2026-03-26
 
 ### Added
