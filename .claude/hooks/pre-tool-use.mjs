@@ -88,17 +88,6 @@ try {
     process.exit(0);
   }
 
-  // --- OCO advanced gate check (optional, fire-and-forget on failure) ---
-  try {
-    const bin = process.env.OCO_BIN || 'oco';
-    const raw = execFileSync(bin, ['gate-check', '--tool', toolName, '--input', JSON.stringify(toolInput), '--format', 'json'], {
-      encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-    });
-    const gateResult = JSON.parse(raw);
-    if (gateResult?.decision === 'deny') {
-      blockWith(`OCO policy: ${gateResult.reason || 'denied by policy'}`);
-    }
-  } catch {}
 } catch {}
 
 process.exit(0);

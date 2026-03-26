@@ -38,7 +38,12 @@ Detect the verification suite from project manifests:
 | `pyproject.toml` | - | `mypy .` | `ruff check .` | `pytest` |
 | `go.mod` | `go build ./...` | `go vet ./...` | `golangci-lint run` | `go test ./...` |
 
-Use `oco.verify_patch` MCP tool if available for automated detection and execution.
+Use `oco.verify_patch` if available (auto-detects project type and runs all checks):
+```
+oco.verify_patch({ workspace: "." })
+```
+
+Otherwise, read the project manifest and run checks manually. Prefer `scripts` from package.json when available.
 
 ## Step 3: Run Verification Sequence
 

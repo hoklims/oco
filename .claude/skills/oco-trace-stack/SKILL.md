@@ -31,13 +31,12 @@ Extract from the error:
 
 ## Step 2: Map to Codebase
 
-Use `oco.trace_error` MCP tool if available:
-
+Use `oco.trace_error` if available (parses frames, maps to codebase, identifies root cause regions):
 ```
 oco.trace_error({ stacktrace: "<paste stacktrace>", workspace: "." })
 ```
 
-Otherwise, manually inspect the files referenced in the stack trace, starting from the deepest application frame (skip library/framework frames).
+Otherwise, manually inspect the files referenced in the stack trace using Read, starting from the deepest application frame (skip library/framework frames).
 
 ## Step 3: Inspect Likely Root Cause Regions
 
@@ -66,4 +65,4 @@ Produce 1-3 ranked hypotheses:
 - If the stack trace references >5 files, delegate deep reading to `@codebase-investigator`
 - Always state which hypothesis you're most confident in and why
 - After applying a fix, run the verification workflow described in the `oco-verify-fix` skill (build, test, lint, typecheck)
-- Use `oco.collect_findings` to synthesize evidence and open questions before concluding
+- Use `oco.collect_findings` if available to synthesize evidence, otherwise summarize manually

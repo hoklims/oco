@@ -34,7 +34,7 @@ Clearly state:
 Before making any changes:
 
 1. **Find all usages** of the target symbol/pattern:
-   - Use `oco.search_codebase` or Grep for symbol references
+   - Use `oco.search_codebase` if available, otherwise Grep for symbol references
    - Check imports, re-exports, type references, test references
    - Check config files, documentation, comments
 

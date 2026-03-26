@@ -46,6 +46,9 @@
 - [x] `oco.verify_patch` — composite verification with project auto-detection
 - [x] `oco.collect_findings` — composite state/evidence extraction via `oco trace`
 
+> **Note**: Bridge code (`bridge.js`) was implemented but not wired into `.mcp.json` until #36.
+> The ESM/CJS conflict (`package.json` has `"type": "module"`) required renaming to `bridge.cjs`.
+
 ### CLI Extensions (Phase 7)
 - [x] `oco classify` — calls `TaskClassifier::classify()`, JSON output
 - [x] `oco gate-check` — calls `PolicyGate::evaluate()`, JSON output
@@ -93,6 +96,7 @@
 - **Initial migration**: All 8 phases completed
 - **Compliance audit**: Identified 3 P0 bugs (PID cross-hook state, MCP server config, agent path), 4 P1 issues
 - **Remediation**: All P0 and P1 issues fixed
+- **v0.3.6 audit**: Bridge was coded but never wired — `.mcp.json` was missing. Fixed in #36. ESM conflict fixed (bridge.cjs). Stale skill copies in `plugin/` and `oco-plugin/` removed (#38).
   - Hooks now use workspace-hash session ID (`md5sum $PWD`) for stable cross-hook state
   - MCP server config updated to use `node bridge.js` (working stdio transport)
   - Agents moved to `.claude/agents/` for Claude Code discoverability

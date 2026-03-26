@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0] — 2026-03-26
+
+### Added
+- **MCP bridge wired**: `.mcp.json` registers `oco-bridge` server, exposing 4 composite tools (`oco.search_codebase`, `oco.trace_error`, `oco.verify_patch`, `oco.collect_findings`)
+- Bridge renamed to `.cjs` to fix ESM/CJS conflict with `"type": "module"` in `package.json`
+
+### Changed
+- Skills now use MCP tools as primary with built-in fallback (Grep/Read/Glob)
+- Pre-tool-use hook simplified: removed dead `oco gate-check` call, removed incorrect yoyo nudging
+- Single source of truth for skills: `.claude/skills/` only, stale copies in `plugin/` and `oco-plugin/` removed
+
+### Fixed
+- MCP bridge was coded but never configured — tools were invisible to Claude Code since initial migration
+- ACCEPTANCE.md updated to reflect the wiring gap
+
 ## [0.3.6] — 2026-03-25
 
 ### Fixed

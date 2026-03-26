@@ -4,9 +4,8 @@ description: >
   Structured codebase exploration with OCO-backed code intelligence.
   Auto-activates when the user asks to explore, understand, explain how a module works,
   a feature, an architecture, a data flow, or asks "how does this work", "where is",
-  "show me", "what is this module". Uses yoyo search/inspect for symbol-aware results
-  instead of raw grep. Enforces: compact summary before any action, selective reading
-  (no directory dumps), explicit confidence level.
+  "show me", "what is this module". Enforces: compact summary before any action,
+  selective reading (no directory dumps), explicit confidence level.
 triggers:
   - "explore"
   - "understand"
@@ -31,15 +30,16 @@ Determine which part of the codebase needs exploration:
 - A feature or capability
 - A data flow or interaction pattern
 
-## Step 2: Gather Ranked Context (via OCO)
+## Step 2: Gather Ranked Context
 
-Use the `oco.search_codebase` MCP tool if available, otherwise use standard search tools:
-
+Use `oco.search_codebase` if available (ranked, symbol-aware results):
 ```
 oco.search_codebase({ query: "<area description>", workspace: "." })
 ```
 
-This returns ranked, symbol-aware results — prefer these over raw file dumping.
+Otherwise, use Grep for key symbols and Glob for file patterns.
+
+Focus on symbol-level results — prefer targeted searches over raw file dumping.
 
 ## Step 3: Read Key Files Selectively
 
