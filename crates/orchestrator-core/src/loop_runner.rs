@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use oco_shared_types::{
-    ActionCandidate, MemoryEntry, MemorySeverity, Observation, ObservationKind,
-    ObservationSource, OrchestrationEvent, OrchestratorAction, PlanStep, Session, StopReason,
-    TaskComplexity, TelemetryEventType, ToolGateDecision, WorkingMemory,
+    ActionCandidate, MemoryEntry, MemorySeverity, Observation, ObservationKind, ObservationSource,
+    OrchestrationEvent, OrchestratorAction, PlanStep, Session, StopReason, TaskComplexity,
+    TelemetryEventType, ToolGateDecision, WorkingMemory,
 };
 use tracing::{debug, info, warn};
 
@@ -240,10 +240,16 @@ impl OrchestrationLoop {
                 duration_ms: 0,
                 budget_snapshot: oco_shared_types::BudgetSnapshot {
                     tokens_used: state.session.budget.tokens_used,
-                    tokens_remaining: state.session.budget.max_total_tokens
+                    tokens_remaining: state
+                        .session
+                        .budget
+                        .max_total_tokens
                         .saturating_sub(state.session.budget.tokens_used),
                     tool_calls_used: state.session.budget.tool_calls_used,
-                    tool_calls_remaining: state.session.budget.max_tool_calls
+                    tool_calls_remaining: state
+                        .session
+                        .budget
+                        .max_tool_calls
                         .saturating_sub(state.session.budget.tool_calls_used),
                     retrievals_used: state.session.budget.retrievals_used,
                     verify_cycles_used: state.session.budget.verify_cycles_used,
@@ -896,6 +902,7 @@ impl OrchestrationLoop {
                 "You are an expert coding assistant. Analyze the provided context and respond to the user's request. \
                  Be precise, cite file paths and line numbers when relevant.".into()
             ),
+            effort_override: None,
         };
 
         let response = self.llm.complete(request).await?;
@@ -1100,6 +1107,7 @@ impl StepExecutor for LoopStepExecutor {
                 "You are a {} agent. Execute the task precisely and concisely.",
                 step.agent_role.name
             )),
+            effort_override: None,
         };
 
         let response = self.llm.complete(request).await?;

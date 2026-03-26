@@ -70,7 +70,7 @@ impl Default for Budget {
     fn default() -> Self {
         Self {
             max_context_tokens: 128_000,
-            max_output_tokens: 16_000,
+            max_output_tokens: 16_000, // Provider-agnostic default; Claude Code supports up to 64k
             max_total_tokens: 1_000_000,
             tokens_used: 0,
             max_tool_calls: 50,

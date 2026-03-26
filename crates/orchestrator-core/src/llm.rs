@@ -34,6 +34,10 @@ pub struct LlmRequest {
     pub max_tokens: u32,
     pub temperature: f64,
     pub system_prompt: Option<String>,
+    /// Per-request effort override from the router. Takes priority over
+    /// provider-level config in `ClaudeCodeConfig::effort`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_override: Option<oco_shared_types::EffortLevel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,21 +365,43 @@ impl LlmProvider for AnthropicProvider {
 pub struct ClaudeCodeConfig {
     /// Model alias passed to `claude --model` (e.g. "sonnet", "opus", "haiku").
     pub model: String,
-    /// Request timeout — Claude Code can be slow on complex tasks.
+    /// Effort level passed to `claude --effort` (low/medium/high).
+    pub effort: Option<oco_shared_types::EffortLevel>,
+    /// Request timeout — aligned with Claude Code's 300s streaming limit.
     pub timeout: Duration,
+    /// Idle watchdog timeout in ms (env: `CLAUDE_STREAM_IDLE_TIMEOUT_MS`).
+    /// Set higher for build/test steps that produce intermittent output.
+    pub idle_timeout_ms: Option<u64>,
+    /// Scrub credentials from subprocess environment (env: `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`).
+    pub scrub_env: bool,
 }
 
 impl ClaudeCodeConfig {
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
+            effort: None,
             timeout: Duration::from_secs(300),
+            idle_timeout_ms: None,
+            scrub_env: true, // Secure by default
         }
     }
 
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    #[must_use]
+    pub fn with_effort(mut self, effort: oco_shared_types::EffortLevel) -> Self {
+        self.effort = Some(effort);
+        self
+    }
+
+    #[must_use]
+    pub fn with_idle_timeout_ms(mut self, ms: u64) -> Self {
+        self.idle_timeout_ms = Some(ms);
         self
     }
 }
@@ -439,6 +465,7 @@ impl LlmProvider for ClaudeCodeProvider {
 
         let mut cmd = Command::new("claude");
         cmd.args([
+            "--bare", // Skip hooks/LSP/plugins — 14% faster startup
             "-p",
             &prompt,
             "--output-format",
@@ -448,13 +475,36 @@ impl LlmProvider for ClaudeCodeProvider {
             "--no-session-persistence",
         ]);
 
+        // Per-request effort (from LlmRouter) takes priority over config default.
+        let effective_effort = request.effort_override.or(self.config.effort);
+        if let Some(effort) = effective_effort {
+            cmd.args(["--effort", effort.as_flag()]);
+        }
+
         if let Some(ref sys) = request.system_prompt {
             cmd.args(["--append-system-prompt", sys]);
+        }
+
+        // Security: scrub credentials from subprocesses
+        if self.config.scrub_env {
+            cmd.env("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1");
+        } else {
+            // Remove any inherited value from parent process
+            cmd.env_remove("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB");
+        }
+
+        // Override idle watchdog for long-running steps (builds, tests)
+        if let Some(idle_ms) = self.config.idle_timeout_ms {
+            cmd.env("CLAUDE_STREAM_IDLE_TIMEOUT_MS", idle_ms.to_string());
+        } else {
+            // Remove any inherited value from parent process
+            cmd.env_remove("CLAUDE_STREAM_IDLE_TIMEOUT_MS");
         }
 
         debug!(
             provider = "claude-code",
             model = %self.config.model,
+            effort = ?self.config.effort,
             prompt_len = prompt.len(),
             "sending request via claude CLI"
         );
@@ -502,9 +552,8 @@ impl LlmProvider for ClaudeCodeProvider {
 
         let usage = resp.usage.unwrap_or_default();
         // Claude Code counts cache tokens separately — include them in total.
-        let total_input = usage.input_tokens
-            + usage.cache_creation_input_tokens
-            + usage.cache_read_input_tokens;
+        let total_input =
+            usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens;
 
         Ok(LlmResponse {
             content: resp.result.unwrap_or_default(),
@@ -751,6 +800,7 @@ mod tests {
             max_tokens: 100,
             temperature: 0.0,
             system_prompt: None,
+            effort_override: None,
         };
         let resp = provider.complete(req).await.unwrap();
         assert!(resp.content.contains("hello"));

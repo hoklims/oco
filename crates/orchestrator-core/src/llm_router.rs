@@ -14,7 +14,23 @@ use std::sync::Arc;
 use tracing::debug;
 
 use crate::llm::LlmProvider;
-use oco_shared_types::PlanStep;
+use oco_shared_types::{EffortLevel, PlanStep};
+
+/// Routing decision: which provider and effort level to use for a step.
+#[derive(Clone)]
+pub struct RoutingDecision {
+    pub provider: Arc<dyn LlmProvider>,
+    pub effort: EffortLevel,
+}
+
+impl std::fmt::Debug for RoutingDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RoutingDecision")
+            .field("model", &self.provider.model_name())
+            .field("effort", &self.effort)
+            .finish()
+    }
+}
 
 /// Routes LLM calls to the best provider/model for a given step.
 pub struct LlmRouter {
@@ -103,6 +119,43 @@ impl LlmRouter {
             .clone()
     }
 
+    /// Select the best provider **and** effort level for a plan step.
+    ///
+    /// Returns a `RoutingDecision` combining model + effort. The effort is
+    /// determined by: step preference → role heuristic → budget-aware downgrade.
+    pub fn route_step(&self, step: &PlanStep, budget_remaining_pct: f64) -> RoutingDecision {
+        let provider = self.for_step(step, budget_remaining_pct);
+
+        // 1. Determine base effort: explicit preference or role heuristic
+        let base_effort = if let Some(effort) = step.agent_role.preferred_effort {
+            debug!(step = %step.name, %effort, "using preferred effort");
+            effort
+        } else {
+            let effort = effort_for_role(&step.agent_role.name);
+            debug!(step = %step.name, role = %step.agent_role.name, %effort, "heuristic effort");
+            effort
+        };
+
+        // 2. Budget constraint: cap at Low when budget < 20%, regardless of preference
+        if budget_remaining_pct < 0.2 && base_effort != EffortLevel::Low {
+            debug!(
+                step = %step.name,
+                budget_pct = budget_remaining_pct,
+                original_effort = %base_effort,
+                "effort capped to low due to budget constraint"
+            );
+            return RoutingDecision {
+                provider,
+                effort: EffortLevel::Low,
+            };
+        }
+
+        RoutingDecision {
+            provider,
+            effort: base_effort,
+        }
+    }
+
     /// Select a provider by name directly (for non-step uses like planning).
     pub fn get(&self, name: &str) -> Option<Arc<dyn LlmProvider>> {
         self.providers.get(name).cloned()
@@ -124,24 +177,61 @@ impl LlmRouter {
 }
 
 /// Heuristic: map agent role name to recommended model tier.
+///
+/// Role names are normalized to ASCII lowercase for case-insensitive matching.
 fn model_for_role(role: &str) -> &'static str {
-    match role {
+    let normalized: String = role.to_ascii_lowercase();
+    match normalized.as_str() {
         // High reasoning tasks → opus
-        "architect" | "planner" | "security-reviewer" | "senior" => "opus",
+        "architect" | "planner" | "security-reviewer" | "senior" | "security_reviewer" | "lead"
+        | "principal" => "opus",
         // Fast exploration → haiku
-        "explorer" | "investigator" | "analyzer" | "searcher" => "haiku",
+        "explorer" | "investigator" | "analyzer" | "searcher" | "scanner" | "indexer" => "haiku",
         // Implementation → sonnet (best cost/quality)
-        "coder" | "implementer" | "frontend-dev" | "backend" | "tester" => "sonnet",
+        "coder" | "implementer" | "frontend-dev" | "backend" | "tester" | "frontend_dev"
+        | "developer" | "engineer" => "sonnet",
         // Review → sonnet (needs good judgment)
-        "reviewer" | "code-reviewer" => "sonnet",
+        "reviewer" | "code-reviewer" | "code_reviewer" => "sonnet",
         // Simple tasks → haiku
         "formatter" | "linter" => "haiku",
         // Debug → sonnet (needs reasoning + code understanding)
         "debugger" | "refactorer" => "sonnet",
         // DevOps → sonnet
-        "devops" => "sonnet",
+        "devops" | "sre" | "infra" => "sonnet",
         // Default
         _ => "sonnet",
+    }
+}
+
+/// Heuristic: map agent role name to recommended effort level.
+///
+/// Maps to Claude Code's `--effort low|medium|high` flag.
+/// Role names are normalized to ASCII lowercase for case-insensitive matching.
+///
+/// NOTE: This is a best-effort heuristic — custom roles that don't match any
+/// known pattern fall back to Medium. Add aliases here as new patterns emerge.
+fn effort_for_role(role: &str) -> EffortLevel {
+    let normalized: String = role.to_ascii_lowercase();
+    match normalized.as_str() {
+        // Deep reasoning → high effort
+        "architect" | "planner" | "security-reviewer" | "senior" | "security_reviewer" | "lead"
+        | "principal" => EffortLevel::High,
+        // Thorough review needs high effort
+        "reviewer" | "code-reviewer" | "code_reviewer" => EffortLevel::High,
+        // Standard implementation → medium
+        "coder" | "implementer" | "frontend-dev" | "backend" | "tester" | "frontend_dev"
+        | "developer" | "engineer" => EffortLevel::Medium,
+        // Debug needs reasoning
+        "debugger" | "refactorer" => EffortLevel::Medium,
+        // DevOps → medium
+        "devops" | "sre" | "infra" => EffortLevel::Medium,
+        // Fast tasks → low effort
+        "explorer" | "investigator" | "analyzer" | "searcher" | "scanner" | "indexer" => {
+            EffortLevel::Low
+        }
+        "formatter" | "linter" => EffortLevel::Low,
+        // Default
+        _ => EffortLevel::Medium,
     }
 }
 
@@ -277,5 +367,100 @@ mod tests {
         assert_eq!(model_for_role("debugger"), "sonnet");
         assert_eq!(model_for_role("formatter"), "haiku");
         assert_eq!(model_for_role("unknown"), "sonnet");
+    }
+
+    // -----------------------------------------------------------------------
+    // route_step — effort routing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn route_step_returns_high_effort_for_architect() {
+        let router = make_router();
+        let step = PlanStep::new("design", "System design").with_role(AgentRole::new("architect"));
+
+        let decision = router.route_step(&step, 1.0);
+        assert_eq!(decision.provider.model_name(), "opus");
+        assert_eq!(decision.effort, EffortLevel::High);
+    }
+
+    #[test]
+    fn route_step_returns_low_effort_for_explorer() {
+        let router = make_router();
+        let step =
+            PlanStep::new("explore", "Search codebase").with_role(AgentRole::new("explorer"));
+
+        let decision = router.route_step(&step, 1.0);
+        assert_eq!(decision.provider.model_name(), "haiku");
+        assert_eq!(decision.effort, EffortLevel::Low);
+    }
+
+    #[test]
+    fn route_step_returns_medium_effort_for_coder() {
+        let router = make_router();
+        let step = PlanStep::new("implement", "Write code").with_role(AgentRole::new("coder"));
+
+        let decision = router.route_step(&step, 1.0);
+        assert_eq!(decision.provider.model_name(), "sonnet");
+        assert_eq!(decision.effort, EffortLevel::Medium);
+    }
+
+    #[test]
+    fn route_step_preferred_effort_overrides_heuristic() {
+        let router = make_router();
+        let step = PlanStep::new("careful-impl", "Critical implementation")
+            .with_role(AgentRole::new("coder").with_effort(EffortLevel::High));
+
+        let decision = router.route_step(&step, 1.0);
+        assert_eq!(decision.provider.model_name(), "sonnet");
+        assert_eq!(decision.effort, EffortLevel::High);
+    }
+
+    #[test]
+    fn route_step_budget_downgrades_effort() {
+        let router = make_router();
+        let step = PlanStep::new("design", "System design").with_role(AgentRole::new("architect"));
+
+        // Normal budget → high effort (architect heuristic)
+        assert_eq!(router.route_step(&step, 0.8).effort, EffortLevel::High);
+        // Very low budget → low effort (override)
+        assert_eq!(router.route_step(&step, 0.15).effort, EffortLevel::Low);
+    }
+
+    #[test]
+    fn route_step_budget_caps_preferred_effort() {
+        let router = make_router();
+        let step = PlanStep::new("careful-impl", "Critical implementation")
+            .with_role(AgentRole::new("coder").with_effort(EffortLevel::High));
+
+        // With sufficient budget, preferred effort is honoured
+        assert_eq!(router.route_step(&step, 0.5).effort, EffortLevel::High);
+        // With very low budget, effort is capped to Low regardless of preference
+        assert_eq!(router.route_step(&step, 0.15).effort, EffortLevel::Low);
+    }
+
+    #[test]
+    fn effort_for_role_case_insensitive() {
+        assert_eq!(effort_for_role("Architect"), EffortLevel::High);
+        assert_eq!(effort_for_role("CODER"), EffortLevel::Medium);
+        assert_eq!(effort_for_role("Explorer"), EffortLevel::Low);
+    }
+
+    #[test]
+    fn model_for_role_case_insensitive() {
+        assert_eq!(model_for_role("Architect"), "opus");
+        assert_eq!(model_for_role("CODER"), "sonnet");
+        assert_eq!(model_for_role("Explorer"), "haiku");
+    }
+
+    #[test]
+    fn effort_for_role_coverage() {
+        assert_eq!(effort_for_role("architect"), EffortLevel::High);
+        assert_eq!(effort_for_role("security-reviewer"), EffortLevel::High);
+        assert_eq!(effort_for_role("reviewer"), EffortLevel::High);
+        assert_eq!(effort_for_role("coder"), EffortLevel::Medium);
+        assert_eq!(effort_for_role("debugger"), EffortLevel::Medium);
+        assert_eq!(effort_for_role("explorer"), EffortLevel::Low);
+        assert_eq!(effort_for_role("formatter"), EffortLevel::Low);
+        assert_eq!(effort_for_role("unknown"), EffortLevel::Medium);
     }
 }

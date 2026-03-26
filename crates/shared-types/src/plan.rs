@@ -166,6 +166,35 @@ pub enum StepStatus {
 // AgentRole — what kind of agent a step needs
 // ---------------------------------------------------------------------------
 
+/// LLM effort level — controls reasoning depth (maps to Claude Code `--effort` flag).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EffortLevel {
+    /// Fast, minimal reasoning — exploration, formatting, linting.
+    Low,
+    /// Balanced reasoning — implementation, review, debugging.
+    Medium,
+    /// Deep reasoning — architecture, planning, security review.
+    High,
+}
+
+impl EffortLevel {
+    /// CLI flag value for `claude --effort`.
+    pub fn as_flag(&self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+impl std::fmt::Display for EffortLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_flag())
+    }
+}
+
 /// Describes the agent profile needed for a step.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentRole {
@@ -176,6 +205,9 @@ pub struct AgentRole {
     /// Preferred LLM model for this role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_model: Option<String>,
+    /// Preferred effort level for this role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_effort: Option<EffortLevel>,
     /// Whether this role is read-only (no file writes, no shell mutations).
     #[serde(default)]
     pub read_only: bool,
@@ -187,6 +219,7 @@ impl Default for AgentRole {
             name: "general".into(),
             required_capabilities: Vec::new(),
             preferred_model: None,
+            preferred_effort: None,
             read_only: false,
         }
     }
@@ -207,6 +240,11 @@ impl AgentRole {
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.preferred_model = Some(model.into());
+        self
+    }
+
+    pub fn with_effort(mut self, effort: EffortLevel) -> Self {
+        self.preferred_effort = Some(effort);
         self
     }
 

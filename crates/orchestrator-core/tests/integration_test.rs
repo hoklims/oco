@@ -293,10 +293,7 @@ async fn test_orchestrate_complex_task_with_workspace() {
         .action_history
         .iter()
         .any(|a| matches!(a, OrchestratorAction::Plan { .. }));
-    assert!(
-        did_plan,
-        "Medium+ task should route through plan engine"
-    );
+    assert!(did_plan, "Medium+ task should route through plan engine");
 
     // Should terminate with Stop
     let did_stop = state
