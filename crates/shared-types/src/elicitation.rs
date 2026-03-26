@@ -47,7 +47,9 @@ pub enum ElicitationPoint {
 /// An option presented to the user in an ambiguity elicitation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ElicitationOption {
-    /// Short label for the option.
+    /// Machine-readable identifier for the option.
+    pub value: String,
+    /// Short human-readable label for the option.
     pub label: String,
     /// Longer description.
     pub description: String,
@@ -91,17 +93,24 @@ impl ElicitationRequest {
             },
             title: format!("Replan required — step \"{failed_step}\" failed"),
             description: failure_reason,
-            fields: vec![ElicitationField::Select {
-                name: "action".into(),
-                label: "Choose an action".into(),
-                options: vec![
-                    "retry".into(),
-                    "skip".into(),
-                    "abort".into(),
-                    "custom".into(),
-                ],
-                default: Some("retry".into()),
-            }],
+            fields: vec![
+                ElicitationField::Select {
+                    name: "action".into(),
+                    label: "Choose an action".into(),
+                    options: vec![
+                        "retry".into(),
+                        "skip".into(),
+                        "abort".into(),
+                        "custom".into(),
+                    ],
+                    default: Some("retry".into()),
+                },
+                ElicitationField::Text {
+                    name: "custom_instruction".into(),
+                    label: "Custom instruction (if 'custom' selected)".into(),
+                    placeholder: Some("Describe recovery approach".into()),
+                },
+            ],
             default_action: ElicitationAction::Retry,
         }
     }
@@ -132,13 +141,20 @@ impl ElicitationRequest {
     }
 
     /// Create an ambiguity elicitation request.
+    ///
+    /// # Panics (debug only)
+    ///
+    /// Debug-asserts that `options` is non-empty.
     pub fn ambiguity(question: impl Into<String>, options: Vec<ElicitationOption>) -> Self {
+        debug_assert!(!options.is_empty(), "ambiguity options must not be empty");
+
         let question = question.into();
-        let option_labels: Vec<String> = options.iter().map(|o| o.label.clone()).collect();
-        let default = options
-            .iter()
-            .find(|o| o.recommended)
-            .map(|o| o.label.clone());
+        let option_values: Vec<String> = options.iter().map(|o| o.value.clone()).collect();
+        let recommended = options.iter().find(|o| o.recommended);
+        let default = recommended.or(options.first()).map(|o| o.value.clone());
+        // UseRecommended works for both cases: when there's a recommended option
+        // it selects that; when there's none, the default falls back to the first option.
+        let default_action = ElicitationAction::UseRecommended;
         Self {
             id: Uuid::new_v4(),
             point: ElicitationPoint::Ambiguity {
@@ -150,10 +166,10 @@ impl ElicitationRequest {
             fields: vec![ElicitationField::Select {
                 name: "choice".into(),
                 label: "Choose an approach".into(),
-                options: option_labels,
+                options: option_values,
                 default,
             }],
-            default_action: ElicitationAction::UseRecommended,
+            default_action,
         }
     }
 }
@@ -181,7 +197,7 @@ pub enum ElicitationField {
 
 /// What action to take based on elicitation response.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ElicitationAction {
     /// Retry the failed step with a modified approach.
     Retry,
@@ -202,16 +218,23 @@ pub enum ElicitationAction {
 }
 
 /// The user's response to an elicitation request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ElicitationResponse {
-    /// Must match the `ElicitationRequest.id`.
-    pub request_id: Uuid,
-    /// Whether the user responded or dismissed the dialog.
-    pub responded: bool,
-    /// Field values from the form.
-    pub values: std::collections::HashMap<String, String>,
-    /// Resolved action based on the response.
-    pub action: ElicitationAction,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ElicitationResponse {
+    /// The user submitted the form with values.
+    Submitted {
+        /// Must match the `ElicitationRequest.id`.
+        request_id: Uuid,
+        /// Field values from the form.
+        values: std::collections::HashMap<String, String>,
+        /// Resolved action based on the response.
+        action: ElicitationAction,
+    },
+    /// The user dismissed the dialog without responding.
+    Dismissed {
+        /// Must match the `ElicitationRequest.id`.
+        request_id: Uuid,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +248,8 @@ mod tests {
     #[test]
     fn replan_request_has_correct_fields() {
         let req = ElicitationRequest::replan("implement-auth", 1, "compilation error");
-        assert_eq!(req.fields.len(), 1);
+        // Select + Text (custom instruction)
+        assert_eq!(req.fields.len(), 2);
         assert!(req.title.contains("implement-auth"));
         assert_eq!(req.default_action, ElicitationAction::Retry);
         match &req.point {
@@ -242,28 +266,33 @@ mod tests {
     }
 
     #[test]
-    fn verify_gate_request_has_failed_checks() {
-        let req = ElicitationResponse {
+    fn verify_gate_response_submitted() {
+        let resp = ElicitationResponse::Submitted {
             request_id: Uuid::new_v4(),
-            responded: true,
             values: [("action".into(), "fix_and_reverify".into())]
                 .into_iter()
                 .collect(),
             action: ElicitationAction::FixAndReverify,
         };
-        assert!(req.responded);
-        assert_eq!(req.action, ElicitationAction::FixAndReverify);
+        match &resp {
+            ElicitationResponse::Submitted { action, .. } => {
+                assert_eq!(*action, ElicitationAction::FixAndReverify);
+            }
+            _ => panic!("expected Submitted"),
+        }
     }
 
     #[test]
     fn ambiguity_request_sets_recommended_default() {
         let options = vec![
             ElicitationOption {
+                value: "redis".into(),
                 label: "Redis".into(),
                 description: "External cache".into(),
                 recommended: false,
             },
             ElicitationOption {
+                value: "lru".into(),
                 label: "LRU".into(),
                 description: "In-memory cache".into(),
                 recommended: true,
@@ -273,7 +302,7 @@ mod tests {
 
         match &req.fields[0] {
             ElicitationField::Select { default, .. } => {
-                assert_eq!(default.as_deref(), Some("LRU"));
+                assert_eq!(default.as_deref(), Some("lru"));
             }
             _ => panic!("expected Select field"),
         }
@@ -290,14 +319,104 @@ mod tests {
 
     #[test]
     fn json_round_trip_response() {
-        let resp = ElicitationResponse {
+        let resp = ElicitationResponse::Submitted {
             request_id: Uuid::new_v4(),
-            responded: true,
             values: [("action".into(), "abort".into())].into_iter().collect(),
             action: ElicitationAction::Abort,
         };
         let json = serde_json::to_string(&resp).expect("serialize");
         let restored: ElicitationResponse = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(restored.action, ElicitationAction::Abort);
+        assert_eq!(restored, resp);
+    }
+
+    // --- New tests for review issues ---
+
+    #[test]
+    fn json_snapshot_action_custom() {
+        let action = ElicitationAction::Custom {
+            instruction: "try a different approach".into(),
+        };
+        let json = serde_json::to_string(&action).expect("serialize");
+        // Uniform adjacently-tagged form
+        assert!(json.contains("\"type\":\"custom\""));
+        assert!(json.contains("\"data\""));
+        assert!(json.contains("\"instruction\":\"try a different approach\""));
+
+        let restored: ElicitationAction = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, action);
+    }
+
+    #[test]
+    fn json_snapshot_action_unit_variant() {
+        let action = ElicitationAction::Retry;
+        let json = serde_json::to_string(&action).expect("serialize");
+        // Unit variant also gets uniform tagged form
+        assert!(json.contains("\"type\":\"retry\""));
+
+        let restored: ElicitationAction = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, action);
+    }
+
+    #[test]
+    fn json_round_trip_dismissed() {
+        let id = Uuid::new_v4();
+        let resp = ElicitationResponse::Dismissed { request_id: id };
+        let json = serde_json::to_string(&resp).expect("serialize");
+        assert!(json.contains("\"status\":\"dismissed\""));
+
+        let restored: ElicitationResponse = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, resp);
+    }
+
+    #[test]
+    fn ambiguity_no_recommended_defaults_to_first() {
+        let options = vec![
+            ElicitationOption {
+                value: "option_a".into(),
+                label: "Option A".into(),
+                description: "First option".into(),
+                recommended: false,
+            },
+            ElicitationOption {
+                value: "option_b".into(),
+                label: "Option B".into(),
+                description: "Second option".into(),
+                recommended: false,
+            },
+        ];
+        let req = ElicitationRequest::ambiguity("Pick one", options);
+
+        // Default should fall back to first option's value
+        match &req.fields[0] {
+            ElicitationField::Select { default, .. } => {
+                assert_eq!(default.as_deref(), Some("option_a"));
+            }
+            _ => panic!("expected Select field"),
+        }
+    }
+
+    #[test]
+    fn option_has_value_field() {
+        let opt = ElicitationOption {
+            value: "redis_cache".into(),
+            label: "Redis".into(),
+            description: "External cache".into(),
+            recommended: true,
+        };
+        let json = serde_json::to_string(&opt).expect("serialize");
+        assert!(json.contains("\"value\":\"redis_cache\""));
+        assert!(json.contains("\"label\":\"Redis\""));
+    }
+
+    #[test]
+    fn replan_includes_custom_instruction_text_field() {
+        let req = ElicitationRequest::replan("step-x", 1, "failed");
+        let has_text_field = req.fields.iter().any(
+            |f| matches!(f, ElicitationField::Text { name, .. } if name == "custom_instruction"),
+        );
+        assert!(
+            has_text_field,
+            "replan should include a Text field for custom instructions"
+        );
     }
 }
