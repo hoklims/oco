@@ -779,22 +779,20 @@ impl OrchestrationLoop {
 
         let completed_plan = runner.execute(plan, &planning_ctx).await?;
 
-        // Transfer results back to state
-        let total_tokens: u64 = completed_plan
-            .steps
-            .iter()
-            .filter_map(|s| s.output.as_ref())
-            .count() as u64
-            * 150; // estimate per step
+        // Use actual tokens tracked by GraphRunner, not estimates.
+        let total_tokens = runner.tokens_used();
         state.session.budget.tokens_used += total_tokens;
 
-        if completed_plan.is_complete() && !completed_plan.has_failures() {
-            // Collect outputs from completed steps as the final response
-            let outputs: Vec<String> = completed_plan
-                .steps
-                .iter()
-                .filter_map(|s| s.output.clone())
-                .collect();
+        // Collect all outputs (from completed AND failed steps — failed steps
+        // may still have partial output worth surfacing).
+        let outputs: Vec<String> = completed_plan
+            .steps
+            .iter()
+            .filter_map(|s| s.output.clone())
+            .filter(|o| !o.is_empty())
+            .collect();
+
+        if !outputs.is_empty() {
             let combined = outputs.join("\n\n");
             state.push_observation(Observation::new(
                 ObservationSource::LlmResponse,
@@ -804,8 +802,8 @@ impl OrchestrationLoop {
                 },
                 total_tokens as u32,
             ));
-        } else {
-            // Partial completion — report what happened
+        } else if completed_plan.has_failures() {
+            // No outputs at all — report failures
             let failed: Vec<String> = completed_plan
                 .steps
                 .iter()
