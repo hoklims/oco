@@ -31,10 +31,15 @@ pub struct Budget {
 
 impl Budget {
     pub fn is_within_limits(&self) -> bool {
+        // Core budgets: tokens and tool calls are always enforced.
         self.tokens_used < self.max_total_tokens
             && self.tool_calls_used < self.max_tool_calls
-            && self.retrievals_used < self.max_retrievals
-            && self.verify_cycles_used < self.max_verify_cycles
+            // Gate budgets: a max of 0 means "this action type is forbidden",
+            // not "the entire session is over". Only block when the limit is
+            // positive and has been reached — individual action gates (in the
+            // policy engine) still prevent retrieval/verify when at capacity.
+            && (self.max_retrievals == 0 || self.retrievals_used < self.max_retrievals)
+            && (self.max_verify_cycles == 0 || self.verify_cycles_used < self.max_verify_cycles)
     }
 
     pub fn remaining_tokens(&self) -> u64 {
@@ -134,5 +139,46 @@ impl Budget {
                 ..Self::default()
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_retrieval_limit_does_not_exhaust_budget() {
+        let budget = Budget {
+            max_retrievals: 0,
+            retrievals_used: 0,
+            ..Budget::default()
+        };
+        assert!(
+            budget.is_within_limits(),
+            "max_retrievals=0 means 'no retrievals allowed', not 'budget exhausted'"
+        );
+    }
+
+    #[test]
+    fn zero_verify_limit_does_not_exhaust_budget() {
+        let budget = Budget {
+            max_verify_cycles: 0,
+            verify_cycles_used: 0,
+            ..Budget::default()
+        };
+        assert!(
+            budget.is_within_limits(),
+            "max_verify_cycles=0 means 'no verify allowed', not 'budget exhausted'"
+        );
+    }
+
+    #[test]
+    fn positive_retrieval_limit_enforced() {
+        let budget = Budget {
+            max_retrievals: 3,
+            retrievals_used: 3,
+            ..Budget::default()
+        };
+        assert!(!budget.is_within_limits());
     }
 }

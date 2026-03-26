@@ -130,7 +130,9 @@ impl BudgetEnforcer {
 
     fn utilization(used: u64, max: u64) -> f64 {
         if max == 0 {
-            return 1.0; // Zero-budget means immediately exhausted.
+            // Zero limit means "this action type is forbidden" — but it should
+            // NOT exhaust the overall budget. Individual action gates handle it.
+            return 0.0;
         }
         used as f64 / max as f64
     }
