@@ -14,6 +14,9 @@ use crate::session_manager::SessionManager;
 pub struct AppState {
     pub config: oco_orchestrator_core::OrchestratorConfig,
     pub session_manager: Arc<SessionManager>,
+    /// Optional shared secret for authenticating hook requests.
+    /// If `None`, hook auth is skipped (dev mode).
+    pub hook_secret: Option<String>,
 }
 
 /// The MCP server that wraps Axum.
@@ -41,9 +44,12 @@ impl McpServer {
 
         let session_manager = Arc::new(SessionManager::new(self.config.clone(), self.llm));
 
+        let hook_secret = std::env::var("OCO_HOOK_SECRET").ok();
+
         let state = Arc::new(AppState {
             config: self.config,
             session_manager,
+            hook_secret,
         });
 
         let app = create_router(state)

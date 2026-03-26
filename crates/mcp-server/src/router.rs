@@ -87,6 +87,9 @@ pub struct ErrorBody {
 // ---------------------------------------------------------------------------
 
 pub fn create_router(state: Arc<AppState>) -> Router {
+    // Claude Code HTTP hooks (v2.1.63+) — isolated sub-router with auth + body limit.
+    let hooks = crate::hooks::hook_router(Arc::clone(&state));
+
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/sessions", post(start_session).get(list_sessions))
@@ -97,6 +100,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/index", post(index_workspace))
         .route("/api/v1/search", post(search_workspace))
         .route("/api/v1/mcp", post(mcp_handler))
+        .nest("/api/v1/hooks", hooks)
         .with_state(state)
 }
 
@@ -473,13 +477,25 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    /// Build a minimal `Arc<AppState>` suitable for testing.
+    /// Build a minimal `Arc<AppState>` suitable for testing (no auth).
     fn test_state() -> Arc<AppState> {
         let config = oco_orchestrator_core::OrchestratorConfig::default();
         let session_manager = Arc::new(SessionManager::new(config.clone(), None));
         Arc::new(AppState {
             config,
             session_manager,
+            hook_secret: None,
+        })
+    }
+
+    /// Build an `Arc<AppState>` with hook auth enabled.
+    fn test_state_with_secret(secret: &str) -> Arc<AppState> {
+        let config = oco_orchestrator_core::OrchestratorConfig::default();
+        let session_manager = Arc::new(SessionManager::new(config.clone(), None));
+        Arc::new(AppState {
+            config,
+            session_manager,
+            hook_secret: Some(secret.to_string()),
         })
     }
 
@@ -615,7 +631,232 @@ mod tests {
         assert!(tool_names.contains(&"oco_search".to_string()));
     }
 
-    // -- 5. POST /api/v1/mcp — unknown method → -32601 -----------------------
+    // -- 5. POST /api/v1/hooks/post-tool — hook endpoint ----------------------
+
+    #[tokio::test]
+    async fn hook_post_tool_returns_200_ok() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "session_id": "test-session-1",
+            "data": {
+                "tool_name": "Edit",
+                "success": true,
+                "duration_ms": 42
+            }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn hook_file_changed_returns_message() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "FileChanged",
+            "data": {
+                "paths": ["src/main.rs", "src/lib.rs"],
+                "change_type": "modified"
+            }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/file-changed")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ok"], true);
+        assert!(json["message"].as_str().unwrap().contains("2 file change"));
+    }
+
+    #[tokio::test]
+    async fn hook_stop_returns_200() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "Stop",
+            "session_id": "test-session-2",
+            "data": {
+                "reason": "user_cancelled"
+            }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/stop")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn hook_catchall_returns_200_for_unknown_event() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "SomeNewEvent",
+            "data": {}
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/some-new-event")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn hook_post_compact_returns_200() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "PostCompact",
+            "session_id": "test-session-3",
+            "data": {}
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-compact")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ok"], true);
+    }
+
+    // -- 6. Hook auth: rejected without token when secret is set ---------------
+
+    #[tokio::test]
+    async fn hook_auth_rejects_without_token() {
+        let app = create_router(test_state_with_secret("s3cret"));
+
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn hook_auth_accepts_valid_token() {
+        let app = create_router(test_state_with_secret("s3cret"));
+
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer s3cret")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // -- 7. Event validation — mismatch returns 400 ----------------------------
+
+    #[tokio::test]
+    async fn hook_event_mismatch_returns_400() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "WrongEvent",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ok"], false);
+        assert!(json["message"].as_str().unwrap().contains("event mismatch"));
+    }
+
+    // -- 8. Missing required field returns 400 ---------------------------------
+
+    #[tokio::test]
+    async fn hook_missing_required_field_returns_400() {
+        let app = create_router(test_state());
+
+        // tool_name is required (no #[serde(default)])
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": { "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // Should return generic message, not raw serde error
+        assert_eq!(json["message"], "invalid payload");
+    }
+
+    // -- 9. POST /api/v1/mcp — unknown method → -32601 -----------------------
 
     #[tokio::test]
     async fn mcp_unknown_method_returns_error_32601() {

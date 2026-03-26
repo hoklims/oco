@@ -183,8 +183,8 @@ impl SessionManager {
 
     /// Get information about a session.
     pub async fn get_session(&self, id: &str) -> Option<SessionInfo> {
-        let entry = self.sessions.get(id)?;
-        let guard = entry.lock().await;
+        let session = self.sessions.get(id).map(|e| e.value().clone())?;
+        let guard = session.lock().await;
         Some(self.build_info(id, &guard))
     }
 
@@ -193,12 +193,13 @@ impl SessionManager {
     /// Sets the status to `Cancelled`. The background thread will observe this
     /// on its next budget/step check and exit gracefully.
     pub async fn stop_session(&self, id: &str) -> anyhow::Result<()> {
-        let entry = self
+        let session = self
             .sessions
             .get(id)
+            .map(|e| e.value().clone())
             .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
 
-        let mut guard = entry.lock().await;
+        let mut guard = session.lock().await;
 
         if guard.status != SessionStatus::Active {
             anyhow::bail!("session {id} is not active (status: {:?})", guard.status);
@@ -226,12 +227,13 @@ impl SessionManager {
 
     /// Get the decision trace for a session.
     pub async fn get_trace(&self, id: &str) -> anyhow::Result<Vec<DecisionTrace>> {
-        let entry = self
+        let session = self
             .sessions
             .get(id)
+            .map(|e| e.value().clone())
             .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
 
-        let guard = entry.lock().await;
+        let guard = session.lock().await;
         Ok(guard
             .orchestration_state
             .as_ref()
@@ -241,25 +243,61 @@ impl SessionManager {
 
     /// List all sessions.
     pub async fn list_sessions(&self) -> Vec<SessionInfo> {
-        let mut infos = Vec::with_capacity(self.sessions.len());
-        for entry in self.sessions.iter() {
-            let id = entry.key().clone();
-            let guard = entry.value().lock().await;
-            infos.push(self.build_info(&id, &guard));
+        // Collect Arc clones first, then release DashMap guards before awaiting.
+        let snapshot: Vec<(String, Arc<Mutex<SessionState>>)> = self
+            .sessions
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
+
+        let mut infos = Vec::with_capacity(snapshot.len());
+        for (id, session) in &snapshot {
+            let guard = session.lock().await;
+            infos.push(self.build_info(id, &guard));
         }
         infos
     }
 
     /// Number of currently active sessions.
     pub async fn active_count(&self) -> u32 {
+        let snapshot: Vec<Arc<Mutex<SessionState>>> =
+            self.sessions.iter().map(|e| e.value().clone()).collect();
+
         let mut count = 0u32;
-        for entry in self.sessions.iter() {
-            let guard = entry.value().lock().await;
+        for session in &snapshot {
+            let guard = session.lock().await;
             if guard.status == SessionStatus::Active {
                 count += 1;
             }
         }
         count
+    }
+
+    /// Record a hook event for a session (telemetry).
+    ///
+    /// This is a best-effort operation — if the session doesn't exist or is
+    /// already completed, the event is silently dropped.
+    pub async fn record_hook_event(
+        &self,
+        session_id: &str,
+        hook_name: &str,
+        detail: &str,
+    ) -> Result<(), anyhow::Error> {
+        // Clone the Arc before releasing the DashMap read guard to avoid
+        // holding it across the `.lock().await` (potential deadlock).
+        let session = self.sessions.get(session_id).map(|e| e.value().clone());
+        if let Some(session) = session {
+            let guard = session.lock().await;
+            if guard.status == SessionStatus::Active {
+                tracing::debug!(
+                    session_id,
+                    hook_name,
+                    detail,
+                    "recorded hook event for active session"
+                );
+            }
+        }
+        Ok(())
     }
 
     // -- helpers ------------------------------------------------------------
