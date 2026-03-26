@@ -45,8 +45,8 @@ enum Commands {
         /// Workspace root path
         #[arg(long)]
         workspace: Option<String>,
-        /// LLM provider (stub, anthropic, ollama)
-        #[arg(long, default_value = "stub")]
+        /// LLM provider: claude-code (default), anthropic, ollama, stub
+        #[arg(long, default_value = "claude-code")]
         provider: String,
         /// Model name
         #[arg(long)]
@@ -130,8 +130,8 @@ enum Commands {
         /// Output results to file (JSON)
         #[arg(long)]
         output: Option<String>,
-        /// LLM provider (default: stub)
-        #[arg(long, default_value = "stub")]
+        /// LLM provider: claude-code (default), anthropic, ollama, stub
+        #[arg(long, default_value = "claude-code")]
         provider: String,
     },
     /// Check plugin health and configuration
@@ -271,6 +271,13 @@ async fn cmd_run(
     config.default_budget.max_duration_secs = 120;
 
     let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
+        "claude-code" => {
+            let model_name = model.unwrap_or_else(|| "sonnet".to_string());
+            let cc_config = oco_orchestrator_core::llm::ClaudeCodeConfig::new(&model_name);
+            Arc::new(oco_orchestrator_core::llm::ClaudeCodeProvider::new(
+                cc_config,
+            ))
+        }
         "anthropic" => {
             let model_name = model.unwrap_or_else(|| config.llm.model.clone());
             let anthropic_config =
@@ -286,9 +293,14 @@ async fn cmd_run(
                 ollama_config,
             )?)
         }
-        _ => Arc::new(oco_orchestrator_core::llm::StubLlmProvider {
+        "stub" => Arc::new(oco_orchestrator_core::llm::StubLlmProvider {
             model: model.unwrap_or_else(|| config.llm.model.clone()),
         }),
+        other => {
+            anyhow::bail!(
+                "unknown provider '{other}'. Available: claude-code, anthropic, ollama, stub"
+            );
+        }
     };
 
     r.emit(UiEvent::RunStarted {
@@ -837,6 +849,11 @@ async fn cmd_eval(
         oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
 
     let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
+        "claude-code" => {
+            Arc::new(oco_orchestrator_core::llm::ClaudeCodeProvider::new(
+                oco_orchestrator_core::llm::ClaudeCodeConfig::new("sonnet"),
+            ))
+        }
         "anthropic" => {
             let anthropic_config =
                 oco_orchestrator_core::llm::AnthropicConfig::from_env(&config.llm.model, None)?;
@@ -844,9 +861,21 @@ async fn cmd_eval(
                 anthropic_config,
             )?)
         }
-        _ => Arc::new(oco_orchestrator_core::llm::StubLlmProvider {
+        "ollama" => {
+            let ollama_config =
+                oco_orchestrator_core::llm::OllamaConfig::new(&config.llm.model);
+            Arc::new(oco_orchestrator_core::llm::OllamaProvider::new(
+                ollama_config,
+            )?)
+        }
+        "stub" => Arc::new(oco_orchestrator_core::llm::StubLlmProvider {
             model: config.llm.model.clone(),
         }),
+        other => {
+            anyhow::bail!(
+                "unknown provider '{other}'. Available: claude-code, anthropic, ollama, stub"
+            );
+        }
     };
 
     let scenario_path = PathBuf::from(&scenarios);

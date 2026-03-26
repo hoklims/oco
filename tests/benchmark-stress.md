@@ -167,30 +167,40 @@ Critere PASS : tous les runs consultables, pas de corruption, traces lisibles.
 
 ---
 
-### Phase 5 — Le boss final (provider anthropic)
+### Phase 5 — Le boss final (vrai LLM)
 
-CE TEST NECESSITE UNE CLE API ANTHROPIC (`ANTHROPIC_API_KEY`).
-Si pas disponible, reporte SKIP.
+Ce test utilise un vrai LLM pour valider que l'orchestration produit
+des resultats exploitables (pas juste du stub).
 
-5.1. Execute avec le vrai LLM :
+**Option A — Claude Code (defaut, recommande) :**
 ```bash
-oco run "analyze the error handling patterns in this codebase, identify inconsistencies between modules, and suggest a unified approach" --workspace . --provider anthropic 2>&1
+oco run "analyze the error handling patterns in this codebase, identify inconsistencies between modules, and suggest a unified approach" --workspace . 2>&1
 ```
+Note : `--provider claude-code` est le defaut, pas besoin de le specifier.
 
-Attendu :
+**Option B — GPT-5.4 via MCP reviewer :**
+Si claude CLI n'est pas disponible, utilise le MCP `gpt54-reviewer`
+(review_code) de Claude Code pour soumettre du code reel a GPT-5.4.
+Lis les fichiers error.rs des crates et soumets-les a review_code.
+
+**Option C — Anthropic API directe :**
+```bash
+oco run "analyze the error handling patterns..." --workspace . --provider anthropic 2>&1
+```
+Necessite `ANTHROPIC_API_KEY`.
+
+5.1. Attendu :
 - Le plan engine est active (Medium+)
 - Le LLM produit une vraie reponse (pas un stub)
 - La reponse mentionne des fichiers/patterns reels du workspace
 - tokens_used > 0 dans le summary
 - La reponse est coherente et utile
+Reporte : provider utilise, routing, qualite (1-5), tokens_used.
 
-Reporte : routing, qualite de la reponse (1-5), tokens_used,
-fichiers mentionnes.
-
-5.2. Comparaison stub vs anthropic :
+5.2. Comparaison stub vs vrai LLM :
 ```bash
 oco run "explain the architecture of this project" --workspace . --provider stub 2>&1
-oco run "explain the architecture of this project" --workspace . --provider anthropic 2>&1
+oco run "explain the architecture of this project" --workspace . 2>&1
 ```
 Reporte : differences de comportement, qualite relative.
 
@@ -206,7 +216,7 @@ Critere PASS : reponse coherente du LLM, tokens_used > 0, pas de crash.
 | 2. Bombardement rapide | 10 runs | 0 corrupt, >= 16 total | PASS/FAIL | ... |
 | 3. Adversarial | 5 tests | 0 crash, >= 3/5 coherent | PASS/FAIL | ... |
 | 4. Endurance | 4 checks | 0 corruption, traces OK | PASS/FAIL | ... |
-| 5. Boss final (anthropic) | 2 tests | reponse coherente, tokens > 0 | PASS/FAIL/SKIP | ... |
+| 5. Boss final (vrai LLM) | 2 tests | reponse coherente, tokens > 0 | PASS/FAIL/SKIP | ... |
 
 Score final : X/5 phases PASS (ou X/4 si phase 5 SKIP)
 
