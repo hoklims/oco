@@ -143,11 +143,15 @@ cargo test -p oco-architecture-tests     #  4 tests — dependency DAG, layer vi
 
 ## LLM Providers
 
-| Provider | Config (`oco.toml`) | Requirements |
-|----------|-------------------|--------------|
-| `stub` | `provider = "stub"` | None — returns placeholder responses |
-| `anthropic` | `provider = "anthropic"` | `ANTHROPIC_API_KEY` env var |
-| `ollama` | `provider = "ollama"` | Local Ollama server at `localhost:11434` |
+| Provider | CLI flag | Requirements |
+|----------|----------|--------------|
+| `claude-code` | `--provider claude-code` **(default)** | `claude` CLI on PATH (installed with Claude Code) |
+| `anthropic` | `--provider anthropic` | `ANTHROPIC_API_KEY` env var |
+| `ollama` | `--provider ollama` | Local Ollama server at `localhost:11434` |
+| `stub` | `--provider stub` | None — returns placeholder responses (dev/test) |
+
+**Default**: `claude-code` — delegates to the Claude Code CLI (`claude --bare -p --output-format json`).
+Uses the user's existing auth and supports model selection via `--model sonnet|opus|haiku`.
 
 ## Configuration
 

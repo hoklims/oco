@@ -353,6 +353,178 @@ impl LlmProvider for AnthropicProvider {
 }
 
 // ---------------------------------------------------------------------------
+// ClaudeCodeProvider (delegates to Claude Code CLI)
+// ---------------------------------------------------------------------------
+
+/// Configuration for the Claude Code CLI provider.
+#[derive(Debug, Clone)]
+pub struct ClaudeCodeConfig {
+    /// Model alias passed to `claude --model` (e.g. "sonnet", "opus", "haiku").
+    pub model: String,
+    /// Request timeout — Claude Code can be slow on complex tasks.
+    pub timeout: Duration,
+}
+
+impl ClaudeCodeConfig {
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            timeout: Duration::from_secs(300),
+        }
+    }
+
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+}
+
+/// LLM provider that delegates to the Claude Code CLI (`claude --bare -p`).
+///
+/// This is the recommended default when OCO runs as a Claude Code plugin.
+/// It uses the user's existing Claude Code authentication and configuration.
+pub struct ClaudeCodeProvider {
+    config: ClaudeCodeConfig,
+}
+
+impl ClaudeCodeProvider {
+    pub fn new(config: ClaudeCodeConfig) -> Self {
+        Self { config }
+    }
+}
+
+/// JSON response from `claude -p --output-format json`.
+#[derive(Deserialize)]
+struct ClaudeCodeResponse {
+    #[serde(default)]
+    result: Option<String>,
+    #[serde(default)]
+    is_error: bool,
+    #[serde(default)]
+    usage: Option<ClaudeCodeUsage>,
+    #[serde(default)]
+    stop_reason: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    duration_api_ms: Option<u64>,
+    #[serde(default)]
+    subtype: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct ClaudeCodeUsage {
+    #[serde(default)]
+    input_tokens: u32,
+    #[serde(default)]
+    output_tokens: u32,
+    #[serde(default)]
+    cache_creation_input_tokens: u32,
+    #[serde(default)]
+    cache_read_input_tokens: u32,
+}
+
+#[async_trait]
+impl LlmProvider for ClaudeCodeProvider {
+    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, OrchestratorError> {
+        use tokio::process::Command;
+
+        // Build the prompt from messages
+        let prompt = request
+            .messages
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let mut cmd = Command::new("claude");
+        cmd.args([
+            "-p",
+            &prompt,
+            "--output-format",
+            "json",
+            "--model",
+            &self.config.model,
+            "--no-session-persistence",
+        ]);
+
+        if let Some(ref sys) = request.system_prompt {
+            cmd.args(["--append-system-prompt", sys]);
+        }
+
+        debug!(
+            provider = "claude-code",
+            model = %self.config.model,
+            prompt_len = prompt.len(),
+            "sending request via claude CLI"
+        );
+
+        let output = tokio::time::timeout(self.config.timeout, cmd.output())
+            .await
+            .map_err(|_| {
+                OrchestratorError::LlmError(format!(
+                    "claude CLI timed out after {}s",
+                    self.config.timeout.as_secs()
+                ))
+            })?
+            .map_err(|e| {
+                OrchestratorError::LlmError(format!(
+                    "failed to spawn claude CLI — is it installed? {e}"
+                ))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(OrchestratorError::LlmError(format!(
+                "claude CLI exited with {}: {}",
+                output.status,
+                stderr.trim()
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        let resp: ClaudeCodeResponse = serde_json::from_str(&stdout).map_err(|e| {
+            OrchestratorError::LlmError(format!(
+                "failed to parse claude CLI JSON output: {e}\nRaw: {}",
+                &stdout[..stdout.len().min(200)]
+            ))
+        })?;
+
+        if resp.is_error {
+            let subtype = resp.subtype.as_deref().unwrap_or("unknown");
+            return Err(OrchestratorError::LlmError(format!(
+                "claude CLI returned error ({}): {}",
+                subtype,
+                resp.result.as_deref().unwrap_or("no details")
+            )));
+        }
+
+        let usage = resp.usage.unwrap_or_default();
+        // Claude Code counts cache tokens separately — include them in total.
+        let total_input = usage.input_tokens
+            + usage.cache_creation_input_tokens
+            + usage.cache_read_input_tokens;
+
+        Ok(LlmResponse {
+            content: resp.result.unwrap_or_default(),
+            input_tokens: total_input,
+            output_tokens: usage.output_tokens,
+            model: self.config.model.clone(),
+            stop_reason: resp.stop_reason,
+        })
+    }
+
+    fn provider_name(&self) -> &str {
+        "claude-code"
+    }
+
+    fn model_name(&self) -> &str {
+        &self.config.model
+    }
+}
+
+// ---------------------------------------------------------------------------
 // OllamaProvider (local-first, no API key)
 // ---------------------------------------------------------------------------
 

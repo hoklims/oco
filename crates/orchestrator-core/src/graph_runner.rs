@@ -208,6 +208,11 @@ impl GraphRunner {
         self
     }
 
+    /// Total tokens consumed during execution.
+    pub fn tokens_used(&self) -> u64 {
+        self.tokens_used
+    }
+
     /// Execute the full plan, returning the completed (or failed) plan.
     pub async fn execute(
         &mut self,
