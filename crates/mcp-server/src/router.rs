@@ -87,6 +87,9 @@ pub struct ErrorBody {
 // ---------------------------------------------------------------------------
 
 pub fn create_router(state: Arc<AppState>) -> Router {
+    // Claude Code HTTP hooks (v2.1.63+) — isolated sub-router with auth + body limit.
+    let hooks = crate::hooks::hook_router(Arc::clone(&state));
+
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/sessions", post(start_session).get(list_sessions))
@@ -97,25 +100,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/index", post(index_workspace))
         .route("/api/v1/search", post(search_workspace))
         .route("/api/v1/mcp", post(mcp_handler))
-        // Claude Code HTTP hooks (v2.1.63+)
-        .route(
-            "/api/v1/hooks/post-tool",
-            post(crate::hooks::hook_post_tool),
-        )
-        .route(
-            "/api/v1/hooks/task-completed",
-            post(crate::hooks::hook_task_completed),
-        )
-        .route(
-            "/api/v1/hooks/file-changed",
-            post(crate::hooks::hook_file_changed),
-        )
-        .route(
-            "/api/v1/hooks/post-compact",
-            post(crate::hooks::hook_post_compact),
-        )
-        .route("/api/v1/hooks/stop", post(crate::hooks::hook_stop))
-        .route("/api/v1/hooks/{event}", post(crate::hooks::hook_catchall))
+        .nest("/api/v1/hooks", hooks)
         .with_state(state)
 }
 
@@ -492,13 +477,25 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    /// Build a minimal `Arc<AppState>` suitable for testing.
+    /// Build a minimal `Arc<AppState>` suitable for testing (no auth).
     fn test_state() -> Arc<AppState> {
         let config = oco_orchestrator_core::OrchestratorConfig::default();
         let session_manager = Arc::new(SessionManager::new(config.clone(), None));
         Arc::new(AppState {
             config,
             session_manager,
+            hook_secret: None,
+        })
+    }
+
+    /// Build an `Arc<AppState>` with hook auth enabled.
+    fn test_state_with_secret(secret: &str) -> Arc<AppState> {
+        let config = oco_orchestrator_core::OrchestratorConfig::default();
+        let session_manager = Arc::new(SessionManager::new(config.clone(), None));
+        Arc::new(AppState {
+            config,
+            session_manager,
+            hook_secret: Some(secret.to_string()),
         })
     }
 
@@ -761,7 +758,105 @@ mod tests {
         assert_eq!(json["ok"], true);
     }
 
-    // -- 6. POST /api/v1/mcp — unknown method → -32601 -----------------------
+    // -- 6. Hook auth: rejected without token when secret is set ---------------
+
+    #[tokio::test]
+    async fn hook_auth_rejects_without_token() {
+        let app = create_router(test_state_with_secret("s3cret"));
+
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn hook_auth_accepts_valid_token() {
+        let app = create_router(test_state_with_secret("s3cret"));
+
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer s3cret")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // -- 7. Event validation — mismatch returns 400 ----------------------------
+
+    #[tokio::test]
+    async fn hook_event_mismatch_returns_400() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "WrongEvent",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ok"], false);
+        assert!(json["message"].as_str().unwrap().contains("event mismatch"));
+    }
+
+    // -- 8. Missing required field returns 400 ---------------------------------
+
+    #[tokio::test]
+    async fn hook_missing_required_field_returns_400() {
+        let app = create_router(test_state());
+
+        // tool_name is required (no #[serde(default)])
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": { "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // Should return generic message, not raw serde error
+        assert_eq!(json["message"], "invalid payload");
+    }
+
+    // -- 9. POST /api/v1/mcp — unknown method → -32601 -----------------------
 
     #[tokio::test]
     async fn mcp_unknown_method_returns_error_32601() {

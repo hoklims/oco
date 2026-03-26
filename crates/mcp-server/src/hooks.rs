@@ -14,15 +14,75 @@
 //! | `/hooks/post-compact`  | `PostCompact`       | Re-inject critical context           |
 //! | `/hooks/stop`          | `Stop`              | Mark session as terminated           |
 
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    middleware,
+    response::IntoResponse,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{debug, info, warn};
 
 use crate::server::AppState;
 
 // ---------------------------------------------------------------------------
-// Hook payload types (Claude Code → OCO)
+// Auth middleware for hook routes
+// ---------------------------------------------------------------------------
+
+/// Middleware that validates `Authorization: Bearer <secret>` on hook routes.
+///
+/// If `AppState::hook_secret` is `None`, auth is skipped (dev mode).
+pub async fn hook_auth_middleware(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    if let Some(ref expected) = state.hook_secret {
+        let provided = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+
+        match provided {
+            Some(token) if token == expected.as_str() => {}
+            _ => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(HookResponse::error("unauthorized")),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    next.run(request).await.into_response()
+}
+
+/// Build the hook sub-router with auth middleware and body size limit.
+///
+/// Applied only to `/api/v1/hooks/*` routes.
+pub fn hook_router(state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
+    use axum::routing::post;
+
+    axum::Router::new()
+        .route("/post-tool", post(hook_post_tool))
+        .route("/task-completed", post(hook_task_completed))
+        .route("/file-changed", post(hook_file_changed))
+        .route("/post-compact", post(hook_post_compact))
+        .route("/stop", post(hook_stop))
+        .route("/{event}", post(hook_catchall))
+        // 64 KB body limit — hooks carry small JSON payloads
+        .layer(RequestBodyLimitLayer::new(64 * 1024))
+        // TODO: add rate limiting middleware for production deployments
+        .layer(middleware::from_fn_with_state(state, hook_auth_middleware))
+}
+
+// ---------------------------------------------------------------------------
+// Hook payload types (Claude Code -> OCO)
 // ---------------------------------------------------------------------------
 
 /// Common envelope for all Claude Code HTTP hook payloads.
@@ -84,13 +144,33 @@ impl HookResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Validate that the payload `event` field matches the expected event name.
+fn validate_event(
+    payload: &HookPayload,
+    expected: &str,
+) -> Result<(), (StatusCode, Json<HookResponse>)> {
+    if payload.event != expected {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(HookResponse::error(format!(
+                "event mismatch: expected \"{expected}\", got \"{}\"",
+                payload.event
+            ))),
+        ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // PostToolUse — record tool observations in telemetry
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct PostToolUseData {
-    /// Tool name that was used.
-    #[serde(default)]
+    /// Tool name that was used (required).
     pub tool_name: String,
     /// Whether the tool call succeeded.
     #[serde(default)]
@@ -108,13 +188,17 @@ pub async fn hook_post_tool(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
+    if let Err(resp) = validate_event(&payload, "PostToolUse") {
+        return resp;
+    }
+
     let data: PostToolUseData = match serde_json::from_value(payload.data) {
         Ok(d) => d,
         Err(e) => {
-            warn!(error = %e, "invalid PostToolUse payload");
+            warn!(error = %e, "invalid PostToolUse data payload");
             return (
                 StatusCode::BAD_REQUEST,
-                Json(HookResponse::error(e.to_string())),
+                Json(HookResponse::error("invalid payload")),
             );
         }
     };
@@ -127,11 +211,13 @@ pub async fn hook_post_tool(
     );
 
     // Record in active session telemetry if we can match the session
-    if let Some(ref session_id) = payload.session_id {
-        let _ = state
+    if let Some(ref session_id) = payload.session_id
+        && let Err(e) = state
             .session_manager
             .record_hook_event(session_id, "post_tool_use", &data.tool_name)
-            .await;
+            .await
+    {
+        warn!(session_id, error = %e, "failed to record post_tool_use hook event");
     }
 
     (StatusCode::OK, Json(HookResponse::ok()))
@@ -143,8 +229,7 @@ pub async fn hook_post_tool(
 
 #[derive(Debug, Deserialize)]
 pub struct TaskCompletedData {
-    /// Task identifier from Claude Code.
-    #[serde(default)]
+    /// Task identifier from Claude Code (required).
     pub task_id: String,
     /// Whether the task succeeded.
     #[serde(default)]
@@ -159,13 +244,17 @@ pub async fn hook_task_completed(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
+    if let Err(resp) = validate_event(&payload, "TaskCompleted") {
+        return resp;
+    }
+
     let data: TaskCompletedData = match serde_json::from_value(payload.data) {
         Ok(d) => d,
         Err(e) => {
-            warn!(error = %e, "invalid TaskCompleted payload");
+            warn!(error = %e, "invalid TaskCompleted data payload");
             return (
                 StatusCode::BAD_REQUEST,
-                Json(HookResponse::error(e.to_string())),
+                Json(HookResponse::error("invalid payload")),
             );
         }
     };
@@ -177,11 +266,13 @@ pub async fn hook_task_completed(
         "hook: task-completed"
     );
 
-    if let Some(ref session_id) = payload.session_id {
-        let _ = state
+    if let Some(ref session_id) = payload.session_id
+        && let Err(e) = state
             .session_manager
             .record_hook_event(session_id, "task_completed", &data.task_id)
-            .await;
+            .await
+    {
+        warn!(session_id, error = %e, "failed to record task_completed hook event");
     }
 
     (StatusCode::OK, Json(HookResponse::ok()))
@@ -206,13 +297,17 @@ pub async fn hook_file_changed(
     State(_state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
+    if let Err(resp) = validate_event(&payload, "FileChanged") {
+        return resp;
+    }
+
     let data: FileChangedData = match serde_json::from_value(payload.data) {
         Ok(d) => d,
         Err(e) => {
-            warn!(error = %e, "invalid FileChanged payload");
+            warn!(error = %e, "invalid FileChanged data payload");
             return (
                 StatusCode::BAD_REQUEST,
-                Json(HookResponse::error(e.to_string())),
+                Json(HookResponse::error("invalid payload")),
             );
         }
     };
@@ -244,6 +339,10 @@ pub async fn hook_post_compact(
     State(_state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
+    if let Err(resp) = validate_event(&payload, "PostCompact") {
+        return resp;
+    }
+
     info!(
         session = ?payload.session_id,
         "hook: post-compact — context compaction detected"
@@ -279,13 +378,17 @@ pub async fn hook_stop(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
+    if let Err(resp) = validate_event(&payload, "Stop") {
+        return resp;
+    }
+
     let data: StopData = match serde_json::from_value(payload.data) {
         Ok(d) => d,
         Err(e) => {
-            warn!(error = %e, "invalid Stop payload");
+            warn!(error = %e, "invalid Stop data payload");
             return (
                 StatusCode::BAD_REQUEST,
-                Json(HookResponse::error(e.to_string())),
+                Json(HookResponse::error("invalid payload")),
             );
         }
     };
@@ -296,8 +399,10 @@ pub async fn hook_stop(
         "hook: stop — session terminated"
     );
 
-    if let Some(ref session_id) = payload.session_id {
-        let _ = state.session_manager.stop_session(session_id).await;
+    if let Some(ref session_id) = payload.session_id
+        && let Err(e) = state.session_manager.stop_session(session_id).await
+    {
+        warn!(session_id, error = %e, "failed to stop session from hook");
     }
 
     (StatusCode::OK, Json(HookResponse::ok()))
