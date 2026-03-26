@@ -262,6 +262,30 @@ impl SessionManager {
         count
     }
 
+    /// Record a hook event for a session (telemetry).
+    ///
+    /// This is a best-effort operation — if the session doesn't exist or is
+    /// already completed, the event is silently dropped.
+    pub async fn record_hook_event(
+        &self,
+        session_id: &str,
+        hook_name: &str,
+        detail: &str,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(entry) = self.sessions.get(session_id) {
+            let guard = entry.value().lock().await;
+            if guard.status == SessionStatus::Active {
+                tracing::debug!(
+                    session_id,
+                    hook_name,
+                    detail,
+                    "recorded hook event for active session"
+                );
+            }
+        }
+        Ok(())
+    }
+
     // -- helpers ------------------------------------------------------------
 
     fn build_info(&self, id: &str, guard: &SessionState) -> SessionInfo {

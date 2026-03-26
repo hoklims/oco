@@ -4,6 +4,7 @@
 //! allowing IDE extensions to interact with OCO through the standard MCP protocol.
 
 pub mod handlers;
+pub mod hooks;
 pub mod protocol;
 pub mod router;
 pub mod server;
