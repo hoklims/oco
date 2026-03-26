@@ -61,12 +61,14 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
                               └── MCP steps → direct tool call
                               ├── Verify gates after implementation steps
                               ├── Replan on failure (max 3 attempts, 5% budget/call)
-                              └── Multi-model routing (opus/sonnet/haiku per step)
+                              ├── Multi-model routing (opus/sonnet/haiku per step)
+                              └── Effort-level routing (low/medium/high per step)
 ```
 
 **Key types** (all in `shared-types`):
 - `ExecutionPlan` — DAG with `ready_steps()`, `parallel_groups()`, `critical_path_length()`, `validate()`, `validate_semantic()`
 - `PlanStep` — node with `AgentRole`, `StepExecution` (Inline/Subagent/Teammate/McpTool), `verify_after`
+- `EffortLevel` — Low/Medium/High, maps to Claude Code `--effort` flag
 - `CapabilityRegistry` — unified catalog of tools/MCP/agents/skills/LLMs, `query()`, `best_for()`, `sanitize_for_prompt()`
 - `TeamCoordinator` — spawns members (plan-scoped), shared task list, teardown
 - `SharedTaskList` — claimable/claim(ownership)/complete(ownership)/force_complete
@@ -75,7 +77,7 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 **Key modules**:
 - `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan)
 - `orchestrator-core/graph_runner.rs` — `GraphRunner` with parallel execution (tokio::spawn), verify gates, budget pre-reservation, no-progress guard, JoinError→Failed
-- `orchestrator-core/llm_router.rs` — `LlmRouter` per-step model selection (role heuristic + budget downgrade)
+- `orchestrator-core/llm_router.rs` — `LlmRouter` per-step model + effort selection (`RoutingDecision`), role heuristic + budget downgrade
 - `context-engine/step_scope.rs` — `StepContextBuilder` with dependency outputs, error context (Manus pattern), shared memory
 
 ### Python (`py/`)
@@ -129,15 +131,15 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (358+)
-cargo test -p oco-shared-types           # 90 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology
+cargo test                               # All tests (368+)
+cargo test -p oco-shared-types           # 94 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology
 cargo test -p oco-policy-engine          # 30 tests — classifier, selector, budget, gates
 cargo test -p oco-context-engine         # 24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             # 16 tests — parser, indexer, language detection
 cargo test -p oco-retrieval              #  9 tests — FTS5, vector, hybrid ranking
 cargo test -p oco-telemetry              #  5 tests — event recording, JSONL export
 cargo test -p oco-planner               # 34 tests — direct planner, LLM planner, prompt gen, team generation, retry, edge cases
-cargo test -p oco-orchestrator-core      # 34 tests — eval, integration, loop runner, graph runner, LLM router, cancellation
+cargo test -p oco-orchestrator-core      # 40 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, cancellation
 cargo test -p oco-architecture-tests     #  4 tests — dependency DAG, layer violations, foundation isolation, coverage
 ```
 
@@ -151,7 +153,11 @@ cargo test -p oco-architecture-tests     #  4 tests — dependency DAG, layer vi
 | `stub` | `--provider stub` | None — returns placeholder responses (dev/test) |
 
 **Default**: `claude-code` — delegates to the Claude Code CLI (`claude --bare -p --output-format json`).
-Uses the user's existing auth and supports model selection via `--model sonnet|opus|haiku`.
+Uses the user's existing auth and supports model selection via `--model sonnet|opus|haiku` and effort via `--effort low|medium|high`.
+
+Environment variables set by the claude-code provider:
+- `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` — scrubs credentials from subprocesses (enabled by default)
+- `CLAUDE_STREAM_IDLE_TIMEOUT_MS` — configurable idle watchdog for long-running steps
 
 ## Configuration
 

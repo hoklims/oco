@@ -14,7 +14,23 @@ use std::sync::Arc;
 use tracing::debug;
 
 use crate::llm::LlmProvider;
-use oco_shared_types::PlanStep;
+use oco_shared_types::{EffortLevel, PlanStep};
+
+/// Routing decision: which provider and effort level to use for a step.
+#[derive(Clone)]
+pub struct RoutingDecision {
+    pub provider: Arc<dyn LlmProvider>,
+    pub effort: EffortLevel,
+}
+
+impl std::fmt::Debug for RoutingDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RoutingDecision")
+            .field("model", &self.provider.model_name())
+            .field("effort", &self.effort)
+            .finish()
+    }
+}
 
 /// Routes LLM calls to the best provider/model for a given step.
 pub struct LlmRouter {
@@ -103,6 +119,35 @@ impl LlmRouter {
             .clone()
     }
 
+    /// Select the best provider **and** effort level for a plan step.
+    ///
+    /// Returns a `RoutingDecision` combining model + effort. The effort is
+    /// determined by: step preference → role heuristic → budget-aware downgrade.
+    pub fn route_step(&self, step: &PlanStep, budget_remaining_pct: f64) -> RoutingDecision {
+        let provider = self.for_step(step, budget_remaining_pct);
+
+        // 1. Explicit effort from planner
+        if let Some(effort) = step.agent_role.preferred_effort {
+            debug!(step = %step.name, %effort, "using preferred effort");
+            return RoutingDecision { provider, effort };
+        }
+
+        // 2. Budget-aware effort downgrade
+        if budget_remaining_pct < 0.2 {
+            debug!(step = %step.name, budget_pct = budget_remaining_pct, "effort downgrade: low");
+            return RoutingDecision {
+                provider,
+                effort: EffortLevel::Low,
+            };
+        }
+
+        // 3. Role-based effort heuristic
+        let effort = effort_for_role(&step.agent_role.name);
+        debug!(step = %step.name, role = %step.agent_role.name, %effort, "heuristic effort");
+
+        RoutingDecision { provider, effort }
+    }
+
     /// Select a provider by name directly (for non-step uses like planning).
     pub fn get(&self, name: &str) -> Option<Arc<dyn LlmProvider>> {
         self.providers.get(name).cloned()
@@ -142,6 +187,29 @@ fn model_for_role(role: &str) -> &'static str {
         "devops" => "sonnet",
         // Default
         _ => "sonnet",
+    }
+}
+
+/// Heuristic: map agent role name to recommended effort level.
+///
+/// Maps to Claude Code's `--effort low|medium|high` flag.
+fn effort_for_role(role: &str) -> EffortLevel {
+    match role {
+        // Deep reasoning → high effort
+        "architect" | "planner" | "security-reviewer" | "senior" => EffortLevel::High,
+        // Thorough review needs high effort
+        "reviewer" | "code-reviewer" => EffortLevel::High,
+        // Standard implementation → medium
+        "coder" | "implementer" | "frontend-dev" | "backend" | "tester" => EffortLevel::Medium,
+        // Debug needs reasoning
+        "debugger" | "refactorer" => EffortLevel::Medium,
+        // DevOps → medium
+        "devops" => EffortLevel::Medium,
+        // Fast tasks → low effort
+        "explorer" | "investigator" | "analyzer" | "searcher" => EffortLevel::Low,
+        "formatter" | "linter" => EffortLevel::Low,
+        // Default
+        _ => EffortLevel::Medium,
     }
 }
 
@@ -277,5 +345,74 @@ mod tests {
         assert_eq!(model_for_role("debugger"), "sonnet");
         assert_eq!(model_for_role("formatter"), "haiku");
         assert_eq!(model_for_role("unknown"), "sonnet");
+    }
+
+    // -----------------------------------------------------------------------
+    // route_step — effort routing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn route_step_returns_high_effort_for_architect() {
+        let router = make_router();
+        let step = PlanStep::new("design", "System design").with_role(AgentRole::new("architect"));
+
+        let decision = router.route_step(&step, 1.0);
+        assert_eq!(decision.provider.model_name(), "opus");
+        assert_eq!(decision.effort, EffortLevel::High);
+    }
+
+    #[test]
+    fn route_step_returns_low_effort_for_explorer() {
+        let router = make_router();
+        let step =
+            PlanStep::new("explore", "Search codebase").with_role(AgentRole::new("explorer"));
+
+        let decision = router.route_step(&step, 1.0);
+        assert_eq!(decision.provider.model_name(), "haiku");
+        assert_eq!(decision.effort, EffortLevel::Low);
+    }
+
+    #[test]
+    fn route_step_returns_medium_effort_for_coder() {
+        let router = make_router();
+        let step = PlanStep::new("implement", "Write code").with_role(AgentRole::new("coder"));
+
+        let decision = router.route_step(&step, 1.0);
+        assert_eq!(decision.provider.model_name(), "sonnet");
+        assert_eq!(decision.effort, EffortLevel::Medium);
+    }
+
+    #[test]
+    fn route_step_preferred_effort_overrides_heuristic() {
+        let router = make_router();
+        let step = PlanStep::new("careful-impl", "Critical implementation")
+            .with_role(AgentRole::new("coder").with_effort(EffortLevel::High));
+
+        let decision = router.route_step(&step, 1.0);
+        assert_eq!(decision.provider.model_name(), "sonnet");
+        assert_eq!(decision.effort, EffortLevel::High);
+    }
+
+    #[test]
+    fn route_step_budget_downgrades_effort() {
+        let router = make_router();
+        let step = PlanStep::new("design", "System design").with_role(AgentRole::new("architect"));
+
+        // Normal budget → high effort (architect heuristic)
+        assert_eq!(router.route_step(&step, 0.8).effort, EffortLevel::High);
+        // Very low budget → low effort (override)
+        assert_eq!(router.route_step(&step, 0.15).effort, EffortLevel::Low);
+    }
+
+    #[test]
+    fn effort_for_role_coverage() {
+        assert_eq!(effort_for_role("architect"), EffortLevel::High);
+        assert_eq!(effort_for_role("security-reviewer"), EffortLevel::High);
+        assert_eq!(effort_for_role("reviewer"), EffortLevel::High);
+        assert_eq!(effort_for_role("coder"), EffortLevel::Medium);
+        assert_eq!(effort_for_role("debugger"), EffortLevel::Medium);
+        assert_eq!(effort_for_role("explorer"), EffortLevel::Low);
+        assert_eq!(effort_for_role("formatter"), EffortLevel::Low);
+        assert_eq!(effort_for_role("unknown"), EffortLevel::Medium);
     }
 }
