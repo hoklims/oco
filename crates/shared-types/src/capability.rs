@@ -181,6 +181,68 @@ impl CapabilityDescriptor {
             .iter()
             .all(|c| self.constraints.contains(c))
     }
+
+    /// Generate a JSON Schema tool definition compatible with Claude Code's ToolSearch.
+    ///
+    /// Maps OCO capabilities to the MCP tool schema format used by deferred tools.
+    /// The schema is minimal (name + description + empty input) — the full schema
+    /// is resolved when the tool is actually fetched via ToolSearch.
+    pub fn to_tool_schema(&self) -> serde_json::Value {
+        let tool_name = format!("oco_{}", self.id.replace(':', "_"));
+        let description = format!(
+            "{} — {}",
+            sanitize_for_prompt(&self.name),
+            self.capabilities
+                .iter()
+                .map(|c| sanitize_for_prompt(c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        serde_json::json!({
+            "name": tool_name,
+            "description": description,
+            "inputSchema": self.input_schema_for_kind(),
+        })
+    }
+
+    /// Generate a kind-specific input schema for tool definitions.
+    fn input_schema_for_kind(&self) -> serde_json::Value {
+        match &self.kind {
+            CapabilityKind::Tool { .. } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "input": { "type": "string", "description": "Input for the tool" }
+                }
+            }),
+            CapabilityKind::McpTool { server, tool_name } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "arguments": { "type": "object", "description": format!("Arguments for {server}:{tool_name}") }
+                }
+            }),
+            CapabilityKind::Agent { agent_type, .. } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": format!("Task for {agent_type} agent") }
+                },
+                "required": ["task"]
+            }),
+            CapabilityKind::Skill { skill_name } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "args": { "type": "string", "description": format!("Arguments for /{skill_name}") }
+                }
+            }),
+            CapabilityKind::LlmProvider { provider, model } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string", "description": format!("Prompt for {provider}/{model}") }
+                },
+                "required": ["prompt"]
+            }),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +507,43 @@ impl CapabilityRegistry {
             },
             available: true,
         });
+    }
+
+    /// List tool names for deferred tool registration (Claude Code ToolSearch).
+    ///
+    /// Returns just the tool names — the full schemas are fetched on demand
+    /// via `to_tool_schemas()` when ToolSearch resolves a match.
+    pub fn deferred_tool_names(&self) -> Vec<String> {
+        self.entries
+            .values()
+            .filter(|d| d.available)
+            .map(|d| format!("oco_{}", d.id.replace(':', "_")))
+            .collect()
+    }
+
+    /// Generate full JSON Schema definitions for all available capabilities.
+    ///
+    /// Used by the mcp-server's `/tools/deferred` endpoint to resolve
+    /// deferred tool schemas on demand.
+    pub fn to_tool_schemas(&self) -> Vec<serde_json::Value> {
+        self.entries
+            .values()
+            .filter(|d| d.available)
+            .map(|d| d.to_tool_schema())
+            .collect()
+    }
+
+    /// Resolve a single deferred tool by name, returning its full schema.
+    pub fn resolve_deferred_tool(&self, tool_name: &str) -> Option<serde_json::Value> {
+        let target_id = tool_name
+            .strip_prefix("oco_")
+            .unwrap_or(tool_name)
+            .replace('_', ":");
+
+        self.entries
+            .values()
+            .find(|d| d.available && d.id == target_id)
+            .map(|d| d.to_tool_schema())
     }
 
     /// Summary for context injection: list of capability IDs grouped by kind.
@@ -950,6 +1049,69 @@ mod tests {
         let json = serde_json::to_string_pretty(&reg).expect("serialize");
         let restored: CapabilityRegistry = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored.len(), 3);
+    }
+
+    // -- tool schema generation --
+
+    #[test]
+    fn to_tool_schema_for_tool() {
+        let mut reg = CapabilityRegistry::new();
+        reg.discover_tools(&[make_tool("grep", false)]);
+
+        let schema = reg.get("tool:grep").unwrap().to_tool_schema();
+        assert_eq!(schema["name"], "oco_tool_grep");
+        assert!(schema["description"].as_str().unwrap().contains("grep"));
+        assert!(schema["inputSchema"]["type"] == "object");
+    }
+
+    #[test]
+    fn to_tool_schema_for_mcp_tool() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register_mcp_tool("yoyo", "search", vec!["code_search".into()], "Yoyo search");
+
+        let schema = reg.get("mcp:yoyo:search").unwrap().to_tool_schema();
+        assert_eq!(schema["name"], "oco_mcp_yoyo_search");
+    }
+
+    #[test]
+    fn deferred_tool_names_lists_available() {
+        let mut reg = CapabilityRegistry::new();
+        reg.discover_tools(&[make_tool("grep", false)]);
+        reg.register_skill("review", vec![], CostTier::Moderate);
+        reg.register_skill("dead", vec![], CostTier::Free);
+        reg.mark_unavailable("skill:dead");
+
+        let names = reg.deferred_tool_names();
+        assert_eq!(names.len(), 2); // grep + review (not dead)
+        assert!(names.contains(&"oco_tool_grep".to_string()));
+        assert!(names.contains(&"oco_skill_review".to_string()));
+    }
+
+    #[test]
+    fn to_tool_schemas_generates_all() {
+        let mut reg = CapabilityRegistry::new();
+        reg.discover_tools(&[make_tool("grep", false)]);
+        reg.register_mcp_tool("yoyo", "search", vec![], "Search");
+
+        let schemas = reg.to_tool_schemas();
+        assert_eq!(schemas.len(), 2);
+        assert!(schemas.iter().all(|s| s["name"].is_string()));
+    }
+
+    #[test]
+    fn resolve_deferred_tool_by_name() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register_skill("review", vec!["code_review".into()], CostTier::Moderate);
+
+        let schema = reg.resolve_deferred_tool("oco_skill_review");
+        assert!(schema.is_some());
+        assert_eq!(schema.unwrap()["name"], "oco_skill_review");
+    }
+
+    #[test]
+    fn resolve_deferred_tool_missing_returns_none() {
+        let reg = CapabilityRegistry::new();
+        assert!(reg.resolve_deferred_tool("oco_nonexistent").is_none());
     }
 
     // -- cost scoring --
