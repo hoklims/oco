@@ -84,6 +84,12 @@ impl TaskClassifier {
     /// 3. Factor in workspace signals (e.g. number of files mentioned, error indicators).
     /// 4. Return the highest matching tier (with tie-breaking toward higher complexity).
     pub fn classify(request: &str, workspace_signals: &[String]) -> TaskComplexity {
+        // Empty or near-empty requests are trivial by definition.
+        let trimmed = request.trim();
+        if trimmed.is_empty() || trimmed.split_whitespace().count() <= 2 {
+            return TaskComplexity::Trivial;
+        }
+
         let lower = request.to_lowercase();
         let signal_text: String = workspace_signals
             .iter()
