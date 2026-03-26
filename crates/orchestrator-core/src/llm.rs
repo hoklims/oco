@@ -34,6 +34,10 @@ pub struct LlmRequest {
     pub max_tokens: u32,
     pub temperature: f64,
     pub system_prompt: Option<String>,
+    /// Per-request effort override from the router. Takes priority over
+    /// provider-level config in `ClaudeCodeConfig::effort`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_override: Option<oco_shared_types::EffortLevel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -471,7 +475,9 @@ impl LlmProvider for ClaudeCodeProvider {
             "--no-session-persistence",
         ]);
 
-        if let Some(effort) = &self.config.effort {
+        // Per-request effort (from LlmRouter) takes priority over config default.
+        let effective_effort = request.effort_override.or(self.config.effort);
+        if let Some(effort) = effective_effort {
             cmd.args(["--effort", effort.as_flag()]);
         }
 
@@ -482,11 +488,17 @@ impl LlmProvider for ClaudeCodeProvider {
         // Security: scrub credentials from subprocesses
         if self.config.scrub_env {
             cmd.env("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1");
+        } else {
+            // Remove any inherited value from parent process
+            cmd.env_remove("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB");
         }
 
         // Override idle watchdog for long-running steps (builds, tests)
         if let Some(idle_ms) = self.config.idle_timeout_ms {
             cmd.env("CLAUDE_STREAM_IDLE_TIMEOUT_MS", idle_ms.to_string());
+        } else {
+            // Remove any inherited value from parent process
+            cmd.env_remove("CLAUDE_STREAM_IDLE_TIMEOUT_MS");
         }
 
         debug!(
@@ -788,6 +800,7 @@ mod tests {
             max_tokens: 100,
             temperature: 0.0,
             system_prompt: None,
+            effort_override: None,
         };
         let resp = provider.complete(req).await.unwrap();
         assert!(resp.content.contains("hello"));

@@ -902,6 +902,7 @@ impl OrchestrationLoop {
                 "You are an expert coding assistant. Analyze the provided context and respond to the user's request. \
                  Be precise, cite file paths and line numbers when relevant.".into()
             ),
+            effort_override: None,
         };
 
         let response = self.llm.complete(request).await?;
@@ -1106,6 +1107,7 @@ impl StepExecutor for LoopStepExecutor {
                 "You are a {} agent. Execute the task precisely and concisely.",
                 step.agent_role.name
             )),
+            effort_override: None,
         };
 
         let response = self.llm.complete(request).await?;
