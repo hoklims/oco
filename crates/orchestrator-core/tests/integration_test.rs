@@ -268,7 +268,7 @@ async fn test_orchestrate_trivial_task() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Orchestrate complex task with workspace
+// Test 3: Orchestrate complex task with workspace (v2: plan engine)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -287,33 +287,28 @@ async fn test_orchestrate_complex_task_with_workspace() {
         .await
         .expect("complex orchestration should succeed");
 
-    // Complex task with workspace should do retrieval before responding
-    let did_retrieve = state
+    // v2: Medium+ tasks route through the plan engine (GraphRunner).
+    // The action history should contain a Plan action and a Stop action.
+    let did_plan = state
         .action_history
         .iter()
-        .any(|a| matches!(a, OrchestratorAction::Retrieve { .. }));
+        .any(|a| matches!(a, OrchestratorAction::Plan { .. }));
     assert!(
-        did_retrieve,
-        "complex task with workspace should perform retrieval"
+        did_plan,
+        "Medium+ task should route through plan engine"
     );
 
-    // Should have more steps than a trivial task (at least retrieve + respond + stop)
-    assert!(
-        state.session.step_count >= 2,
-        "complex task should take at least 2 steps, got {}",
-        state.session.step_count
-    );
+    // Should terminate with Stop
+    let did_stop = state
+        .action_history
+        .iter()
+        .any(|a| matches!(a, OrchestratorAction::Stop { .. }));
+    assert!(did_stop, "should terminate with Stop action");
 
-    // Traces should be present for every decision step
+    // Should produce observations from the plan execution
     assert!(
-        !state.traces.is_empty(),
-        "should produce decision traces for complex task"
-    );
-
-    // has_retrieved flag should be set
-    assert!(
-        state.has_retrieved,
-        "has_retrieved should be true after retrieval"
+        !state.observations.is_empty(),
+        "plan execution should produce observations"
     );
 }
 
