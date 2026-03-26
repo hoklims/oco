@@ -354,6 +354,7 @@ impl OrchestrationLoop {
             // Track whether execution actually succeeded — critical for
             // deciding whether Respond should terminate the loop.
             let action = decision.action.clone();
+            let obs_len_before = state.observations.len();
             let execution_result = self.execute_action(&action, &state).await;
 
             let duration_ms = step_start.elapsed().as_millis() as u64;
@@ -415,21 +416,25 @@ impl OrchestrationLoop {
             }
 
             // Push action to history.
-            // For Respond, fill the content from the LLM observation so that
-            // action_history accurately reflects what was generated.
+            // For Respond, fill the content from the LLM observation produced
+            // by THIS action (not a stale observation from a prior step).
             let action_to_record = if action_succeeded {
                 if let OrchestratorAction::Respond { .. } = &action {
-                    if let Some(obs) = state.observations.back() {
-                        if let ObservationKind::Text { content, .. } = &obs.kind {
-                            OrchestratorAction::Respond {
+                    state
+                        .observations
+                        .iter()
+                        .skip(obs_len_before)
+                        .rev()
+                        .find_map(|obs| match (&obs.source, &obs.kind) {
+                            (
+                                ObservationSource::LlmResponse,
+                                ObservationKind::Text { content, .. },
+                            ) => Some(OrchestratorAction::Respond {
                                 content: content.clone(),
-                            }
-                        } else {
-                            action.clone()
-                        }
-                    } else {
-                        action.clone()
-                    }
+                            }),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| action.clone())
                 } else {
                     action.clone()
                 }

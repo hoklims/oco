@@ -886,10 +886,13 @@ async fn cmd_eval(
     let metrics = oco_orchestrator_core::eval::aggregate_metrics(&results);
 
     if let Some(ref output_path) = output {
-        // Write full ScenarioResult (includes actions, errors, expected_match)
-        // for debugging. EvaluationMetrics is the reduced form for display.
-        let json = serde_json::to_string_pretty(&results)?;
-        std::fs::write(output_path, json)?;
+        // Stable envelope: metrics for dashboards, results for debugging.
+        let envelope = serde_json::json!({
+            "metrics": &metrics,
+            "results": &results,
+        });
+        let file = std::fs::File::create(output_path)?;
+        serde_json::to_writer_pretty(file, &envelope)?;
         r.emit(UiEvent::EvalSaved {
             path: output_path.clone(),
         });
