@@ -849,11 +849,9 @@ async fn cmd_eval(
         oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
 
     let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
-        "claude-code" => {
-            Arc::new(oco_orchestrator_core::llm::ClaudeCodeProvider::new(
-                oco_orchestrator_core::llm::ClaudeCodeConfig::new("sonnet"),
-            ))
-        }
+        "claude-code" => Arc::new(oco_orchestrator_core::llm::ClaudeCodeProvider::new(
+            oco_orchestrator_core::llm::ClaudeCodeConfig::new("sonnet"),
+        )),
         "anthropic" => {
             let anthropic_config =
                 oco_orchestrator_core::llm::AnthropicConfig::from_env(&config.llm.model, None)?;
@@ -862,8 +860,7 @@ async fn cmd_eval(
             )?)
         }
         "ollama" => {
-            let ollama_config =
-                oco_orchestrator_core::llm::OllamaConfig::new(&config.llm.model);
+            let ollama_config = oco_orchestrator_core::llm::OllamaConfig::new(&config.llm.model);
             Arc::new(oco_orchestrator_core::llm::OllamaProvider::new(
                 ollama_config,
             )?)
