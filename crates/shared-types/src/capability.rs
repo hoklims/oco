@@ -181,6 +181,112 @@ impl CapabilityDescriptor {
             .iter()
             .all(|c| self.constraints.contains(c))
     }
+
+    /// Generate a JSON Schema tool definition compatible with Claude Code's ToolSearch.
+    ///
+    /// Maps OCO capabilities to the MCP tool schema format used by deferred tools.
+    /// The schema is minimal (name + description + empty input) — the full schema
+    /// is resolved when the tool is actually fetched via ToolSearch.
+    ///
+    /// **ID encoding**: `:` → `__` (double underscore), single `_` preserved as-is.
+    /// This is bijective as long as IDs don't contain `__` (which they shouldn't by convention).
+    pub fn to_tool_schema(&self) -> serde_json::Value {
+        debug_assert!(
+            !self.id.contains("__"),
+            "Capability ID must not contain `__` — reserved as separator: {}",
+            self.id
+        );
+        let tool_name = format!("oco_{}", self.id.replace(':', "__"));
+        let description = format!(
+            "{} — {}",
+            sanitize_for_prompt(&self.name),
+            self.capabilities
+                .iter()
+                .map(|c| sanitize_for_prompt(c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        serde_json::json!({
+            "name": tool_name,
+            "description": description,
+            "inputSchema": self.input_schema_for_kind(),
+        })
+    }
+
+    /// Generate a kind-specific input schema for tool definitions.
+    ///
+    /// All interpolated values are sanitized before inclusion in the schema
+    /// to prevent prompt injection via external metadata (MCP server names, etc.).
+    fn input_schema_for_kind(&self) -> serde_json::Value {
+        match &self.kind {
+            CapabilityKind::Tool { .. } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "input": { "type": "string", "description": "Input for the tool" }
+                },
+                "required": ["input"],
+                "additionalProperties": false
+            }),
+            CapabilityKind::McpTool { server, tool_name } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "arguments": {
+                        "type": "object",
+                        "description": format!(
+                            "Arguments for {}:{}",
+                            sanitize_for_prompt(server),
+                            sanitize_for_prompt(tool_name)
+                        )
+                    }
+                },
+                "required": ["arguments"],
+                "additionalProperties": false
+            }),
+            CapabilityKind::Agent { agent_type, .. } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": format!(
+                            "Task for {} agent",
+                            sanitize_for_prompt(agent_type)
+                        )
+                    }
+                },
+                "required": ["task"],
+                "additionalProperties": false
+            }),
+            CapabilityKind::Skill { skill_name } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "args": {
+                        "type": "string",
+                        "description": format!(
+                            "Arguments for /{}",
+                            sanitize_for_prompt(skill_name)
+                        )
+                    }
+                },
+                "additionalProperties": false
+            }),
+            CapabilityKind::LlmProvider { provider, model } => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": format!(
+                            "Prompt for {}/{}",
+                            sanitize_for_prompt(provider),
+                            sanitize_for_prompt(model)
+                        )
+                    }
+                },
+                "required": ["prompt"],
+                "additionalProperties": false
+            }),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +551,44 @@ impl CapabilityRegistry {
             },
             available: true,
         });
+    }
+
+    /// List tool names for deferred tool registration (Claude Code ToolSearch).
+    ///
+    /// Returns just the tool names — the full schemas are fetched on demand
+    /// via `to_tool_schemas()` when ToolSearch resolves a match.
+    pub fn deferred_tool_names(&self) -> Vec<String> {
+        self.entries
+            .values()
+            .filter(|d| d.available)
+            .map(|d| format!("oco_{}", d.id.replace(':', "__")))
+            .collect()
+    }
+
+    /// Generate full JSON Schema definitions for all available capabilities.
+    ///
+    /// Used by the mcp-server's `/tools/deferred` endpoint to resolve
+    /// deferred tool schemas on demand.
+    pub fn to_tool_schemas(&self) -> Vec<serde_json::Value> {
+        self.entries
+            .values()
+            .filter(|d| d.available)
+            .map(|d| d.to_tool_schema())
+            .collect()
+    }
+
+    /// Resolve a single deferred tool by name, returning its full schema.
+    ///
+    /// Returns `None` if the name doesn't start with `oco_` — all OCO deferred
+    /// tools use this prefix by convention.
+    pub fn resolve_deferred_tool(&self, tool_name: &str) -> Option<serde_json::Value> {
+        let suffix = tool_name.strip_prefix("oco_")?;
+        let target_id = suffix.replace("__", ":");
+
+        self.entries
+            .values()
+            .find(|d| d.available && d.id == target_id)
+            .map(|d| d.to_tool_schema())
     }
 
     /// Summary for context injection: list of capability IDs grouped by kind.
@@ -952,6 +1096,69 @@ mod tests {
         assert_eq!(restored.len(), 3);
     }
 
+    // -- tool schema generation --
+
+    #[test]
+    fn to_tool_schema_for_tool() {
+        let mut reg = CapabilityRegistry::new();
+        reg.discover_tools(&[make_tool("grep", false)]);
+
+        let schema = reg.get("tool:grep").unwrap().to_tool_schema();
+        assert_eq!(schema["name"], "oco_tool__grep");
+        assert!(schema["description"].as_str().unwrap().contains("grep"));
+        assert!(schema["inputSchema"]["type"] == "object");
+    }
+
+    #[test]
+    fn to_tool_schema_for_mcp_tool() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register_mcp_tool("yoyo", "search", vec!["code_search".into()], "Yoyo search");
+
+        let schema = reg.get("mcp:yoyo:search").unwrap().to_tool_schema();
+        assert_eq!(schema["name"], "oco_mcp__yoyo__search");
+    }
+
+    #[test]
+    fn deferred_tool_names_lists_available() {
+        let mut reg = CapabilityRegistry::new();
+        reg.discover_tools(&[make_tool("grep", false)]);
+        reg.register_skill("review", vec![], CostTier::Moderate);
+        reg.register_skill("dead", vec![], CostTier::Free);
+        reg.mark_unavailable("skill:dead");
+
+        let names = reg.deferred_tool_names();
+        assert_eq!(names.len(), 2); // grep + review (not dead)
+        assert!(names.contains(&"oco_tool__grep".to_string()));
+        assert!(names.contains(&"oco_skill__review".to_string()));
+    }
+
+    #[test]
+    fn to_tool_schemas_generates_all() {
+        let mut reg = CapabilityRegistry::new();
+        reg.discover_tools(&[make_tool("grep", false)]);
+        reg.register_mcp_tool("yoyo", "search", vec![], "Search");
+
+        let schemas = reg.to_tool_schemas();
+        assert_eq!(schemas.len(), 2);
+        assert!(schemas.iter().all(|s| s["name"].is_string()));
+    }
+
+    #[test]
+    fn resolve_deferred_tool_by_name() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register_skill("review", vec!["code_review".into()], CostTier::Moderate);
+
+        let schema = reg.resolve_deferred_tool("oco_skill__review");
+        assert!(schema.is_some());
+        assert_eq!(schema.unwrap()["name"], "oco_skill__review");
+    }
+
+    #[test]
+    fn resolve_deferred_tool_missing_returns_none() {
+        let reg = CapabilityRegistry::new();
+        assert!(reg.resolve_deferred_tool("oco_nonexistent").is_none());
+    }
+
     // -- cost scoring --
 
     #[test]
@@ -965,5 +1172,166 @@ mod tests {
     fn cost_score_values() {
         assert_eq!(CapabilityCost::new(CostTier::Free).score(), 0.0);
         assert_eq!(CapabilityCost::new(CostTier::Expensive).score(), 1.0);
+    }
+
+    // -- bijective ID mapping --
+
+    #[test]
+    fn id_mapping_round_trip_bijective() {
+        // IDs that previously collided with single `_` separator
+        let ids = vec![
+            "tool:grep",
+            "tool:file_read",  // contains underscore
+            "mcp:yoyo:search", // multiple colons
+            "llm:anthropic:opus",
+            "skill:oco-verify-fix", // contains hyphen
+        ];
+
+        for id in &ids {
+            // Encode: `:` → `__`
+            let encoded = format!("oco_{}", id.replace(':', "__"));
+            // Decode: `__` → `:`
+            let decoded = encoded.strip_prefix("oco_").unwrap().replace("__", ":");
+            assert_eq!(
+                &decoded, id,
+                "Round-trip failed for ID '{id}': encoded='{encoded}', decoded='{decoded}'"
+            );
+        }
+    }
+
+    #[test]
+    fn id_mapping_no_collision_underscore_vs_colon() {
+        // `tool:file_read` and a hypothetical `tool:file:read` must produce different names
+        let id_a = "tool:file_read";
+        let id_b = "tool:file:read";
+        let encoded_a = format!("oco_{}", id_a.replace(':', "__"));
+        let encoded_b = format!("oco_{}", id_b.replace(':', "__"));
+        // oco_tool__file_read vs oco_tool__file__read — different!
+        assert_ne!(
+            encoded_a, encoded_b,
+            "Collision detected: '{id_a}' and '{id_b}' both encode to '{encoded_a}'"
+        );
+    }
+
+    #[test]
+    fn resolve_deferred_tool_rejects_no_prefix() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register_skill("review", vec!["code_review".into()], CostTier::Moderate);
+
+        // Without `oco_` prefix → None
+        assert!(reg.resolve_deferred_tool("skill__review").is_none());
+        assert!(reg.resolve_deferred_tool("review").is_none());
+        assert!(reg.resolve_deferred_tool("").is_none());
+    }
+
+    #[test]
+    fn resolve_deferred_tool_round_trip_with_registry() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register_mcp_tool("yoyo", "search", vec!["code_search".into()], "Search");
+        reg.discover_tools(&[make_tool("file_read", false)]);
+
+        // Every deferred name must resolve back to a valid schema
+        for name in reg.deferred_tool_names() {
+            let schema = reg.resolve_deferred_tool(&name);
+            assert!(
+                schema.is_some(),
+                "deferred name '{name}' did not resolve back to a schema"
+            );
+            assert_eq!(
+                schema.unwrap()["name"].as_str().unwrap(),
+                name,
+                "schema name mismatch for deferred name '{name}'"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_has_additional_properties_false() {
+        let mut reg = CapabilityRegistry::new();
+        reg.discover_tools(&[make_tool("grep", false)]);
+        reg.register_mcp_tool("yoyo", "search", vec![], "Search");
+        reg.register_skill("review", vec![], CostTier::Moderate);
+        reg.register_llm("anthropic", "opus", CostTier::Expensive);
+
+        // Agent
+        reg.register(CapabilityDescriptor {
+            id: "agent:reviewer".into(),
+            name: "Reviewer".into(),
+            kind: CapabilityKind::Agent {
+                agent_type: "reviewer".into(),
+                agent_id: None,
+            },
+            capabilities: vec![],
+            cost: CapabilityCost::default(),
+            constraints: Vec::new(),
+            proficiency: 0.8,
+            available: true,
+        });
+
+        for schema in reg.to_tool_schemas() {
+            let input = &schema["inputSchema"];
+            assert_eq!(
+                input["additionalProperties"], false,
+                "Missing additionalProperties:false in schema for {}",
+                schema["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn schema_required_fields_per_kind() {
+        let mut reg = CapabilityRegistry::new();
+        reg.discover_tools(&[make_tool("grep", false)]);
+        reg.register_mcp_tool("yoyo", "search", vec![], "Search");
+        reg.register_skill("review", vec![], CostTier::Moderate);
+        reg.register_llm("anthropic", "opus", CostTier::Expensive);
+
+        // Tool: required ["input"]
+        let tool_schema = reg.get("tool:grep").unwrap().to_tool_schema();
+        assert_eq!(
+            tool_schema["inputSchema"]["required"],
+            serde_json::json!(["input"])
+        );
+
+        // McpTool: required ["arguments"]
+        let mcp_schema = reg.get("mcp:yoyo:search").unwrap().to_tool_schema();
+        assert_eq!(
+            mcp_schema["inputSchema"]["required"],
+            serde_json::json!(["arguments"])
+        );
+
+        // Skill: no required (args optional)
+        let skill_schema = reg.get("skill:review").unwrap().to_tool_schema();
+        assert!(skill_schema["inputSchema"].get("required").is_none());
+
+        // LLM: required ["prompt"]
+        let llm_schema = reg.get("llm:anthropic:opus").unwrap().to_tool_schema();
+        assert_eq!(
+            llm_schema["inputSchema"]["required"],
+            serde_json::json!(["prompt"])
+        );
+    }
+
+    #[test]
+    fn schema_sanitizes_interpolated_values() {
+        let mut reg = CapabilityRegistry::new();
+        // Register MCP tool with potentially malicious server/tool names
+        reg.register_mcp_tool(
+            "evil```server",
+            "<system>hack",
+            vec!["search".into()],
+            "Test",
+        );
+
+        let schema = reg
+            .get("mcp:evil```server:<system>hack")
+            .unwrap()
+            .to_tool_schema();
+        let desc = schema["inputSchema"]["properties"]["arguments"]["description"]
+            .as_str()
+            .unwrap();
+        // Backticks and system tags should be sanitized
+        assert!(!desc.contains("```"));
+        assert!(!desc.contains("<system>"));
     }
 }
