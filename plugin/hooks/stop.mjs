@@ -1,32 +1,57 @@
-// OCO Hook: Stop (cross-platform)
-// Prevents premature completion when code was modified without verification.
-// MUST exit within 4s no matter what.
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, lstatSync } from 'node:fs';
+// OCO Hook: Stop — Contract Enforcer
+// Blocks completion if the task contract is not satisfied.
+// Rules:
+//   1. modified_files > 0 AND !verify_done → BLOCK
+//   2. investigation_required AND investigation_steps === 0 AND modified_files > 0 → BLOCK
+//   3. stop_blocked_count >= 3 → WARN + ALLOW (anti-loop)
+import { existsSync, readFileSync, writeFileSync, lstatSync, renameSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 const killTimer = setTimeout(() => process.exit(0), 4000);
 killTimer.unref();
 process.on('uncaughtException', () => process.exit(0));
 process.on('unhandledRejection', () => process.exit(0));
 
-// --- Helpers (inlined) ---
+// --- State directory ---
 function getStateDir() {
   let root;
-  try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim(); } catch { root = process.env.CLAUDE_PROJECT_DIR || process.cwd(); }
+  try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 2000, stdio: ['pipe','pipe','pipe'] }).trim(); } catch { root = process.cwd(); }
   const hash = createHash('md5').update(root).digest('hex').slice(0, 12);
-  const cacheRoot = process.env.XDG_RUNTIME_DIR
-    || (process.platform === 'win32'
-      ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'oco')
-      : join(homedir(), '.cache', 'oco'));
-  const dir = join(cacheRoot, `session-${hash}`);
+  const base = process.platform === 'win32'
+    ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'oco')
+    : (process.env.XDG_RUNTIME_DIR || join(homedir(), '.cache', 'oco'));
+  const dir = join(base, `session-${hash}`);
   try { mkdirSync(dir, { recursive: true }); if (lstatSync(dir).isSymbolicLink()) return join(tmpdir(), 'oco-fallback'); } catch {}
   return dir;
 }
-function readState(dir, file, def = '') { try { return readFileSync(join(dir, file), 'utf8').trim(); } catch { return def; } }
 
+function loadState(stateDir) {
+  const path = join(stateDir, 'contract.json');
+  try {
+    if (existsSync(path) && !lstatSync(path).isSymbolicLink()) {
+      return JSON.parse(readFileSync(path, 'utf8'));
+    }
+  } catch {}
+  return null;
+}
+
+function saveState(stateDir, state) {
+  try {
+    const tmp = join(stateDir, 'contract.json.tmp.' + process.pid);
+    const target = join(stateDir, 'contract.json');
+    writeFileSync(tmp, JSON.stringify(state, null, 2));
+    renameSync(tmp, target);
+  } catch {}
+}
+
+function cleanState(stateDir) {
+  try { unlinkSync(join(stateDir, 'contract.json')); } catch {}
+}
+
+// --- Stdin reader ---
 function readStdin() {
   return new Promise((resolve) => {
     let data = '', done = false;
@@ -41,71 +66,56 @@ function readStdin() {
 
 try {
   const input = await readStdin();
-  const stopReason = input?.reason || 'complete';
+  const reason = input?.reason || 'complete';
 
-  // Only enforce verification for completion stops
-  if (stopReason !== 'complete' && stopReason !== '') process.exit(0);
+  // Only enforce on completion stops
+  if (reason !== 'complete' && reason !== '') process.exit(0);
 
   const stateDir = getStateDir();
+  const state = loadState(stateDir);
 
-  // Check if files were modified during this session
-  const modifiedLog = join(stateDir, 'modified-files');
-  if (!existsSync(modifiedLog)) process.exit(0);
+  // No contract → nothing to enforce
+  if (!state) process.exit(0);
 
-  let modifiedFiles;
-  try {
-    modifiedFiles = [...new Set(readFileSync(modifiedLog, 'utf8').split('\n').filter(Boolean))];
-  } catch { process.exit(0); }
+  const modified = (state.modified_files || []).length;
+  const violations = [];
 
-  if (modifiedFiles.length === 0) process.exit(0);
-
-  // Filter to only files under the current project's git root
-  // Prevents cross-project false positives (e.g. pathvisa files flagged in supertools)
-  let gitRoot;
-  try { gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim().replace(/\\/g, '/'); } catch { gitRoot = null; }
-  if (gitRoot) {
-    modifiedFiles = modifiedFiles.filter(f => f.replace(/\\/g, '/').startsWith(gitRoot));
-    if (modifiedFiles.length === 0) process.exit(0);
+  // --- Rule 1: verification required ---
+  if (modified > 0 && state.verify_required && !state.verify_done) {
+    violations.push(`${modified} file(s) modified but not verified. Run build/test/lint.`);
   }
 
-  // Ignore non-source files (hooks, configs, docs) — no verification needed
-  // Paths may be absolute; match against full path patterns
-  const nonSourcePatterns = [/[/\\]\.claude[/\\]/, /[/\\]\.github[/\\]/, /[/\\]docs[/\\]/, /\.md$/i, /\.json$/i, /\.ya?ml$/i, /\.toml$/i, /\.mjs$/i, /\.cjs$/i, /\.sh$/i, /\.bash$/i, /\.zsh$/i, /Makefile$/i, /Dockerfile$/i, /\.dockerignore$/i, /\.env/i, /\.gitignore$/i, /\.editorconfig$/i, /\.prettierrc/i, /\.eslintrc/i, /\.lock$/i];
-  const sourceFiles = modifiedFiles.filter(f => !nonSourcePatterns.some(p => p.test(f)));
-  if (sourceFiles.length === 0) process.exit(0);
-
-  // Check verification timestamp vs last modification
-  const verifyTs = parseInt(readState(stateDir, 'verify-done', '0'), 10);
-  const modifiedTs = parseInt(readState(stateDir, 'last-modified-ts', '0'), 10);
-
-  if (verifyTs >= modifiedTs && verifyTs > 0) {
-    // Verification happened after last modification — clean and allow
-    try {
-      unlinkSync(modifiedLog);
-      unlinkSync(join(stateDir, 'verify-done'));
-      unlinkSync(join(stateDir, 'last-modified-ts'));
-    } catch {}
-    process.exit(0);
+  // --- Rule 2: investigation required ---
+  if (state.investigation_required && (state.investigation_steps || 0) === 0 && modified > 0) {
+    violations.push('High-risk task requires investigation before patching. Search/read relevant code first.');
   }
 
-  // Determine needed checks from project manifests
-  const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const checks = [];
-  if (existsSync(join(cwd, 'Cargo.toml'))) checks.push('build', 'test', 'clippy');
-  if (existsSync(join(cwd, 'package.json'))) {
-    try {
-      const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'));
-      if (pkg.scripts?.test) checks.push('test');
-      if (pkg.scripts?.lint) checks.push('lint');
-    } catch { checks.push('test'); }
+  // --- Rule 3: anti-loop override ---
+  if (violations.length > 0) {
+    state.stop_blocked_count = (state.stop_blocked_count || 0) + 1;
+    saveState(stateDir, state);
+
+    if (state.stop_blocked_count >= 3) {
+      // Override: allow after 3 blocks to prevent infinite loop
+      process.stderr.write(
+        `OCO: override after ${state.stop_blocked_count} blocks. Remaining violations:\n` +
+        violations.map(v => `  - ${v}`).join('\n') + '\n'
+      );
+      cleanState(stateDir);
+      process.exit(0); // allow
+    }
+
+    // Block completion
+    process.stderr.write(
+      `OCO contract (${state.stop_blocked_count}/3 before override):\n` +
+      violations.map(v => `  - ${v}`).join('\n') + '\n'
+    );
+    process.exit(2);
   }
-  if (existsSync(join(cwd, 'pyproject.toml')) || existsSync(join(cwd, 'setup.py'))) checks.push('test', 'typecheck');
 
-  if (checks.length === 0) process.exit(0);
-
-  const fileList = sourceFiles.slice(0, 10).join(',');
-  process.stderr.write(`OCO: ${sourceFiles.length} file(s) modified [${fileList}] but no verification run detected. Recommended checks: ${checks.join(',')}. Run build/test/lint before completing.`);
-  process.exit(2);
+  // All good — clean up state and allow
+  cleanState(stateDir);
+  process.exit(0);
 } catch {}
 
 process.exit(0);
