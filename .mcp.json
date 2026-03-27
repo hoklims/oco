@@ -1,8 +1,11 @@
 {
   "mcpServers": {
-    "oco-bridge": {
+    "oco": {
       "command": "node",
-      "args": [".claude/mcp/bridge.cjs"]
+      "args": [".claude/mcp/bridge.js"],
+      "env": {
+        "OCO_BIN": "oco"
+      }
     }
   }
 }

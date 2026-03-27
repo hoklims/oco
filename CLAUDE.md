@@ -4,7 +4,7 @@
 
 ```bash
 cargo build                              # Build all crates
-cargo test                               # Run full test suite (421+ tests)
+cargo test                               # Run full test suite (487+ tests)
 cargo run -p oco-dev-cli -- --help       # CLI help
 
 oco index ./path                         # Index a workspace
@@ -33,7 +33,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 | # | Crate | Role |
 |---|-------|------|
-| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel** |
+| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase** |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
 | 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer |
@@ -135,14 +135,14 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (421+)
-cargo test -p oco-shared-types           # 121 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level
+cargo test                               # All tests (487+)
+cargo test -p oco-shared-types           # 175 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol
 cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             #  29 tests — parser, indexer, language detection
 cargo test -p oco-retrieval              #   9 tests — FTS5, vector, hybrid ranking
 cargo test -p oco-telemetry              #  13 tests — event recording, JSONL export, hook telemetry
-cargo test -p oco-planner               #  36 tests — direct planner, LLM planner, prompt gen, team generation, retry, edge cases
+cargo test -p oco-planner               #  48 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, edge cases
 cargo test -p oco-orchestrator-core      #  62 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation
 cargo test -p oco-mcp-server             #  14 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management
 cargo test -p oco-verifier               #  32 tests — test/build/lint/typecheck runners, auto-detection

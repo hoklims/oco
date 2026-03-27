@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.6.0] — 2026-03-27
+
+### Added
+- **OCO-as-Runtime foundations** — ExecutionLease, TaskPacket, StepContract, DecisionAffordance, CounterfactualResult, WorkProtocol types in `shared-types` (#59-#68)
+- **Failure-First risk analysis** — deterministic `analyze_risks()` in `planner/risk_analysis.rs`, injected into LLM planner prompt for Medium+ tasks (#67)
+- **Counterfactual verification** — `analyze_counterfactual()` with `VerificationOutcome` enum, gates completion based on evidence (#64)
+- **Work protocols** — 3 predefined protocols (Investigation Pipeline, Hub Review, Quick Fix) with typed `RoleSpec` and `RoleArtifact` (#65)
+- **Decision affordances** — `SuggestedAction`, `BlockedAction`, `CompletionStatus` with typed `ACTION_DECLARE_COMPLETE` constant (#66)
+- **Compact response envelope** — `CompactResponse` targeting <500 tokens per MCP response (#68)
+- **Tool palette shaping** — `ExecutionPhase` enum with `for_phase()` filtering on `CapabilityRegistry` (#63)
+- **Working memory extensions** — `InspectedArea`, `PlannerState`, JSON persistence (`save_to`/`load_from`), `compact_snapshot()` (#62)
+- **MCP tools** — `oco.begin_task` (delegated execution) and `oco.working_memory` (persistent state) endpoints in bridge
+- **managed-settings.d** — Plugin installer supports drop-in fragments with auto-detection and migration (#49)
+- **StepContract validation** — GraphRunner validates step contracts before mark_completed (#61 wiring)
+- **Agent Teams wiring** — GraphRunner.with_agent_teams() enables AgentTeamsExecutor for Teammate steps (#44)
+
+### Fixed
+- **DirectPlanner token cap** — estimated_tokens capped at 50K to prevent false budget guard triggers (#43)
+- **Budget guard visibility** — BudgetWarning event emitted when steps are trimmed or dropped (#41)
+- **Flat loop token tracking** — `tokens_used` now updated in budget after each action (#42)
+- **PostToolUse hook perf** — matcher scoped to `Bash|Edit|Write|MultiEdit`, ~60% fewer process spawns
+- **MCP bridge visibility** — `.mcp.json` fixed to point to `bridge.js` (was pointing to obsolete `.cjs`)
+- **Review findings** — Windows-compatible version detection (spawnSync), atomic memory persistence, exact-match capability filtering, word-boundary keyword matching in risk analysis
+
+### Changed
+- Plugin version bumped to 0.6.0
+- Test suite: 487 tests (was 421)
+
 ## [0.5.0] — 2026-03-26
 
 ### Added
