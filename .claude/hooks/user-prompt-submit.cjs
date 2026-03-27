@@ -99,7 +99,8 @@ function handle() {
       modified_files: [],
       verify_done: false,
       verify_result: null,
-      investigation_steps: 0,
+      inspection_events_count: 0,
+      inspected_before_patch: false,
       stop_blocked_count: 0,
     };
 

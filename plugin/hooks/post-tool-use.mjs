@@ -118,7 +118,11 @@ try {
       state.verify_result = toolError ? 'fail' : 'pass';
       changed = true;
     } else if (!toolError && matchesAny(command, INVESTIGATION_PATTERNS)) {
-      state.investigation_steps = (state.investigation_steps || 0) + 1;
+      state.inspection_events_count = (state.inspection_events_count || 0) + 1;
+      // Mark inspected_before_patch if no files modified yet
+      if (!state.modified_files || state.modified_files.length === 0) {
+        state.inspected_before_patch = true;
+      }
       changed = true;
     }
   }

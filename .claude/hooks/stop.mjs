@@ -86,8 +86,8 @@ try {
   }
 
   // --- Rule 2: investigation required ---
-  if (state.investigation_required && (state.investigation_steps || 0) === 0 && modified > 0) {
-    violations.push('High-risk task requires investigation before patching. Search/read relevant code first.');
+  if (state.investigation_required && !state.inspected_before_patch && modified > 0) {
+    violations.push('High-risk task requires inspection before patching. Search/read relevant code first.');
   }
 
   // --- Rule 3: anti-loop override ---
