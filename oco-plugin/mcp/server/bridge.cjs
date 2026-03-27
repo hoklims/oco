@@ -252,6 +252,7 @@ async function searchCodebase(id, args) {
     String(limit),
     "--format",
     "json",
+    "--quiet",
   ]);
 
   if (result.error) {
@@ -309,6 +310,7 @@ async function traceError(id, args) {
       "3",
       "--format",
       "json",
+      "--quiet",
     ]);
     if (!search.error && search.stdout) {
       try {
@@ -397,6 +399,7 @@ async function collectFindings(id, args) {
     sessionId,
     "--format",
     "json",
+    "--quiet",
   ]);
 
   if (result.error) {
