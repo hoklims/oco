@@ -48,6 +48,9 @@ pub struct PlanStep {
     /// Actual output produced when completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// Step contract defining required inputs/outputs and transition guards (#61).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<crate::lease::StepContract>,
 }
 
 impl PlanStep {
@@ -64,6 +67,7 @@ impl PlanStep {
             status: StepStatus::Pending,
             estimated_tokens: 0,
             output: None,
+            contract: None,
         }
     }
 
@@ -94,6 +98,11 @@ impl PlanStep {
 
     pub fn with_estimated_tokens(mut self, tokens: u32) -> Self {
         self.estimated_tokens = tokens;
+        self
+    }
+
+    pub fn with_contract(mut self, contract: crate::lease::StepContract) -> Self {
+        self.contract = Some(contract);
         self
     }
 

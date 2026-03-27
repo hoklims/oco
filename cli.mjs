@@ -14,11 +14,12 @@ import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, rmSync, rea
 import { join, dirname, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_SRC = join(__dirname, 'plugin');
 const MANIFEST_FILE = '.oco-install-manifest.json';
+const DROPIN_FILE = 'managed-settings.d/50-oco.json';
 const VERSION = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf8')).version;
 
 // --- CLI Argument Parsing ---
@@ -76,7 +77,7 @@ async function install() {
     }
   }
 
-  // 3. Merge settings.json
+  // 3. Write settings — prefer managed-settings.d/ drop-in (Claude Code v2.1.83+)
   const fragment = JSON.parse(readFileSync(join(PLUGIN_SRC, 'settings-fragment.json'), 'utf8'));
 
   // Adjust paths for global install
@@ -84,19 +85,51 @@ async function install() {
     rewritePathsForGlobal(fragment, targetDir);
   }
 
-  const existing = existsSync(settingsPath)
-    ? JSON.parse(readFileSync(settingsPath, 'utf8'))
-    : {};
+  const dropinDir = join(targetDir, 'managed-settings.d');
+  const dropinPath = join(targetDir, DROPIN_FILE);
+  const useDropin = supportsDropin(targetDir);
 
-  const merged = mergeSettings(existing, fragment);
-  writeFileSync(settingsPath, JSON.stringify(merged, null, 2) + '\n');
-  console.log(`  merge settings.json`);
+  if (useDropin) {
+    // managed-settings.d/ drop-in — isolated, no merge conflicts
+    if (!existsSync(dropinDir)) {
+      mkdirSync(dropinDir, { recursive: true });
+    }
+    writeFileSync(dropinPath, JSON.stringify(fragment, null, 2) + '\n');
+    console.log(`  write ${DROPIN_FILE}`);
+
+    // Migrate: remove OCO entries from settings.json if present
+    if (existsSync(settingsPath)) {
+      const existing = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      const cleaned = removeOcoSettings(existing, {
+        hooks: Object.keys(fragment.hooks || {}),
+        mcpServers: Object.keys(fragment.mcpServers || {}),
+        permissionsAllow: fragment.permissions?.allow || [],
+      });
+      if (Object.keys(cleaned).length === 0) {
+        rmSync(settingsPath);
+        console.log(`  rm    settings.json (migrated to drop-in)`);
+      } else if (JSON.stringify(cleaned) !== JSON.stringify(existing)) {
+        writeFileSync(settingsPath, JSON.stringify(cleaned, null, 2) + '\n');
+        console.log(`  clean settings.json (migrated OCO entries to drop-in)`);
+      }
+    }
+  } else {
+    // Fallback: merge into settings.json (pre-v2.1.83 Claude Code)
+    const existing = existsSync(settingsPath)
+      ? JSON.parse(readFileSync(settingsPath, 'utf8'))
+      : {};
+
+    const merged = mergeSettings(existing, fragment);
+    writeFileSync(settingsPath, JSON.stringify(merged, null, 2) + '\n');
+    console.log(`  merge settings.json (managed-settings.d not available)`);
+  }
 
   // 4. Write manifest
   const manifest = {
     version: VERSION,
     installedAt: new Date().toISOString(),
     global: isGlobal,
+    settingsMode: useDropin ? 'managed-settings.d' : 'settings.json',
     files: pluginFiles,
     settingsKeys: {
       hooks: Object.keys(fragment.hooks || {}),
@@ -163,18 +196,32 @@ async function uninstall() {
     }
   }
 
-  // 3. Clean settings.json
-  const settingsPath = join(targetDir, 'settings.json');
-  if (existsSync(settingsPath)) {
-    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-    const cleaned = removeOcoSettings(settings, manifest.settingsKeys);
+  // 3. Clean settings
+  const dropinPath = join(targetDir, DROPIN_FILE);
+  if (manifest.settingsMode === 'managed-settings.d' && existsSync(dropinPath)) {
+    // Drop-in mode: just delete the fragment file
+    rmSync(dropinPath);
+    console.log(`  rm    ${DROPIN_FILE}`);
+    // Clean empty managed-settings.d/ directory
+    const dropinDir = dirname(dropinPath);
+    if (existsSync(dropinDir) && isDirEmpty(dropinDir)) {
+      rmSync(dropinDir, { recursive: true });
+      console.log(`  rmdir managed-settings.d/`);
+    }
+  } else {
+    // Legacy mode: clean settings.json
+    const settingsPath = join(targetDir, 'settings.json');
+    if (existsSync(settingsPath)) {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      const cleaned = removeOcoSettings(settings, manifest.settingsKeys);
 
-    if (Object.keys(cleaned).length === 0) {
-      rmSync(settingsPath);
-      console.log(`  rm    settings.json (empty after cleanup)`);
-    } else {
-      writeFileSync(settingsPath, JSON.stringify(cleaned, null, 2) + '\n');
-      console.log(`  clean settings.json`);
+      if (Object.keys(cleaned).length === 0) {
+        rmSync(settingsPath);
+        console.log(`  rm    settings.json (empty after cleanup)`);
+      } else {
+        writeFileSync(settingsPath, JSON.stringify(cleaned, null, 2) + '\n');
+        console.log(`  clean settings.json`);
+      }
     }
   }
 
@@ -213,6 +260,7 @@ function status() {
   console.log(`  Version:    ${manifest.version}`);
   console.log(`  Installed:  ${manifest.installedAt}`);
   console.log(`  Scope:      ${manifest.global ? 'global (~/.claude)' : 'project'}`);
+  console.log(`  Settings:   ${manifest.settingsMode || 'settings.json'}`);
   console.log(`  Files:      ${present.length}/${manifest.files.length} present`);
   if (missing.length > 0) {
     console.log(`  Missing:    ${missing.join(', ')}`);
@@ -396,6 +444,28 @@ function rewritePathsForGlobal(fragment, targetDir) {
       a => a.replace(/^\.claude\//, absPrefix + '/')
     );
   }
+}
+
+function supportsDropin(targetDir) {
+  // managed-settings.d/ is supported if:
+  // 1. The directory already exists (user/other plugin created it), OR
+  // 2. Claude Code v2.1.83+ is installed (check via `claude --version`)
+  if (existsSync(join(targetDir, 'managed-settings.d'))) return true;
+  try {
+    const res = spawnSync('claude', ['--version'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const version = (res.stdout || '').trim();
+    const match = version.match(/\bv?(\d+)\.(\d+)\.(\d+)\b/);
+    if (match) {
+      const [, major, minor, patch] = match.map(Number);
+      return major > 2 || (major === 2 && minor > 1) || (major === 2 && minor === 1 && patch >= 83);
+    }
+  } catch {}
+  return false;
 }
 
 function isDirEmpty(dir) {

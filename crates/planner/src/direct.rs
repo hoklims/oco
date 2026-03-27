@@ -29,11 +29,17 @@ impl Planner for DirectPlanner {
     ) -> Result<ExecutionPlan, PlannerError> {
         let (role, tools, verify) = role_for_category(context.task_category);
 
+        // Cap token estimate to a reasonable maximum for single-step plans.
+        // Using budget/2 raw produces 500K+ values that trigger GraphRunner's
+        // budget pre-reservation guard, silently dropping the step (fix #43).
+        const MAX_SINGLE_STEP_ESTIMATE: u64 = 50_000;
+        let estimated = (context.budget.max_total_tokens / 2).min(MAX_SINGLE_STEP_ESTIMATE);
+
         let step = PlanStep::new("execute", request)
             .with_role(role)
             .with_tools(tools)
             .with_execution(StepExecution::Inline)
-            .with_estimated_tokens((context.budget.max_total_tokens / 2) as u32);
+            .with_estimated_tokens(estimated as u32);
 
         let step = if verify { step.with_verify() } else { step };
 
@@ -54,11 +60,14 @@ impl Planner for DirectPlanner {
         );
         let (role, tools, verify) = role_for_category(context.task_category);
 
+        const MAX_SINGLE_STEP_ESTIMATE: u64 = 50_000;
+        let estimated = (context.budget.max_total_tokens / 2).min(MAX_SINGLE_STEP_ESTIMATE);
+
         let step = PlanStep::new("retry", &description)
             .with_role(role)
             .with_tools(tools)
             .with_execution(StepExecution::Inline)
-            .with_estimated_tokens((context.budget.max_total_tokens / 2) as u32);
+            .with_estimated_tokens(estimated as u32);
 
         let step = if verify { step.with_verify() } else { step };
 
@@ -209,6 +218,29 @@ mod tests {
 
         assert!(matches!(replan.strategy, PlanStrategy::Replanned { .. }));
         assert!(replan.steps[0].description.contains("assertion error"));
+    }
+
+    #[tokio::test]
+    async fn direct_plan_caps_estimated_tokens() {
+        let planner = DirectPlanner;
+        // Use a large budget that would produce an unrealistic estimate without the cap
+        let mut ctx = PlanningContext::minimal(TaskComplexity::Low, TaskCategory::General);
+        ctx.budget.max_total_tokens = 1_000_000;
+        let plan = planner.plan("explain something", &ctx).await.unwrap();
+
+        // Should be capped at 50K, not 500K (budget/2)
+        assert_eq!(plan.steps[0].estimated_tokens, 50_000);
+    }
+
+    #[tokio::test]
+    async fn direct_plan_uses_half_budget_when_small() {
+        let planner = DirectPlanner;
+        let mut ctx = PlanningContext::minimal(TaskComplexity::Trivial, TaskCategory::General);
+        ctx.budget.max_total_tokens = 20_000;
+        let plan = planner.plan("quick question", &ctx).await.unwrap();
+
+        // Budget/2 = 10K < 50K cap, so use the natural estimate
+        assert_eq!(plan.steps[0].estimated_tokens, 10_000);
     }
 
     #[test]

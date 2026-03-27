@@ -13,11 +13,13 @@ mod direct;
 mod error;
 mod llm_planner;
 mod prompt;
+pub mod risk_analysis;
 
 pub use context::PlanningContext;
 pub use direct::DirectPlanner;
 pub use error::PlannerError;
 pub use llm_planner::LlmPlanner;
+pub use risk_analysis::{FailurePreview, Risk, analyze_risks};
 
 use async_trait::async_trait;
 use oco_shared_types::{ExecutionPlan, PlanStep};

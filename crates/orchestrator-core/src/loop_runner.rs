@@ -364,6 +364,8 @@ impl OrchestrationLoop {
                 Ok(observation) => {
                     action_succeeded = true;
                     state.error_streak = 0;
+                    // Fix #42: track tokens in flat loop budget (not just metrics)
+                    state.session.budget.tokens_used += observation.token_estimate as u64;
                     state.push_observation(observation);
                 }
                 Err(e) => {
