@@ -447,11 +447,11 @@ impl CapabilityRegistry {
                 d.available
                     && d.capabilities
                         .iter()
-                        .any(|c| relevant.iter().any(|r| c.contains(r)))
+                        .any(|c| relevant.contains(&c.as_str()))
                     && !d
                         .capabilities
                         .iter()
-                        .any(|c| excluded.iter().any(|e| c.contains(e)))
+                        .any(|c| excluded.contains(&c.as_str()))
             })
             .collect()
     }

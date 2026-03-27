@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, rmSync, rea
 import { join, dirname, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_SRC = join(__dirname, 'plugin');
@@ -452,11 +452,14 @@ function supportsDropin(targetDir) {
   // 2. Claude Code v2.1.83+ is installed (check via `claude --version`)
   if (existsSync(join(targetDir, 'managed-settings.d'))) return true;
   try {
-    const version = execSync('claude --version 2>/dev/null || echo ""', {
-      encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-    }).trim();
-    // Parse version like "2.1.83" or "claude 2.1.83"
-    const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
+    const res = spawnSync('claude', ['--version'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const version = (res.stdout || '').trim();
+    const match = version.match(/\bv?(\d+)\.(\d+)\.(\d+)\b/);
     if (match) {
       const [, major, minor, patch] = match.map(Number);
       return major > 2 || (major === 2 && minor > 1) || (major === 2 && minor === 1 && patch >= 83);

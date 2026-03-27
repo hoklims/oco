@@ -8,6 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Canonical action identifier for declaring task completion.
+pub const ACTION_DECLARE_COMPLETE: &str = "declare_complete";
+
 /// Affordances returned alongside tool results.
 /// Shapes what the agent perceives as possible next actions.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -47,7 +50,7 @@ impl DecisionAffordance {
     pub fn is_completion_blocked(&self) -> bool {
         self.blocked_actions
             .iter()
-            .any(|a| a.action == "declare_complete")
+            .any(|a| a.action == ACTION_DECLARE_COMPLETE)
     }
 }
 
@@ -107,7 +110,7 @@ impl BlockedAction {
     /// Block completion because verification hasn't passed.
     pub fn block_completion_unverified() -> Self {
         Self::new(
-            "declare_complete",
+            ACTION_DECLARE_COMPLETE,
             "verification contract not satisfied",
         )
     }
@@ -115,7 +118,7 @@ impl BlockedAction {
     /// Block completion because required outputs are missing.
     pub fn block_completion_missing_output(field: &str) -> Self {
         Self::new(
-            "declare_complete",
+            ACTION_DECLARE_COMPLETE,
             format!("required output missing: {field}"),
         )
     }

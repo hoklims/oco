@@ -115,22 +115,26 @@ pub fn analyze_counterfactual(input: &CounterfactualInput) -> CounterfactualResu
     let mut remaining_alternatives = Vec::new();
     let mut confidence: f64 = 0.5; // Start neutral
 
-    // --- Check: verification ran and passed ---
-    if input.verification_passed {
-        evidence_for.push(EvidencePoint::passed(
-            "verification_suite",
-            "Build/test/lint passed after changes",
-        ));
-        confidence += 0.2;
-    } else if input.verification_ran {
-        evidence_for.push(EvidencePoint::failed(
-            "verification_suite",
-            "Verification ran but had failures",
-        ));
-        confidence -= 0.3;
-    } else {
-        missing_proof.push("No verification has been run after changes".into());
-        confidence -= 0.2;
+    // --- Check: verification outcome ---
+    match input.verification {
+        VerificationOutcome::Passed => {
+            evidence_for.push(EvidencePoint::passed(
+                "verification_suite",
+                "Build/test/lint passed after changes",
+            ));
+            confidence += 0.2;
+        }
+        VerificationOutcome::Failed => {
+            evidence_for.push(EvidencePoint::failed(
+                "verification_suite",
+                "Verification ran but had failures",
+            ));
+            confidence -= 0.3;
+        }
+        VerificationOutcome::NotRun => {
+            missing_proof.push("No verification has been run after changes".into());
+            confidence -= 0.2;
+        }
     }
 
     // --- Check: targeted tests exist for the change ---
@@ -174,7 +178,7 @@ pub fn analyze_counterfactual(input: &CounterfactualInput) -> CounterfactualResu
 
     // --- Check: risk level of the task ---
     if input.risk_score > 0.7 {
-        if !input.verification_passed {
+        if input.verification != VerificationOutcome::Passed {
             missing_proof.push("High-risk task requires verification before completion".into());
             confidence -= 0.2;
         }
@@ -190,7 +194,7 @@ pub fn analyze_counterfactual(input: &CounterfactualInput) -> CounterfactualResu
     // --- Determine recommendation ---
     let recommendation = if confidence >= 0.8 && missing_proof.is_empty() {
         Recommendation::Proceed
-    } else if confidence < 0.4 || (!missing_proof.is_empty() && !input.verification_passed) {
+    } else if confidence < 0.4 || (!missing_proof.is_empty() && input.verification != VerificationOutcome::Passed) {
         Recommendation::Block {
             reason: if !missing_proof.is_empty() {
                 missing_proof[0].clone()
@@ -217,14 +221,25 @@ pub fn analyze_counterfactual(input: &CounterfactualInput) -> CounterfactualResu
     }
 }
 
+/// Verification state as a single enum — prevents impossible states
+/// like (ran=false, passed=true).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum VerificationOutcome {
+    /// Verification has not been run.
+    #[default]
+    NotRun,
+    /// Verification ran but had failures.
+    Failed,
+    /// Verification ran and passed.
+    Passed,
+}
+
 /// Input data for counterfactual analysis.
 /// Collected from VerificationState, WorkingMemory, and risk analysis.
 #[derive(Debug, Clone, Default)]
 pub struct CounterfactualInput {
-    /// Whether any verification has been run.
-    pub verification_ran: bool,
-    /// Whether verification passed.
-    pub verification_passed: bool,
+    /// Verification outcome (single enum, no contradictory states).
+    pub verification: VerificationOutcome,
     /// Whether there's a targeted test for the specific change.
     pub has_targeted_tests: bool,
     /// Number of files modified.
@@ -246,8 +261,7 @@ mod tests {
     #[test]
     fn verified_targeted_high_confidence() {
         let input = CounterfactualInput {
-            verification_ran: true,
-            verification_passed: true,
+            verification: VerificationOutcome::Passed,
             has_targeted_tests: true,
             files_modified: 3,
             files_verified: 3,
@@ -265,8 +279,7 @@ mod tests {
     #[test]
     fn no_verification_blocks() {
         let input = CounterfactualInput {
-            verification_ran: false,
-            verification_passed: false,
+            verification: VerificationOutcome::NotRun,
             files_modified: 2,
             risk_score: 0.5,
             ..Default::default()
@@ -281,8 +294,7 @@ mod tests {
     #[test]
     fn failed_verification_low_confidence() {
         let input = CounterfactualInput {
-            verification_ran: true,
-            verification_passed: false,
+            verification: VerificationOutcome::Failed,
             files_modified: 1,
             files_verified: 1,
             risk_score: 0.5,
@@ -296,8 +308,7 @@ mod tests {
     #[test]
     fn multiple_hypotheses_reduce_confidence() {
         let input = CounterfactualInput {
-            verification_ran: true,
-            verification_passed: true,
+            verification: VerificationOutcome::Passed,
             has_targeted_tests: true,
             files_modified: 1,
             files_verified: 1,
@@ -313,8 +324,7 @@ mod tests {
     #[test]
     fn contradicting_evidence_adds_alternative() {
         let input = CounterfactualInput {
-            verification_ran: true,
-            verification_passed: true,
+            verification: VerificationOutcome::Passed,
             files_modified: 1,
             files_verified: 1,
             contradicting_evidence: 2,
@@ -329,8 +339,7 @@ mod tests {
     #[test]
     fn high_risk_unverified_blocks() {
         let input = CounterfactualInput {
-            verification_ran: false,
-            verification_passed: false,
+            verification: VerificationOutcome::NotRun,
             files_modified: 5,
             risk_score: 0.85,
             ..Default::default()
@@ -342,8 +351,7 @@ mod tests {
     #[test]
     fn partial_verification_investigates() {
         let input = CounterfactualInput {
-            verification_ran: true,
-            verification_passed: true,
+            verification: VerificationOutcome::Passed,
             has_targeted_tests: false,
             files_modified: 5,
             files_verified: 2,

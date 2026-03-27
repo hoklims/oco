@@ -10,6 +10,8 @@
  */
 
 const { spawn } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 const readline = require("readline");
 
 const OCO_BIN = process.env.OCO_BIN || "oco";
@@ -430,30 +432,11 @@ async function collectFindings(id, args) {
 }
 
 async function workingMemory(id, args) {
-  const fs = require("fs");
-  const path = require("path");
   const action = args.action || "get";
 
-  // Resolve memory file path from latest OCO run or session state
-  const ocoDir = path.join(WORKSPACE, ".oco", "runs");
-  let memoryPath;
-
-  if (fs.existsSync(ocoDir)) {
-    // Find latest run directory
-    const runs = fs.readdirSync(ocoDir)
-      .filter((d) => fs.statSync(path.join(ocoDir, d)).isDirectory())
-      .sort()
-      .reverse();
-    if (runs.length > 0) {
-      memoryPath = path.join(ocoDir, runs[0], "memory.json");
-    }
-  }
-
-  // Fallback to session state directory
-  if (!memoryPath) {
-    const stateDir = process.env.OCO_STATE_DIR || path.join(WORKSPACE, ".oco");
-    memoryPath = path.join(stateDir, "memory.json");
-  }
+  // Resolve memory path: explicit state dir > session fallback
+  const stateDir = process.env.OCO_STATE_DIR || path.join(WORKSPACE, ".oco");
+  const memoryPath = path.join(stateDir, "memory.json");
 
   // Load existing memory
   let memory = { hypotheses: [], verified_facts: [], inspected_areas: [], open_questions: [], plan: [] };
@@ -466,7 +449,7 @@ async function workingMemory(id, args) {
   const now = new Date().toISOString();
 
   switch (action) {
-    case "get":
+    case "get": {
       return respondStructured(id, {
         summary: `Working memory: ${(memory.hypotheses || []).length} hypotheses, ${(memory.verified_facts || []).length} facts, ${(memory.inspected_areas || []).length} areas inspected`,
         evidence: [memory],
@@ -476,8 +459,9 @@ async function workingMemory(id, args) {
           : "Begin investigation — add hypotheses as you explore",
         confidence: 0.9,
       });
+    }
 
-    case "add_hypothesis":
+    case "add_hypothesis": {
       if (!args.content) return error(id, -32602, "content is required for add_hypothesis");
       memory.hypotheses = memory.hypotheses || [];
       memory.hypotheses.push({
@@ -488,14 +472,16 @@ async function workingMemory(id, args) {
         created_at: now,
       });
       break;
+    }
 
-    case "add_fact":
+    case "add_fact": {
       if (!args.content) return error(id, -32602, "content is required for add_fact");
       memory.verified_facts = memory.verified_facts || [];
       memory.verified_facts.push(args.content);
       break;
+    }
 
-    case "record_inspection":
+    case "record_inspection": {
       if (!args.path) return error(id, -32602, "path is required for record_inspection");
       memory.inspected_areas = memory.inspected_areas || [];
       const existing = memory.inspected_areas.find((a) => a === args.path || a.path === args.path);
@@ -503,22 +489,28 @@ async function workingMemory(id, args) {
         memory.inspected_areas.push(args.path);
       }
       break;
+    }
 
-    case "update_plan":
+    case "update_plan": {
       if (!args.steps) return error(id, -32602, "steps is required for update_plan");
       memory.plan = args.steps;
       break;
+    }
 
     default:
       return error(id, -32602, `Unknown action: ${action}`);
   }
 
-  // Persist
+  // Persist atomically: write to temp file then rename to avoid partial writes
   try {
     const dir = path.dirname(memoryPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(memoryPath, JSON.stringify(memory, null, 2));
-  } catch { /* best effort */ }
+    const tmpPath = memoryPath + `.tmp.${process.pid}`;
+    fs.writeFileSync(tmpPath, JSON.stringify(memory, null, 2));
+    fs.renameSync(tmpPath, memoryPath);
+  } catch (err) {
+    return error(id, -32000, `Failed to persist working memory: ${err.message}`);
+  }
 
   return respondStructured(id, {
     summary: `Working memory updated (${action}): ${(memory.hypotheses || []).length} hypotheses, ${(memory.verified_facts || []).length} facts`,

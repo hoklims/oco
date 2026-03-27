@@ -70,6 +70,11 @@ impl Risk {
 pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview {
     let mut preview = FailurePreview::default();
     let request_lower = request.to_lowercase();
+    // Tokenize on word boundaries for keyword matching (avoids "authorization" matching "auth")
+    let tokens: Vec<&str> = request_lower
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|t| !t.is_empty())
+        .collect();
 
     // --- Category-specific risks ---
     match context.task_category {
@@ -152,8 +157,10 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
         _ => {}
     }
 
-    // --- Keyword-based risks ---
-    if request_lower.contains("auth") || request_lower.contains("session") || request_lower.contains("token") {
+    // --- Keyword-based risks (exact token match to avoid false positives) ---
+    let has_token = |keywords: &[&str]| tokens.iter().any(|t| keywords.contains(t));
+
+    if has_token(&["auth", "authentication", "session", "token", "login", "logout"]) {
         preview.risks.push(Risk::new(
             "auth_regression",
             "Changes to auth/session code may break authentication flows",
@@ -164,7 +171,7 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
         preview.missing_artifacts.push("Auth flow test coverage".into());
     }
 
-    if request_lower.contains("database") || request_lower.contains("migration") || request_lower.contains("schema") {
+    if has_token(&["database", "migration", "schema", "migrate", "db"]) {
         preview.risks.push(Risk::new(
             "data_loss",
             "Schema/migration changes may cause data loss or corruption",
@@ -174,7 +181,7 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
         ));
     }
 
-    if request_lower.contains("delete") || request_lower.contains("remove") || request_lower.contains("drop") {
+    if has_token(&["delete", "remove", "drop", "purge", "destroy"]) {
         preview.risks.push(Risk::new(
             "unintended_deletion",
             "Deletion may remove more than intended or break dependents",
@@ -185,7 +192,7 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
         preview.missing_artifacts.push("Dependency/caller analysis of deletion targets".into());
     }
 
-    if request_lower.contains("concurrent") || request_lower.contains("async") || request_lower.contains("parallel") {
+    if has_token(&["concurrent", "async", "parallel", "mutex", "race", "deadlock"]) {
         preview.risks.push(Risk::new(
             "race_condition",
             "Concurrent code changes may introduce race conditions",
@@ -291,7 +298,7 @@ mod tests {
     #[test]
     fn trivial_general_task_has_low_risk() {
         let ctx = PlanningContext::minimal(TaskComplexity::Trivial, TaskCategory::Explanation);
-        let preview = analyze_risks("explain what a mutex is", &ctx);
+        let preview = analyze_risks("explain what a linked list is", &ctx);
 
         assert!(preview.risks.is_empty());
         assert_eq!(preview.risk_score, 0.0);

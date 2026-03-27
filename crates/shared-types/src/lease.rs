@@ -328,10 +328,26 @@ impl StepContract {
     }
 
     /// Check if all required outputs are present in the step's output.
+    /// Tries JSON key lookup first; falls back to word-boundary matching.
     pub fn validate_outputs(&self, output: &str) -> ContractValidation {
+        let json_keys: Option<Vec<String>> = serde_json::from_str::<serde_json::Value>(output)
+            .ok()
+            .and_then(|v| v.as_object().map(|m| m.keys().cloned().collect()));
+
         let mut missing = Vec::new();
         for field in &self.requires_outputs {
-            if !output.contains(&field.name) {
+            if !field.required {
+                continue;
+            }
+            let found = if let Some(ref keys) = json_keys {
+                // Structured output: exact key match
+                keys.iter().any(|k| k == &field.name)
+            } else {
+                // Unstructured output: exact token match (split on non-alphanumeric boundaries)
+                output.split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|token| token == field.name)
+            };
+            if !found {
                 missing.push(field.name.clone());
             }
         }
