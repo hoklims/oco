@@ -97,8 +97,10 @@ try {
 
     if (state.stop_blocked_count >= 3) {
       // Override: allow after 3 blocks to prevent infinite loop
+      state.override_reason = 'max_stop_blocks_reached';
+      saveState(stateDir, state);
       process.stderr.write(
-        `OCO: override after ${state.stop_blocked_count} blocks. Remaining violations:\n` +
+        `OCO: override (${state.override_reason}). Remaining violations:\n` +
         violations.map(v => `  - ${v}`).join('\n') + '\n'
       );
       cleanState(stateDir);

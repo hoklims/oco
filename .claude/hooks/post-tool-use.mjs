@@ -104,7 +104,7 @@ try {
       }
       // Any edit invalidates previous verification
       state.verify_done = false;
-      state.verify_result = null;
+      state.verify_result = 'unknown';
       changed = true;
     }
   }
