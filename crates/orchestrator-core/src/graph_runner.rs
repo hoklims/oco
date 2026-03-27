@@ -185,6 +185,8 @@ pub struct GraphRunner {
     token_budget: u64,
     /// Tokens consumed so far.
     tokens_used: u64,
+    /// Agent Teams executor for Teammate steps (#44).
+    agent_teams: Option<crate::agent_teams::AgentTeamsExecutor>,
 }
 
 impl GraphRunner {
@@ -195,6 +197,7 @@ impl GraphRunner {
             event_tx: None,
             token_budget: 100_000,
             tokens_used: 0,
+            agent_teams: None,
         }
     }
 
@@ -205,6 +208,12 @@ impl GraphRunner {
 
     pub fn with_budget(mut self, budget: u64) -> Self {
         self.token_budget = budget;
+        self
+    }
+
+    /// Enable Agent Teams execution for Teammate steps (#44).
+    pub fn with_agent_teams(mut self) -> Self {
+        self.agent_teams = Some(crate::agent_teams::AgentTeamsExecutor::new());
         self
     }
 
@@ -367,6 +376,30 @@ impl GraphRunner {
 
             if result.success {
                 step.output = Some(result.output.clone());
+
+                // Validate step contract before allowing completion (#61 wiring)
+                if let Some(ref contract) = step.contract {
+                    let validation = contract.validate_outputs(&result.output);
+                    if let oco_shared_types::ContractValidation::Violated { missing_fields } = validation {
+                        let step_name = step.name.clone();
+                        warn!(
+                            step = %step_name,
+                            missing = ?missing_fields,
+                            "step contract violated — required outputs missing"
+                        );
+                        step.status = StepStatus::Failed {
+                            reason: format!("contract violated: missing {}", missing_fields.join(", ")),
+                        };
+                        self.emit_step_completed(
+                            result.step_id,
+                            &step_name,
+                            false,
+                            result.duration_ms,
+                            result.tokens_used,
+                        );
+                        continue;
+                    }
+                }
 
                 if step.verify_after {
                     let verify_result = self.executor.verify_step(step).await;
