@@ -1,34 +1,73 @@
-// OCO Hook: PostToolUse (cross-platform)
-// Records observations, tracks modifications and verification timestamps.
-// MUST exit within 4s no matter what.
-import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, lstatSync } from 'node:fs';
+// OCO Hook: PostToolUse — Runtime State Tracker
+// Maintains contract.json automatically. No model action needed.
+// Tracks: modified files, verification status, investigation steps.
+import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 const killTimer = setTimeout(() => process.exit(0), 4000);
 killTimer.unref();
 process.on('uncaughtException', () => process.exit(0));
 process.on('unhandledRejection', () => process.exit(0));
 
-// --- Helpers (inlined) ---
+// --- State directory ---
 function getStateDir() {
   let root;
-  try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim(); } catch { root = process.env.CLAUDE_PROJECT_DIR || process.cwd(); }
+  try { root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 2000, stdio: ['pipe','pipe','pipe'] }).trim(); } catch { root = process.cwd(); }
   const hash = createHash('md5').update(root).digest('hex').slice(0, 12);
-  const cacheRoot = process.env.XDG_RUNTIME_DIR
-    || (process.platform === 'win32'
-      ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'oco')
-      : join(homedir(), '.cache', 'oco'));
-  const dir = join(cacheRoot, `session-${hash}`);
+  const base = process.platform === 'win32'
+    ? join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'oco')
+    : (process.env.XDG_RUNTIME_DIR || join(homedir(), '.cache', 'oco'));
+  const dir = join(base, `session-${hash}`);
   try { mkdirSync(dir, { recursive: true }); if (lstatSync(dir).isSymbolicLink()) return join(tmpdir(), 'oco-fallback'); } catch {}
   return dir;
 }
-function readState(dir, file, def = '') { try { return readFileSync(join(dir, file), 'utf8').trim(); } catch { return def; } }
-function writeState(dir, file, val) { try { writeFileSync(join(dir, file), String(val)); } catch {} }
-function appendState(dir, file, val) { try { appendFileSync(join(dir, file), val + '\n'); } catch {} }
 
+function loadState(stateDir) {
+  const path = join(stateDir, 'contract.json');
+  try {
+    if (existsSync(path) && !lstatSync(path).isSymbolicLink()) {
+      return JSON.parse(readFileSync(path, 'utf8'));
+    }
+  } catch {}
+  return null;
+}
+
+function saveState(stateDir, state) {
+  try {
+    const tmp = join(stateDir, 'contract.json.tmp.' + process.pid);
+    const target = join(stateDir, 'contract.json');
+    writeFileSync(tmp, JSON.stringify(state, null, 2));
+    renameSync(tmp, target);
+  } catch {}
+}
+
+// --- Verification command detection ---
+const VERIFY_PATTERNS = [
+  /cargo\s+(test|build|check|clippy|fmt)/,
+  /(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|type-check|check)/,
+  /(?:npx\s+)?(?:vitest|jest|playwright\s+test|mocha)/,
+  /(?:python\s+-m\s+)?pytest/,
+  /mypy/, /ruff\s+check/,
+  /go\s+(?:test|build|vet)/,
+  /dotnet\s+(?:test|build)/,
+  /(?:npx\s+)?tsc(?:\s|$)/,
+  /make\s+(?:test|check|lint|build)/,
+];
+
+// --- Investigation command detection ---
+const INVESTIGATION_PATTERNS = [
+  /\b(grep|rg|find|oco\s+search|git\s+log|git\s+blame|git\s+diff|git\s+show|cat\s+|head\s+|tail\s+)\b/,
+];
+
+function matchesAny(cmd, patterns) {
+  const lower = (cmd || '').toLowerCase();
+  return patterns.some(p => p.test(lower));
+}
+
+// --- Stdin reader ---
 function readStdin() {
   return new Promise((resolve) => {
     let data = '', done = false;
@@ -48,61 +87,43 @@ try {
   if (!toolName) process.exit(0);
 
   const stateDir = getStateDir();
-  const now = Math.floor(Date.now() / 1000);
+  const state = loadState(stateDir);
 
-  // --- Telemetry: record observation (async, fire-and-forget) ---
-  try {
-    const bin = process.env.OCO_BIN || 'oco';
-    execFile(bin, ['observe', '--tool', toolName, '--status', toolError ? 'error' : 'ok', '--format', 'json'], { timeout: 3000, windowsHide: true });
-  } catch {}
+  // No contract active — nothing to track
+  if (!state) process.exit(0);
+
+  let changed = false;
 
   // --- Track modified files ---
-  if (['Edit', 'Write', 'MultiEdit'].includes(toolName)) {
+  if (['Edit', 'Write', 'MultiEdit'].includes(toolName) && !toolError) {
     const filePath = input.tool_input?.file_path || input.tool_input?.path || input.tool_input?.destination || '';
     if (filePath) {
-      appendState(stateDir, 'modified-files', filePath);
-      writeState(stateDir, 'last-modified-ts', String(now));
-    }
-  }
-
-  // --- Detect verification commands ---
-  if (!toolError && (toolName === 'Bash' || toolName === 'bash')) {
-    const command = (input.tool_input?.command || '').toLowerCase();
-    // Patterns match anywhere in the command (handles &&, ;, pipes, cd prefix, etc.)
-    // Covers npm/pnpm/yarn/bun variants, monorepo filters, and common test runners
-    const verifyPatterns = [
-      // Rust
-      /cargo\s+(test|build|check|clippy|fmt)/,
-      // JS/TS package managers — npm, pnpm, yarn, bun (with optional --filter, -w, etc.)
-      /(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|type-check|check)/,
-      /(?:npm|pnpm|yarn|bun)\s+(?:--filter\s+\S+\s+)?(?:test|build|lint|typecheck|type-check)/,
-      // Direct test runners
-      /(?:npx\s+)?(?:vitest|jest|playwright\s+test|mocha|ava)/,
-      // Python
-      /(?:python\s+-m\s+)?pytest/,
-      /mypy/, /ruff\s+check/,
-      // Go
-      /go\s+(?:test|build|vet)/,
-      // .NET
-      /dotnet\s+(?:test|build)/,
-      // TypeScript
-      /(?:npx\s+)?tsc(?:\s|$)/,
-      // Make
-      /make\s+(?:test|check|lint|build)/,
-    ];
-    for (const pat of verifyPatterns) {
-      if (pat.test(command)) {
-        writeState(stateDir, 'verify-done', String(now));
-        break;
+      if (!state.modified_files) state.modified_files = [];
+      if (!state.modified_files.includes(filePath)) {
+        state.modified_files.push(filePath);
       }
+      // Any edit invalidates previous verification
+      state.verify_done = false;
+      state.verify_result = null;
+      changed = true;
     }
   }
 
-  // --- Reset loop counter on success ---
-  if (!toolError) {
-    const loopFile = `loop-${toolName.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    writeState(stateDir, loopFile, '0');
+  // --- Bash commands: verification + investigation ---
+  if ((toolName === 'Bash' || toolName === 'bash')) {
+    const command = input.tool_input?.command || '';
+
+    if (matchesAny(command, VERIFY_PATTERNS)) {
+      state.verify_done = true;
+      state.verify_result = toolError ? 'fail' : 'pass';
+      changed = true;
+    } else if (!toolError && matchesAny(command, INVESTIGATION_PATTERNS)) {
+      state.investigation_steps = (state.investigation_steps || 0) + 1;
+      changed = true;
+    }
   }
+
+  if (changed) saveState(stateDir, state);
 } catch {}
 
 process.exit(0);
