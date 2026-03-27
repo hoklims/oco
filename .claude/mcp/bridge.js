@@ -135,6 +135,78 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: "oco.working_memory",
+    description:
+      "Query or update OCO's working memory — hypotheses, verified facts, inspected areas, planner state. " +
+      "Survives context compaction. Use to persist investigation state across long sessions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["get", "add_hypothesis", "add_fact", "record_inspection", "update_plan"],
+          description: "What to do with working memory",
+          default: "get",
+        },
+        content: {
+          type: "string",
+          description: "Content for add_hypothesis/add_fact/record_inspection",
+        },
+        confidence: {
+          type: "number",
+          description: "Confidence level 0.0-1.0 (for add_hypothesis)",
+          default: 0.5,
+        },
+        path: {
+          type: "string",
+          description: "File path (for record_inspection)",
+        },
+        steps: {
+          type: "array",
+          items: { type: "string" },
+          description: "Plan steps (for update_plan)",
+        },
+      },
+    },
+  },
+  {
+    name: "oco.begin_task",
+    description:
+      "High-level delegation: hand a task to OCO for structured execution. " +
+      "OCO plans, executes within constraints, verifies, and returns structured results " +
+      "(patch summary + trace + verification). Use instead of calling individual tools.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: {
+          type: "string",
+          description: "What needs to be done (natural language intent)",
+        },
+        mode: {
+          type: "string",
+          enum: ["delegated", "plan_only"],
+          description: "delegated = plan + execute + verify; plan_only = return plan for review",
+          default: "delegated",
+        },
+        max_steps: {
+          type: "integer",
+          description: "Maximum plan steps (default: 8)",
+          default: 8,
+        },
+        verify_required: {
+          type: "boolean",
+          description: "Require verification before completion (default: true)",
+          default: true,
+        },
+        workspace: {
+          type: "string",
+          description: "Workspace root path (defaults to cwd)",
+        },
+      },
+      required: ["task"],
+    },
+  },
 ];
 
 // --- Tool Handlers ---
@@ -150,6 +222,10 @@ async function handleToolCall(id, toolName, args) {
         return await verifyPatch(id, args);
       case "oco.collect_findings":
         return await collectFindings(id, args);
+      case "oco.begin_task":
+        return await beginTask(id, args);
+      case "oco.working_memory":
+        return await workingMemory(id, args);
       default:
         return error(id, -32601, `Unknown tool: ${toolName}`);
     }
@@ -350,6 +426,209 @@ async function collectFindings(id, args) {
       ? "Investigate unresolved errors in the session trace"
       : "Review decisions for correctness and proceed",
     confidence: errors.length === 0 ? 0.8 : 0.5,
+  });
+}
+
+async function workingMemory(id, args) {
+  const fs = require("fs");
+  const path = require("path");
+  const action = args.action || "get";
+
+  // Resolve memory file path from latest OCO run or session state
+  const ocoDir = path.join(WORKSPACE, ".oco", "runs");
+  let memoryPath;
+
+  if (fs.existsSync(ocoDir)) {
+    // Find latest run directory
+    const runs = fs.readdirSync(ocoDir)
+      .filter((d) => fs.statSync(path.join(ocoDir, d)).isDirectory())
+      .sort()
+      .reverse();
+    if (runs.length > 0) {
+      memoryPath = path.join(ocoDir, runs[0], "memory.json");
+    }
+  }
+
+  // Fallback to session state directory
+  if (!memoryPath) {
+    const stateDir = process.env.OCO_STATE_DIR || path.join(WORKSPACE, ".oco");
+    memoryPath = path.join(stateDir, "memory.json");
+  }
+
+  // Load existing memory
+  let memory = { hypotheses: [], verified_facts: [], inspected_areas: [], open_questions: [], plan: [] };
+  try {
+    if (fs.existsSync(memoryPath)) {
+      memory = JSON.parse(fs.readFileSync(memoryPath, "utf8"));
+    }
+  } catch { /* start fresh */ }
+
+  const now = new Date().toISOString();
+
+  switch (action) {
+    case "get":
+      return respondStructured(id, {
+        summary: `Working memory: ${(memory.hypotheses || []).length} hypotheses, ${(memory.verified_facts || []).length} facts, ${(memory.inspected_areas || []).length} areas inspected`,
+        evidence: [memory],
+        risks: [],
+        next_step: (memory.hypotheses || []).length > 0
+          ? "Verify or invalidate active hypotheses"
+          : "Begin investigation — add hypotheses as you explore",
+        confidence: 0.9,
+      });
+
+    case "add_hypothesis":
+      if (!args.content) return error(id, -32602, "content is required for add_hypothesis");
+      memory.hypotheses = memory.hypotheses || [];
+      memory.hypotheses.push({
+        id: crypto.randomUUID ? crypto.randomUUID() : `h-${Date.now()}`,
+        text: args.content,
+        confidence: `${Math.round((args.confidence || 0.5) * 100)}%`,
+        status: "active",
+        created_at: now,
+      });
+      break;
+
+    case "add_fact":
+      if (!args.content) return error(id, -32602, "content is required for add_fact");
+      memory.verified_facts = memory.verified_facts || [];
+      memory.verified_facts.push(args.content);
+      break;
+
+    case "record_inspection":
+      if (!args.path) return error(id, -32602, "path is required for record_inspection");
+      memory.inspected_areas = memory.inspected_areas || [];
+      const existing = memory.inspected_areas.find((a) => a === args.path || a.path === args.path);
+      if (!existing) {
+        memory.inspected_areas.push(args.path);
+      }
+      break;
+
+    case "update_plan":
+      if (!args.steps) return error(id, -32602, "steps is required for update_plan");
+      memory.plan = args.steps;
+      break;
+
+    default:
+      return error(id, -32602, `Unknown action: ${action}`);
+  }
+
+  // Persist
+  try {
+    const dir = path.dirname(memoryPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(memoryPath, JSON.stringify(memory, null, 2));
+  } catch { /* best effort */ }
+
+  return respondStructured(id, {
+    summary: `Working memory updated (${action}): ${(memory.hypotheses || []).length} hypotheses, ${(memory.verified_facts || []).length} facts`,
+    evidence: [memory],
+    risks: [],
+    next_step: "Continue investigation with updated working memory",
+    confidence: 0.9,
+  });
+}
+
+async function beginTask(id, args) {
+  const workspace = args.workspace || WORKSPACE;
+  const mode = args.mode || "delegated";
+  const maxSteps = args.max_steps || 8;
+  const verifyRequired = args.verify_required !== false;
+
+  // Delegate to OCO runtime via `oco run` with structured output
+  const ocoArgs = [
+    "run",
+    args.task,
+    "--workspace", workspace,
+    "--format", "jsonl",
+    "--quiet",
+  ];
+
+  // Add budget constraints
+  if (maxSteps) {
+    ocoArgs.push("--max-steps", String(maxSteps));
+  }
+
+  const result = await runOco(ocoArgs);
+
+  if (result.error) {
+    // OCO binary unavailable — return a task packet for manual execution
+    return respondStructured(id, {
+      summary: "OCO runtime unavailable — returning task packet for manual execution",
+      evidence: [{
+        task_packet: {
+          intent: args.task,
+          mode,
+          constraints: { max_steps: maxSteps, verify_required: verifyRequired },
+          recommended_steps: [
+            "1. Investigate: search for relevant code and understand the context",
+            "2. Plan: identify files to modify and potential risks",
+            "3. Implement: make the changes",
+            ...(verifyRequired ? ["4. Verify: run build/test/lint to confirm correctness"] : []),
+          ],
+        },
+      }],
+      risks: ["Running without OCO orchestration — no automatic verification or replanning"],
+      next_step: "Execute the task packet steps manually using standard tools",
+      confidence: 0.3,
+    });
+  }
+
+  // Parse JSONL output from `oco run`
+  const events = result.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+    .filter(Boolean);
+
+  const stepEvents = events.filter((e) => e.event === "plan_step_completed");
+  const stopped = events.find((e) => e.event === "stopped");
+  const planGenerated = events.find((e) => e.event === "plan_generated");
+  const verifyResults = events.filter((e) => e.event === "verify_gate_result");
+  const budgetWarnings = events.filter((e) => e.event === "budget_warning");
+
+  // Extract final response from step outputs
+  const outputs = stepEvents
+    .filter((e) => e.success)
+    .map((e) => e.output || e.step_name)
+    .filter(Boolean);
+
+  const failures = stepEvents
+    .filter((e) => !e.success)
+    .map((e) => `${e.step_name}: failed`);
+
+  const totalTokens = stopped?.total_tokens || 0;
+  const totalSteps = stopped?.total_steps || stepEvents.length;
+  const hasFailures = failures.length > 0;
+  const verified = verifyResults.some((v) => v.overall_passed);
+
+  // Build trace summary
+  const trace = stepEvents.map((e) => ({
+    step: e.step_name,
+    success: e.success,
+    tokens: e.tokens_used || 0,
+    duration_ms: e.duration_ms || 0,
+  }));
+
+  return respondStructured(id, {
+    summary: `Task ${hasFailures ? "partially completed" : "completed"}: ${totalSteps} step(s), ${totalTokens} tokens${verified ? ", verified ✓" : verifyRequired ? ", NOT verified ✗" : ""}`,
+    evidence: [
+      ...(planGenerated ? [{ plan: { steps: planGenerated.steps, strategy: planGenerated.strategy } }] : []),
+      { execution: { trace, outputs } },
+      ...(verifyResults.length > 0 ? [{ verification: verifyResults }] : []),
+      ...(failures.length > 0 ? [{ failures }] : []),
+    ],
+    risks: [
+      ...failures,
+      ...budgetWarnings.map((w) => `Budget: ${w.resource}`),
+      ...(verifyRequired && !verified ? ["Verification not passed — results may be incorrect"] : []),
+    ],
+    next_step: hasFailures
+      ? `Address failures: ${failures[0]}`
+      : verifyRequired && !verified
+        ? "Run verification: build/test/lint before considering complete"
+        : "Task completed and verified — safe to proceed",
+    confidence: hasFailures ? 0.4 : verified ? 0.95 : 0.7,
   });
 }
 

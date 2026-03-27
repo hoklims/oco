@@ -307,13 +307,37 @@ impl GraphRunner {
                     .flatten()
                     .collect();
                 if affordable.is_empty() {
-                    warn!("no steps affordable within remaining budget");
+                    warn!("no steps affordable within remaining budget — all steps skipped");
+                    if let Some(ref tx) = self.event_tx {
+                        let _ = tx.send(OrchestrationEvent::BudgetWarning {
+                            resource: format!(
+                                "all {} ready steps skipped: estimated {}T > remaining {}T",
+                                ready_ids.len(), batch_estimated, remaining
+                            ),
+                            utilization: if self.token_budget > 0 {
+                                self.tokens_used as f64 / self.token_budget as f64
+                            } else {
+                                1.0
+                            },
+                        });
+                    }
                     break;
                 }
-                debug!(
-                    trimmed = ready_ids.len() - affordable.len(),
-                    "budget-trimmed parallel batch"
-                );
+                let trimmed_count = ready_ids.len() - affordable.len();
+                debug!(trimmed = trimmed_count, "budget-trimmed parallel batch");
+                if trimmed_count > 0 && let Some(ref tx) = self.event_tx {
+                    let _ = tx.send(OrchestrationEvent::BudgetWarning {
+                        resource: format!(
+                            "{} of {} steps trimmed from batch: estimated {}T > 2x remaining {}T",
+                            trimmed_count, ready_ids.len(), batch_estimated, remaining
+                        ),
+                        utilization: if self.token_budget > 0 {
+                            self.tokens_used as f64 / self.token_budget as f64
+                        } else {
+                            1.0
+                        },
+                    });
+                }
                 let results = self.execute_parallel(&plan, &affordable).await;
                 self.process_results(&mut plan, results, replan_count).await;
                 continue;

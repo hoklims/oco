@@ -76,6 +76,51 @@ pub enum CostTier {
     Expensive,
 }
 
+// ---------------------------------------------------------------------------
+// ExecutionPhase — phase-aware tool palette (#63)
+// ---------------------------------------------------------------------------
+
+/// Current phase of task execution. Controls which tools are surfaced.
+/// Improving an agent = removing bad options at the right moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionPhase {
+    /// Exploration: searching, reading, understanding the codebase.
+    Explore,
+    /// Planning: designing the approach, impact analysis.
+    Plan,
+    /// Implementation: writing code, editing files.
+    Implement,
+    /// Verification: running tests, builds, lints.
+    Verify,
+    /// Review: checking work quality, security scanning.
+    Review,
+}
+
+impl ExecutionPhase {
+    /// Capability categories relevant to this phase.
+    pub fn relevant_capabilities(&self) -> &[&str] {
+        match self {
+            Self::Explore => &["code_search", "file_read", "symbol_lookup", "dependency_trace"],
+            Self::Plan => &["code_search", "file_read", "impact_analysis", "code_review"],
+            Self::Implement => &["file_edit", "shell_exec", "code_search", "file_read"],
+            Self::Verify => &["test_run", "build", "lint", "typecheck", "shell_exec"],
+            Self::Review => &["code_review", "security_scan", "file_read", "code_search"],
+        }
+    }
+
+    /// Capability categories explicitly excluded in this phase.
+    pub fn excluded_capabilities(&self) -> &[&str] {
+        match self {
+            Self::Explore => &["file_edit", "destructive"],
+            Self::Plan => &["file_edit", "destructive"],
+            Self::Implement => &["destructive"],
+            Self::Verify => &["file_edit", "destructive"],
+            Self::Review => &["file_edit", "destructive"],
+        }
+    }
+}
+
 /// Estimated cost of using a capability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityCost {
@@ -387,6 +432,33 @@ impl CapabilityRegistry {
                     }
             })
             .collect()
+    }
+
+    /// Return capabilities filtered for a specific execution phase (#63).
+    /// Includes capabilities relevant to the phase, excludes those that shouldn't
+    /// be available (e.g., file_edit during explore phase).
+    pub fn for_phase(&self, phase: ExecutionPhase) -> Vec<&CapabilityDescriptor> {
+        let relevant = phase.relevant_capabilities();
+        let excluded = phase.excluded_capabilities();
+
+        self.entries
+            .values()
+            .filter(|d| {
+                d.available
+                    && d.capabilities
+                        .iter()
+                        .any(|c| relevant.iter().any(|r| c.contains(r)))
+                    && !d
+                        .capabilities
+                        .iter()
+                        .any(|c| excluded.iter().any(|e| c.contains(e)))
+            })
+            .collect()
+    }
+
+    /// Return capability IDs for a phase — suitable for tool palette injection.
+    pub fn phase_tool_ids(&self, phase: ExecutionPhase) -> Vec<String> {
+        self.for_phase(phase).iter().map(|d| d.id.clone()).collect()
     }
 
     /// Mark a capability as unavailable (e.g., MCP server went down).
@@ -1333,5 +1405,111 @@ mod tests {
         // Backticks and system tags should be sanitized
         assert!(!desc.contains("```"));
         assert!(!desc.contains("<system>"));
+    }
+
+    // -- ExecutionPhase tests --
+
+    #[test]
+    fn phase_explore_excludes_file_edit() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register(CapabilityDescriptor {
+            id: "search".into(),
+            name: "Code Search".into(),
+            kind: CapabilityKind::Tool { executor: "search".into() },
+            capabilities: vec!["code_search".into()],
+            cost: CapabilityCost::new(CostTier::Free),
+            constraints: vec![],
+            proficiency: 0.9,
+            available: true,
+        });
+        reg.register(CapabilityDescriptor {
+            id: "editor".into(),
+            name: "File Editor".into(),
+            kind: CapabilityKind::Tool { executor: "file".into() },
+            capabilities: vec!["file_edit".into()],
+            cost: CapabilityCost::new(CostTier::Cheap),
+            constraints: vec![],
+            proficiency: 0.9,
+            available: true,
+        });
+
+        let explore_tools = reg.for_phase(ExecutionPhase::Explore);
+        let ids: Vec<&str> = explore_tools.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"search"));
+        assert!(!ids.contains(&"editor")); // file_edit excluded in explore
+    }
+
+    #[test]
+    fn phase_implement_includes_edit_and_search() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register(CapabilityDescriptor {
+            id: "search".into(),
+            name: "Code Search".into(),
+            kind: CapabilityKind::Tool { executor: "search".into() },
+            capabilities: vec!["code_search".into()],
+            cost: CapabilityCost::new(CostTier::Free),
+            constraints: vec![],
+            proficiency: 0.9,
+            available: true,
+        });
+        reg.register(CapabilityDescriptor {
+            id: "editor".into(),
+            name: "File Editor".into(),
+            kind: CapabilityKind::Tool { executor: "file".into() },
+            capabilities: vec!["file_edit".into()],
+            cost: CapabilityCost::new(CostTier::Cheap),
+            constraints: vec![],
+            proficiency: 0.9,
+            available: true,
+        });
+
+        let impl_tools = reg.for_phase(ExecutionPhase::Implement);
+        let ids: Vec<&str> = impl_tools.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"search"));
+        assert!(ids.contains(&"editor"));
+    }
+
+    #[test]
+    fn phase_verify_excludes_edit() {
+        let mut reg = CapabilityRegistry::new();
+        reg.register(CapabilityDescriptor {
+            id: "test_runner".into(),
+            name: "Test Runner".into(),
+            kind: CapabilityKind::Tool { executor: "shell".into() },
+            capabilities: vec!["test_run".into(), "shell_exec".into()],
+            cost: CapabilityCost::new(CostTier::Moderate),
+            constraints: vec![],
+            proficiency: 0.9,
+            available: true,
+        });
+        reg.register(CapabilityDescriptor {
+            id: "editor".into(),
+            name: "File Editor".into(),
+            kind: CapabilityKind::Tool { executor: "file".into() },
+            capabilities: vec!["file_edit".into()],
+            cost: CapabilityCost::new(CostTier::Cheap),
+            constraints: vec![],
+            proficiency: 0.9,
+            available: true,
+        });
+
+        let verify_tools = reg.for_phase(ExecutionPhase::Verify);
+        let ids: Vec<&str> = verify_tools.iter().map(|d| d.id.as_str()).collect();
+        assert!(ids.contains(&"test_runner"));
+        assert!(!ids.contains(&"editor"));
+    }
+
+    #[test]
+    fn phase_tool_ids_returns_strings() {
+        let reg = CapabilityRegistry::new();
+        let ids = reg.phase_tool_ids(ExecutionPhase::Explore);
+        assert!(ids.is_empty()); // empty registry
+    }
+
+    #[test]
+    fn execution_phase_relevant_capabilities() {
+        assert!(ExecutionPhase::Explore.relevant_capabilities().contains(&"code_search"));
+        assert!(ExecutionPhase::Implement.relevant_capabilities().contains(&"file_edit"));
+        assert!(ExecutionPhase::Verify.relevant_capabilities().contains(&"test_run"));
     }
 }

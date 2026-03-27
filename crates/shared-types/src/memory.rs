@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use uuid::Uuid;
 
 /// Structured working memory for an orchestration session.
@@ -20,6 +21,65 @@ pub struct WorkingMemory {
     pub plan: Vec<String>,
     /// Invalidated entries (kept for audit trail).
     pub invalidated: Vec<MemoryEntry>,
+    /// Files and symbols that have been inspected during this session.
+    #[serde(default)]
+    pub inspected_areas: Vec<InspectedArea>,
+    /// Current planner/execution state for context survival across compaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_state: Option<PlannerState>,
+}
+
+/// A code area that has been inspected during the session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InspectedArea {
+    /// File path or module path.
+    pub path: String,
+    /// Symbols found (function names, types, etc.).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub symbols: Vec<String>,
+    /// What was learned from inspecting this area.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// When this area was inspected.
+    pub inspected_at: DateTime<Utc>,
+}
+
+impl InspectedArea {
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            symbols: Vec::new(),
+            summary: None,
+            inspected_at: Utc::now(),
+        }
+    }
+
+    pub fn with_symbols(mut self, symbols: Vec<String>) -> Self {
+        self.symbols = symbols;
+        self
+    }
+
+    pub fn with_summary(mut self, summary: impl Into<String>) -> Self {
+        self.summary = Some(summary.into());
+        self
+    }
+}
+
+/// Planner execution state — survives context compaction.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlannerState {
+    /// Current step name being executed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_step: Option<String>,
+    /// Number of replans triggered so far.
+    #[serde(default)]
+    pub replan_count: u32,
+    /// Execution phase (explore, implement, verify).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// Task ID if part of a lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<Uuid>,
 }
 
 /// Severity level of a memory entry.
@@ -285,6 +345,93 @@ impl WorkingMemory {
             .collect()
     }
 
+    /// Record that a code area was inspected.
+    pub fn record_inspection(&mut self, area: InspectedArea) {
+        // Deduplicate by path — update if already inspected
+        if let Some(existing) = self.inspected_areas.iter_mut().find(|a| a.path == area.path) {
+            existing.symbols.extend(area.symbols);
+            existing.symbols.sort();
+            existing.symbols.dedup();
+            if area.summary.is_some() {
+                existing.summary = area.summary;
+            }
+            existing.inspected_at = Utc::now();
+        } else {
+            self.inspected_areas.push(area);
+        }
+    }
+
+    /// Update the planner execution state.
+    pub fn update_planner_state(&mut self, state: PlannerState) {
+        self.planner_state = Some(state);
+    }
+
+    /// Persist working memory to a JSON file.
+    pub fn save_to(&self, path: &Path) -> Result<(), std::io::Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(path, json)
+    }
+
+    /// Load working memory from a JSON file. Returns default if file doesn't exist.
+    pub fn load_from(path: &Path) -> Result<Self, std::io::Error> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let json = std::fs::read_to_string(path)?;
+        serde_json::from_str(&json)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+
+    /// Export a compact JSON snapshot suitable for MCP injection.
+    /// Keeps only active entries, omits audit trail.
+    pub fn compact_snapshot(&self) -> serde_json::Value {
+        let active_hypotheses: Vec<_> = self.hypotheses.iter()
+            .filter(|h| h.status == MemoryStatus::Active)
+            .map(|h| serde_json::json!({
+                "text": h.content,
+                "confidence": format!("{:.0}%", h.effective_confidence() * 100.0),
+                "status": "active",
+            }))
+            .collect();
+
+        let facts: Vec<_> = self.verified_facts.iter()
+            .map(|f| &f.content)
+            .collect();
+
+        let areas: Vec<_> = self.inspected_areas.iter()
+            .map(|a| &a.path)
+            .collect();
+
+        let questions: Vec<_> = self.questions.iter()
+            .map(|q| &q.content)
+            .collect();
+
+        let mut snapshot = serde_json::json!({
+            "hypotheses": active_hypotheses,
+            "verified_facts": facts,
+            "inspected_areas": areas,
+            "open_questions": questions,
+        });
+
+        if let Some(ref ps) = self.planner_state {
+            snapshot["planner_state"] = serde_json::json!({
+                "current_step": ps.current_step,
+                "replan_count": ps.replan_count,
+                "phase": ps.phase,
+            });
+        }
+
+        if !self.plan.is_empty() {
+            snapshot["plan"] = serde_json::json!(self.plan);
+        }
+
+        snapshot
+    }
+
     /// Render a compact summary of working memory for inclusion in context.
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
@@ -368,6 +515,25 @@ impl WorkingMemory {
             ));
         }
 
+        if !self.inspected_areas.is_empty() {
+            parts.push(format!(
+                "Inspected areas ({}):\n{}",
+                self.inspected_areas.len(),
+                self.inspected_areas
+                    .iter()
+                    .map(|a| {
+                        let symbols = if a.symbols.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" [{}]", a.symbols.join(", "))
+                        };
+                        format!("  - {}{}", a.path, symbols)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
         if !self.plan.is_empty() {
             parts.push(format!(
                 "Current plan:\n{}",
@@ -378,6 +544,22 @@ impl WorkingMemory {
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
+        }
+
+        if let Some(ref ps) = self.planner_state {
+            let mut state_parts = Vec::new();
+            if let Some(ref step) = ps.current_step {
+                state_parts.push(format!("step: {step}"));
+            }
+            if let Some(ref phase) = ps.phase {
+                state_parts.push(format!("phase: {phase}"));
+            }
+            if ps.replan_count > 0 {
+                state_parts.push(format!("replans: {}", ps.replan_count));
+            }
+            if !state_parts.is_empty() {
+                parts.push(format!("Planner: {}", state_parts.join(", ")));
+            }
         }
 
         if parts.is_empty() {
@@ -490,5 +672,138 @@ mod tests {
         mem.add_hypothesis(MemoryEntry::new("h1".into(), 0.5));
         mem.add_question(MemoryEntry::new("q1".into(), 0.5));
         assert_eq!(mem.active_count(), 3);
+    }
+
+    #[test]
+    fn record_inspection_deduplicates() {
+        let mut mem = WorkingMemory::default();
+        mem.record_inspection(
+            InspectedArea::new("src/auth.rs")
+                .with_symbols(vec!["login".into()])
+                .with_summary("handles JWT auth"),
+        );
+        mem.record_inspection(
+            InspectedArea::new("src/auth.rs")
+                .with_symbols(vec!["logout".into()])
+                .with_summary("updated understanding"),
+        );
+        assert_eq!(mem.inspected_areas.len(), 1);
+        assert_eq!(mem.inspected_areas[0].symbols, vec!["login", "logout"]);
+        assert_eq!(
+            mem.inspected_areas[0].summary.as_deref(),
+            Some("updated understanding")
+        );
+    }
+
+    #[test]
+    fn record_inspection_multiple_paths() {
+        let mut mem = WorkingMemory::default();
+        mem.record_inspection(InspectedArea::new("src/auth.rs"));
+        mem.record_inspection(InspectedArea::new("src/db.rs"));
+        assert_eq!(mem.inspected_areas.len(), 2);
+    }
+
+    #[test]
+    fn planner_state_updates() {
+        let mut mem = WorkingMemory::default();
+        assert!(mem.planner_state.is_none());
+        mem.update_planner_state(PlannerState {
+            current_step: Some("investigate".into()),
+            replan_count: 1,
+            phase: Some("explore".into()),
+            lease_id: None,
+        });
+        assert_eq!(
+            mem.planner_state.as_ref().unwrap().current_step.as_deref(),
+            Some("investigate")
+        );
+        assert_eq!(mem.planner_state.as_ref().unwrap().replan_count, 1);
+    }
+
+    #[test]
+    fn compact_snapshot_structure() {
+        let mut mem = WorkingMemory::default();
+        mem.add_hypothesis(MemoryEntry::new("session cookie issue".into(), 0.6));
+        mem.add_finding(MemoryEntry::new("typecheck passes".into(), 0.9));
+        let fact = MemoryEntry::new("auth test fails on refresh".into(), 1.0);
+        let fact_id = fact.id;
+        mem.add_finding(fact);
+        mem.promote_to_fact(fact_id);
+        mem.record_inspection(InspectedArea::new("api/auth/middleware.ts"));
+        mem.add_question(MemoryEntry::new("which middleware runs first?".into(), 0.5));
+        mem.update_planner_state(PlannerState {
+            current_step: Some("verify middleware chain".into()),
+            replan_count: 1,
+            phase: Some("investigate".into()),
+            lease_id: None,
+        });
+
+        let snapshot = mem.compact_snapshot();
+        assert!(snapshot["hypotheses"].is_array());
+        assert_eq!(snapshot["hypotheses"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["verified_facts"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["inspected_areas"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["open_questions"].as_array().unwrap().len(), 1);
+        assert!(snapshot["planner_state"]["current_step"].is_string());
+    }
+
+    #[test]
+    fn persistence_roundtrip() {
+        let mut mem = WorkingMemory::default();
+        mem.add_finding(MemoryEntry::new("test finding".into(), 0.7));
+        mem.record_inspection(InspectedArea::new("src/main.rs"));
+        mem.update_planner_state(PlannerState {
+            current_step: Some("step1".into()),
+            replan_count: 0,
+            phase: None,
+            lease_id: None,
+        });
+
+        let dir = std::env::temp_dir().join("oco-test-memory");
+        let path = dir.join("memory.json");
+        mem.save_to(&path).unwrap();
+
+        let loaded = WorkingMemory::load_from(&path).unwrap();
+        assert_eq!(loaded.findings.len(), 1);
+        assert_eq!(loaded.findings[0].content, "test finding");
+        assert_eq!(loaded.inspected_areas.len(), 1);
+        assert!(loaded.planner_state.is_some());
+
+        // Cleanup
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_from_nonexistent_returns_default() {
+        let path = std::path::Path::new("/tmp/oco-nonexistent-12345/memory.json");
+        let mem = WorkingMemory::load_from(path).unwrap();
+        assert_eq!(mem.active_count(), 0);
+    }
+
+    #[test]
+    fn summary_includes_inspected_areas() {
+        let mut mem = WorkingMemory::default();
+        mem.record_inspection(
+            InspectedArea::new("src/auth.rs").with_symbols(vec!["login".into(), "verify".into()]),
+        );
+        let summary = mem.summary();
+        assert!(summary.contains("Inspected areas"));
+        assert!(summary.contains("src/auth.rs"));
+        assert!(summary.contains("login, verify"));
+    }
+
+    #[test]
+    fn summary_includes_planner_state() {
+        let mut mem = WorkingMemory::default();
+        mem.update_planner_state(PlannerState {
+            current_step: Some("investigate auth".into()),
+            replan_count: 2,
+            phase: Some("explore".into()),
+            lease_id: None,
+        });
+        let summary = mem.summary();
+        assert!(summary.contains("Planner:"));
+        assert!(summary.contains("investigate auth"));
+        assert!(summary.contains("replans: 2"));
     }
 }
