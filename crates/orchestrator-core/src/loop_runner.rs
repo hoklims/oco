@@ -866,6 +866,14 @@ impl OrchestrationLoop {
             ));
         }
 
+        // Update working memory planner state after plan execution (#62 wiring)
+        state.memory.update_planner_state(oco_shared_types::PlannerState {
+            current_step: None,
+            replan_count: 0,
+            phase: Some("completed".into()),
+            lease_id: None,
+        });
+
         Ok(())
     }
 

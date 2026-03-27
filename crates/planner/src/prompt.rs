@@ -103,6 +103,7 @@ For mcp_tool mode: {{"mode": "mcp_tool", "server": "yoyo", "tool": "search"}}
 }
 
 /// Build the user message for plan generation.
+/// Includes failure-first risk analysis (#67 wiring) for Medium+ tasks.
 pub fn user_message(request: &str, context: &PlanningContext) -> String {
     let mut msg = format!("Generate an execution plan for this task:\n\n{request}");
 
@@ -111,6 +112,36 @@ pub fn user_message(request: &str, context: &PlanningContext) -> String {
             "\n\n## Prior Knowledge\n\n{}",
             context.working_memory_summary
         ));
+    }
+
+    // Inject failure-first risk analysis for non-trivial tasks (#67)
+    if context.needs_planning() {
+        let preview = crate::risk_analysis::analyze_risks(request, context);
+        if !preview.risks.is_empty() {
+            msg.push_str("\n\n## Failure-First Analysis\n\nHow this task is likely to fail if treated naively:\n");
+            for risk in &preview.risks {
+                msg.push_str(&format!(
+                    "\n- **{}** (likelihood: {:.0}%, severity: {:.0}%): {}\n  Mitigation: {}",
+                    risk.id,
+                    risk.likelihood * 100.0,
+                    risk.severity * 100.0,
+                    risk.description,
+                    risk.mitigation,
+                ));
+            }
+            if !preview.uncertainties.is_empty() {
+                msg.push_str("\n\nUncertainties:");
+                for u in &preview.uncertainties {
+                    msg.push_str(&format!("\n- {u}"));
+                }
+            }
+            if !preview.suggested_verify_gates.is_empty() {
+                msg.push_str(&format!(
+                    "\n\nIMPORTANT: Set verify_after: true on implementation steps. Suggested checks: {}",
+                    preview.suggested_verify_gates.join(", ")
+                ));
+            }
+        }
     }
 
     msg
