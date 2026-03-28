@@ -25,7 +25,12 @@ npx oco-claude-plugin uninstall        # clean removal
 - **3 agents** — `codebase-investigator`, `patch-verifier`, `refactor-reviewer`
 - **MCP tools** — composite codebase search, error tracing, patch verification, findings collection
 
-Works immediately with Node.js only. No API key required. Enhanced features available when the `oco` binary is installed.
+**Plugin-only mode** (Node.js only, no build required):
+hooks, skills, agents, and basic MCP tools work immediately. No API key required.
+
+**Full mode** (requires [Rust toolchain](https://rustup.rs) + OCO source repo):
+install the `oco` binary (`cargo install --path apps/dev-cli`) for indexed search,
+stack trace mapping, and task delegation via MCP.
 
 ## Architecture
 

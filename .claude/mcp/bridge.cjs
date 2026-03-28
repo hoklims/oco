@@ -257,10 +257,10 @@ async function searchCodebase(id, args) {
 
   if (result.error) {
     return respondStructured(id, {
-      summary: "OCO backend unavailable",
+      summary: "oco runtime not installed — indexed search unavailable",
       evidence: [],
-      risks: ["Search results may be incomplete without OCO indexing"],
-      next_step: "Use standard search tools (Grep, Glob) as fallback",
+      risks: ["The oco binary is not on PATH. Install from OCO source: cd /path/to/oco && cargo install --path apps/dev-cli"],
+      next_step: "Use Grep/Glob for text search as fallback",
       confidence: 0.0,
     });
   }
@@ -324,6 +324,14 @@ async function traceError(id, args) {
 
   const deepestFrame = frames[frames.length - 1];
   const matchedFiles = results.filter((r) => r.matches && (Array.isArray(r.matches) ? r.matches.length > 0 : true));
+  const allSearchesFailed = results.length === 0 && fileSet.length > 0;
+
+  const risks = [];
+  if (allSearchesFailed) {
+    risks.push("oco runtime not installed — codebase matching unavailable. Use Grep to locate frames manually.");
+  } else if (matchedFiles.length === 0) {
+    risks.push("No stack frames matched local files — error may originate in dependencies");
+  }
 
   return respondStructured(id, {
     summary: `Parsed ${frames.length} frame(s) across ${fileSet.length} file(s). ${matchedFiles.length} matched in codebase.`,
@@ -331,13 +339,11 @@ async function traceError(id, args) {
       { parsed_frames: frames },
       { codebase_matches: results },
     ],
-    risks: matchedFiles.length === 0
-      ? ["No stack frames matched local files — error may originate in dependencies"]
-      : [],
+    risks,
     next_step: deepestFrame
       ? `Inspect ${deepestFrame.file}:${deepestFrame.line} — deepest application frame`
       : "Review the stack trace manually",
-    confidence: matchedFiles.length > 0 ? 0.7 : 0.3,
+    confidence: matchedFiles.length > 0 ? 0.7 : allSearchesFailed ? 0.2 : 0.3,
   });
 }
 
@@ -404,9 +410,9 @@ async function collectFindings(id, args) {
 
   if (result.error) {
     return respondStructured(id, {
-      summary: "No OCO session data available",
+      summary: "oco runtime not installed — session traces unavailable",
       evidence: [],
-      risks: ["Session trace unavailable — investigation state unknown"],
+      risks: ["The oco binary is not on PATH. Install from OCO source: cd /path/to/oco && cargo install --path apps/dev-cli"],
       next_step: "Use standard investigation tools to gather evidence",
       confidence: 0.0,
     });
@@ -549,7 +555,7 @@ async function beginTask(id, args) {
   if (result.error) {
     // OCO binary unavailable — return a task packet for manual execution
     return respondStructured(id, {
-      summary: "OCO runtime unavailable — returning task packet for manual execution",
+      summary: "oco runtime not installed — returning task plan for manual execution",
       evidence: [{
         task_packet: {
           intent: args.task,
@@ -563,8 +569,8 @@ async function beginTask(id, args) {
           ],
         },
       }],
-      risks: ["Running without OCO orchestration — no automatic verification or replanning"],
-      next_step: "Execute the task packet steps manually using standard tools",
+      risks: ["The oco binary is not on PATH. Install from OCO source: cd /path/to/oco && cargo install --path apps/dev-cli"],
+      next_step: "Execute the task steps manually using standard tools",
       confidence: 0.3,
     });
   }

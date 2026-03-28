@@ -16,32 +16,44 @@ OCO is a local coprocessor that makes Claude Code smarter about your codebase:
 ### Prerequisites
 
 - [Claude Code](https://claude.ai/claude-code) installed
-- Rust toolchain (for building OCO backend)
+- Node.js >= 18
 
-### Install
+### Install the plugin
 
 ```bash
-# Build OCO backend
-cd /path/to/supertools
-cargo build --release
-
-# Add oco binary to PATH
-export PATH="$PATH:/path/to/supertools/target/release"
-
-# Install plugin (copy to your project or link globally)
-cp -r oco-plugin/.claude/ ~/.claude/  # Global install
-# OR
-cp -r oco-plugin/.claude/ .claude/    # Project-level install
+npx oco-claude-plugin install          # project-level
+npx oco-claude-plugin install --global # all projects
 ```
 
-### Verify
+This installs hooks, skills, agents, and the MCP bridge into `.claude/`.
+**It does not install the OCO runtime binary.**
+
+### What works immediately (plugin-only mode)
+
+- Safety hooks (destructive command blocking, verification enforcement)
+- 5 structured skills (`/oco-inspect-repo-area`, `/oco-verify-fix`, etc.)
+- 3 specialized agents (`codebase-investigator`, `patch-verifier`, `refactor-reviewer`)
+- MCP `verify_patch` (runs cargo/npm directly, no binary needed)
+- MCP `working_memory` (local file persistence, no binary needed)
+
+### Optional: install the runtime for full mode
+
+The OCO runtime enables indexed codebase search, stack trace mapping,
+task delegation, and session trace collection via MCP tools.
 
 ```bash
-# Check OCO binary is available
-oco --help
+# Requires Rust toolchain (https://rustup.rs) and access to the OCO source repo
+cd /path/to/oco
+cargo install --path apps/dev-cli
 
-# Start Claude Code — hooks and skills are now active
-claude
+# Verify
+oco --version
+```
+
+### Check installation
+
+```bash
+npx oco-claude-plugin doctor
 ```
 
 ## Usage
@@ -109,14 +121,22 @@ Edit `.claude/settings.json` to customize:
 | `OCO_BIN` | `oco` | Path to OCO binary |
 | `OCO_WORKSPACE` | `$PWD` | Default workspace root |
 
-## Graceful Degradation
+## Plugin-only vs Full Mode
 
-All plugin components degrade gracefully if the OCO backend is unavailable:
+| Feature | Plugin-only | Full (with runtime) |
+|---------|:-----------:|:-------------------:|
+| Safety hooks | ✓ | ✓ |
+| Skills (/oco-*) | ✓ | ✓ |
+| Agents (@codebase-investigator, etc.) | ✓ | ✓ |
+| MCP verify_patch | ✓ | ✓ |
+| MCP working_memory | ✓ | ✓ |
+| MCP search_codebase (indexed search) | fallback | ✓ |
+| MCP trace_error (stack mapping) | fallback | ✓ |
+| MCP begin_task (task delegation) | fallback | ✓ |
+| MCP collect_findings (session traces) | fallback | ✓ |
 
-- **Hooks**: Skip classification/gating, fall through silently
-- **Skills**: Work with standard Claude Code tools instead of OCO-backed search
-- **MCP tools**: Return empty results with a note to use standard tools
-- **Subagents**: Always work (they use standard Claude Code tools)
+**Fallback** means the tool returns a structured response explaining the runtime
+is not installed, with a suggestion to use standard Claude Code tools instead.
 
 ## Architecture
 
