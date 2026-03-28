@@ -142,14 +142,49 @@ async function install() {
   };
   writeFileSync(join(targetDir, MANIFEST_FILE), JSON.stringify(manifest, null, 2) + '\n');
 
-  // 5. Check for oco binary
-  const ocoAvailable = commandExists('oco');
+  console.log(`\n  Installed: ${copied} file(s), ${skipped} skipped.`);
 
-  console.log(`\n  Done! ${copied} file(s) installed, ${skipped} skipped.`);
+  // 5. Post-install diagnostic — show real mode, not just files copied
+  console.log('\n  Post-install check');
+  const ocoAvailable = commandExists('oco');
+  const allHooksOk = ['hooks/pre-tool-use.mjs', 'hooks/post-tool-use.mjs',
+    'hooks/stop.mjs', 'hooks/user-prompt-submit.cjs',
+  ].every(f => existsSync(join(targetDir, f)));
+  const bridgeOk = existsSync(join(targetDir, 'mcp/bridge.cjs'));
+  const settingsOk = existsSync(join(targetDir, DROPIN_FILE)) || existsSync(settingsPath);
+
+  const check = (ok, msg) => console.log(`    ${ok ? '✓' : '✗'} ${msg}`);
+  check(allHooksOk, '4/4 hooks');
+  check(settingsOk, useDropin ? 'managed-settings.d/50-oco.json' : 'settings.json');
+  check(bridgeOk, 'MCP bridge');
+  check(ocoAvailable, `oco binary${ocoAvailable ? '' : ' (optional — MCP tools degraded)'}`);
+
+  // Dual install warning
+  const otherDir = isGlobal ? resolveTargetSafe('project') : resolveTargetSafe('global');
+  const otherManifest = readManifest(otherDir);
+  if (otherManifest) {
+    const otherScope = isGlobal ? 'project' : 'global';
+    console.log(`\n    ⚠ Dual install: ${otherScope} also has v${otherManifest.version}`);
+    console.log(`      Project takes precedence. Run: npx oco-claude-plugin uninstall ${otherScope === 'global' ? '--global' : ''}`);
+  }
+
+  // Mode
+  let mode;
+  if (!settingsOk || !allHooksOk) mode = 'broken';
+  else if (!bridgeOk) mode = 'degraded';
+  else if (ocoAvailable) mode = 'full';
+  else mode = 'plugin';
+
+  const modeDesc = {
+    full: 'hooks + skills + MCP tools active',
+    plugin: 'hooks + skills active, MCP tools degraded without oco binary',
+    degraded: 'partial — some components missing',
+    broken: 'settings or hooks missing — plugin will not load',
+  };
+  console.log(`\n  Mode: ${mode} (${modeDesc[mode]})`);
+
   if (!ocoAvailable) {
-    console.log(`\n  Note: 'oco' binary not found on PATH.`);
-    console.log(`  Hooks and skills work without it. For full MCP support:`);
-    console.log(`    cargo install --path apps/dev-cli  (from the OCO repo)`);
+    console.log(`\n  For full MCP support: cargo install --path apps/dev-cli`);
   }
   console.log(`\n  Open Claude Code in this project to activate.\n`);
 }
