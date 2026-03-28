@@ -1,16 +1,36 @@
 // OCO Hook: PreToolUse (cross-platform)
 // Enforces tool policy gates before execution.
 // MUST exit within 4s no matter what.
+// MUST always write JSON to stdout — empty stdout = "hook error" in Claude Code.
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 
-const killTimer = setTimeout(() => process.exit(0), 4000);
+const EMPTY = '{}';
+
+// Safe exit: always flush stdout before killing the process.
+// On Windows, process.stdout.write() to a pipe is async — process.exit()
+// can kill the process before the write buffer is flushed.
+// Idempotent: multiple calls are safe (only the first one writes).
+let _exiting = false;
+function safeExit(code = 0, json = EMPTY) {
+  if (_exiting) return;
+  _exiting = true;
+  try {
+    process.stdout.write(json, () => process.exit(code));
+  } catch {
+    process.exit(code);
+  }
+  // Fallback: if callback never fires (broken pipe), force exit after 500ms
+  setTimeout(() => process.exit(code), 500).unref();
+}
+
+const killTimer = setTimeout(() => safeExit(0), 4000);
 killTimer.unref();
-process.on('uncaughtException', () => process.exit(0));
-process.on('unhandledRejection', () => process.exit(0));
+process.on('uncaughtException', () => safeExit(0));
+process.on('unhandledRejection', () => safeExit(0));
 
 // --- Helpers (inlined, no external deps) ---
 function getStateDir() {
@@ -27,7 +47,7 @@ function getStateDir() {
 }
 function readState(dir, file, def = '') { try { return readFileSync(join(dir, file), 'utf8').trim(); } catch { return def; } }
 function writeState(dir, file, val) { try { writeFileSync(join(dir, file), String(val)); } catch {} }
-function respond(obj) { process.stdout.write(JSON.stringify(obj)); }
+function respond(obj) { safeExit(0, JSON.stringify(obj)); }
 function blockWith(msg) { process.stderr.write(msg); process.exit(2); }
 
 function readStdin() {
@@ -46,7 +66,7 @@ try {
   const input = await readStdin();
   const toolName = input?.tool_name || '';
   const toolInput = input?.tool_input || {};
-  if (!toolName) process.exit(0);
+  if (!toolName) safeExit(0);
 
   const stateDir = getStateDir();
 
@@ -85,20 +105,8 @@ try {
   if (count >= 5) {
     if (count >= 8) writeState(stateDir, loopFile, '0');
     respond({ hookSpecificOutput: { additionalContext: `OCO: tool '${toolName}' called ${count} times. Possible loop — consider a different approach.` } });
-    process.exit(0);
   }
 
-  // --- OCO advanced gate check (optional, fire-and-forget on failure) ---
-  try {
-    const bin = process.env.OCO_BIN || 'oco';
-    const raw = execFileSync(bin, ['gate-check', '--tool', toolName, '--input', JSON.stringify(toolInput), '--format', 'json'], {
-      encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-    });
-    const gateResult = JSON.parse(raw);
-    if (gateResult?.decision === 'deny') {
-      blockWith(`OCO policy: ${gateResult.reason || 'denied by policy'}`);
-    }
-  } catch {}
 } catch {}
 
-process.exit(0);
+safeExit(0);

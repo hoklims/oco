@@ -1,24 +1,12 @@
 // OCO Hooks — Shared utilities (cross-platform: Windows, Linux, macOS)
 import { createHash } from 'node:crypto';
 import { execSync, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readSync, writeFileSync, appendFileSync, lstatSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 
 /** Read JSON from stdin (Claude Code pipes hook input). */
-export function readStdin() {
-  try {
-    const chunks = [];
-    const fd = 0; // stdin
-    const buf = Buffer.alloc(65536);
-    let n;
-    try { while ((n = readSync(fd, buf)) > 0) chunks.push(buf.slice(0, n)); } catch {}
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch { return {}; }
-}
-
-/** Async version using process.stdin */
-export async function readStdinAsync() {
+export async function readStdin() {
   return new Promise((resolve) => {
     let data = '';
     let resolved = false;
@@ -100,13 +88,30 @@ export function appendState(stateDir, filename, content) {
   try { appendFileSync(join(stateDir, filename), content + '\n'); } catch {}
 }
 
-/** Output structured hook response as JSON. */
+/** Safe exit: flush stdout before killing the process.
+ * On Windows, process.stdout.write() to a pipe is async — process.exit()
+ * can kill the process before the write buffer is flushed.
+ * Idempotent: multiple calls are safe (only the first one writes). */
+let _exiting = false;
+export function safeExit(code = 0, json = '{}') {
+  if (_exiting) return;
+  _exiting = true;
+  try {
+    if (code === 2) process.exit(2); // blocking: stderr already written
+    process.stdout.write(json, () => process.exit(code));
+  } catch {
+    process.exit(code);
+  }
+  setTimeout(() => process.exit(code), 500).unref();
+}
+
+/** Output structured hook response as JSON and exit. */
 export function respond(obj) {
-  process.stdout.write(JSON.stringify(obj));
+  safeExit(0, JSON.stringify(obj));
 }
 
 /** Write error to stderr (shown to Claude when exit 2). */
 export function blockWith(message) {
   process.stderr.write(message);
-  process.exit(2);
+  safeExit(2);
 }

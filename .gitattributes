@@ -1,0 +1,21 @@
+# Force LF line endings for all executable scripts and hooks.
+# Prevents CRLF corruption on Windows with core.autocrlf=true.
+
+# Plugin hooks (source of truth)
+plugin/**/*.mjs         text eol=lf
+plugin/**/*.cjs         text eol=lf
+plugin/**/*.js          text eol=lf
+plugin/**/*.sh          text eol=lf
+
+# Installed hooks (project-level)
+.claude/hooks/**/*.mjs  text eol=lf
+.claude/hooks/**/*.cjs  text eol=lf
+.claude/hooks/**/*.sh   text eol=lf
+.claude/mcp/**/*.cjs    text eol=lf
+.claude/mcp/**/*.js     text eol=lf
+
+# Dev scripts
+scripts/**/*.sh         text eol=lf
+
+# Plugin CLI
+cli.mjs                 text eol=lf
