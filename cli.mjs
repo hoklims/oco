@@ -32,6 +32,7 @@ switch (command) {
   case 'install':   await install(); break;
   case 'uninstall': await uninstall(); break;
   case 'status':    status(); break;
+  case 'doctor':    process.exit(doctor()); break;
   default:          usage(); break;
 }
 
@@ -269,6 +270,192 @@ function status() {
   console.log();
 }
 
+// --- Doctor ---
+
+function doctor() {
+  const projectDir = resolveTargetSafe('project');
+  const globalDir = resolveTargetSafe('global');
+
+  console.log(`\n  OCO Claude Code Plugin — Doctor\n`);
+
+  const issues = { errors: 0, warnings: 0 };
+  const ok = (msg) => console.log(`    ✓ ${msg}`);
+  const warn = (msg) => { console.log(`    ⚠ ${msg}`); issues.warnings++; };
+  const fail = (msg) => { console.log(`    ✗ ${msg}`); issues.errors++; };
+
+  // --- Environment ---
+  console.log('  Environment');
+  const nodeVer = process.version;
+  const nodeMajor = parseInt(nodeVer.slice(1), 10);
+  if (nodeMajor >= 18) ok(`Node.js ${nodeVer}`);
+  else fail(`Node.js ${nodeVer} (>= 18 required)`);
+
+  const claudeVer = getClaudeVersion();
+  if (claudeVer) {
+    const dropinOk = claudeVer.major > 2 || (claudeVer.major === 2 && claudeVer.minor > 1)
+      || (claudeVer.major === 2 && claudeVer.minor === 1 && claudeVer.patch >= 83);
+    if (dropinOk) ok(`Claude Code v${claudeVer.raw} (managed-settings.d supported)`);
+    else warn(`Claude Code v${claudeVer.raw} (managed-settings.d requires >= 2.1.83)`);
+  } else {
+    fail('Claude Code not found (claude --version failed)');
+  }
+
+  // --- Installation source ---
+  console.log('\n  Installation');
+  const projectManifest = readManifest(projectDir);
+  const globalManifest = readManifest(globalDir);
+  let source = 'none';
+  if (projectManifest && globalManifest) source = 'both';
+  else if (projectManifest) source = 'project';
+  else if (globalManifest) source = 'global';
+
+  if (source === 'none') {
+    fail('Not installed (no manifest found)');
+    console.log(`\n  Mode: not installed`);
+    console.log(`\n  Run: npx oco-claude-plugin install\n`);
+    return 2;
+  }
+
+  const targetDir = source === 'global' ? globalDir : projectDir;
+  const manifest = source === 'global' ? globalManifest : projectManifest;
+
+  ok(`v${manifest.version} installed ${manifest.installedAt?.slice(0, 10) || '(unknown date)'}`);
+  ok(`Source: ${source}`);
+
+  if (source === 'both') {
+    warn(`Dual install detected (global v${globalManifest.version} + project v${projectManifest.version})`);
+    console.log(`      Project takes precedence. Run: npx oco-claude-plugin uninstall --global`);
+  }
+
+  // --- Settings ---
+  const dropinPath = join(targetDir, DROPIN_FILE);
+  const settingsPath = join(targetDir, 'settings.json');
+  if (existsSync(dropinPath)) ok(`${DROPIN_FILE}`);
+  else if (existsSync(settingsPath)) warn('settings.json (legacy mode, prefer managed-settings.d)');
+  else fail('No settings found (hooks will not load)');
+
+  // --- Files ---
+  console.log('\n  Components');
+  const expectedHooks = [
+    'hooks/pre-tool-use.mjs', 'hooks/post-tool-use.mjs',
+    'hooks/stop.mjs', 'hooks/user-prompt-submit.cjs',
+  ];
+  const expectedSkills = [
+    'skills/oco-inspect-repo-area/SKILL.md', 'skills/oco-investigate-bug/SKILL.md',
+    'skills/oco-safe-refactor/SKILL.md', 'skills/oco-trace-stack/SKILL.md',
+    'skills/oco-verify-fix/SKILL.md',
+  ];
+  const expectedAgents = [
+    'agents/codebase-investigator.md', 'agents/patch-verifier.md',
+    'agents/refactor-reviewer.md',
+  ];
+
+  const checkGroup = (label, files) => {
+    const present = files.filter(f => existsSync(join(targetDir, f)));
+    const missing = files.filter(f => !existsSync(join(targetDir, f)));
+    if (missing.length === 0) ok(`${present.length}/${files.length} ${label}`);
+    else {
+      fail(`${present.length}/${files.length} ${label} (missing: ${missing.join(', ')})`);
+    }
+  };
+
+  checkGroup('hooks', expectedHooks);
+  checkGroup('skills', expectedSkills);
+  checkGroup('agents', expectedAgents);
+
+  if (existsSync(join(targetDir, 'hooks/lib/utils.mjs'))) ok('hooks/lib/utils.mjs');
+  else warn('hooks/lib/utils.mjs missing');
+
+  if (existsSync(join(targetDir, 'mcp/bridge.cjs'))) ok('MCP bridge');
+  else warn('MCP bridge missing (mcp/bridge.cjs)');
+
+  // --- Optional: oco binary ---
+  const ocoAvailable = commandExists('oco');
+  if (ocoAvailable) ok('oco binary found');
+  else warn('oco binary not found (optional — MCP tools degraded)');
+
+  // --- Version match ---
+  if (manifest.version !== VERSION) {
+    warn(`Installed v${manifest.version}, available v${VERSION} — run: npx oco-claude-plugin install --force`);
+  }
+
+  // --- Conflicts ---
+  console.log('\n  Conflicts');
+  if (source !== 'both') ok('No global/project duplicates');
+
+  // Check for orphan files
+  const orphanMjs = join(targetDir, 'hooks/user-prompt-submit.mjs');
+  if (existsSync(orphanMjs)) warn('Orphan hooks/user-prompt-submit.mjs found (only .cjs is active)');
+  const legacyScripts = join(targetDir, 'hooks/scripts');
+  if (existsSync(legacyScripts)) warn('Legacy hooks/scripts/ directory found (unused)');
+
+  // --- Mode ---
+  const allHooksOk = expectedHooks.every(f => existsSync(join(targetDir, f)));
+  const settingsOk = existsSync(dropinPath) || existsSync(settingsPath);
+  const bridgeOk = existsSync(join(targetDir, 'mcp/bridge.cjs'));
+
+  let mode;
+  if (!settingsOk || !allHooksOk) mode = 'broken';
+  else if (!bridgeOk || issues.errors > 0) mode = 'degraded';
+  else if (ocoAvailable) mode = 'full';
+  else mode = 'plugin';
+
+  const modeDescriptions = {
+    full: 'hooks + skills + MCP tools active',
+    plugin: 'hooks + skills active, MCP tools degraded without oco binary',
+    degraded: 'partial — some components missing',
+    broken: 'settings or hooks missing — plugin will not load',
+  };
+
+  console.log(`\n  Mode: ${mode} (${modeDescriptions[mode]})`);
+
+  if (mode === 'broken') {
+    console.log(`\n  Run: npx oco-claude-plugin repair`);
+  } else if (mode === 'degraded') {
+    console.log(`\n  Run: npx oco-claude-plugin repair`);
+  } else if (!ocoAvailable) {
+    console.log(`\n  For full MCP support: cargo install --path apps/dev-cli`);
+  }
+
+  console.log();
+
+  // Exit codes: 0 = ok, 1 = warnings/degraded, 2 = broken
+  if (mode === 'broken') return 2;
+  if (issues.warnings > 0 || mode === 'degraded') return 1;
+  return 0;
+}
+
+function readManifest(dir) {
+  const p = join(dir, MANIFEST_FILE);
+  try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; }
+}
+
+function resolveTargetSafe(kind) {
+  if (kind === 'global') return join(homedir(), '.claude');
+  try {
+    const root = findProjectRoot(process.cwd());
+    return join(root, '.claude');
+  } catch {
+    return join(process.cwd(), '.claude');
+  }
+}
+
+function getClaudeVersion() {
+  try {
+    const res = spawnSync('claude', ['--version'], {
+      encoding: 'utf8', timeout: 3000, windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const version = (res.stdout || '').trim();
+    const match = version.match(/\bv?(\d+)\.(\d+)\.(\d+)\b/);
+    if (match) {
+      const [, major, minor, patch] = match.map(Number);
+      return { major, minor, patch, raw: `${major}.${minor}.${patch}` };
+    }
+  } catch {}
+  return null;
+}
+
 // --- Helpers ---
 
 function usage() {
@@ -279,14 +466,19 @@ function usage() {
     oco-plugin install   [--global] [--force]   Install plugin
     oco-plugin uninstall [--global]              Remove plugin
     oco-plugin status    [--global]              Check installation
+    oco-plugin doctor    [--global]              Diagnose installation
+    oco-plugin repair    [--global] [--dry-run]  Fix common issues
 
   Options:
-    --global, -g   Install to ~/.claude/ (all projects)
+    --global, -g   Target ~/.claude/ (all projects)
     --force, -f    Overwrite existing files
+    --dry-run      Show what would be fixed without changing anything
 
   Examples:
     npx oco-claude-plugin install          # project-level
     npx oco-claude-plugin install -g       # global
+    npx oco-claude-plugin doctor           # check health
+    npx oco-claude-plugin repair           # fix issues
     npx oco-claude-plugin uninstall        # clean removal
 `);
 }
@@ -447,25 +639,11 @@ function rewritePathsForGlobal(fragment, targetDir) {
 }
 
 function supportsDropin(targetDir) {
-  // managed-settings.d/ is supported if:
-  // 1. The directory already exists (user/other plugin created it), OR
-  // 2. Claude Code v2.1.83+ is installed (check via `claude --version`)
   if (existsSync(join(targetDir, 'managed-settings.d'))) return true;
-  try {
-    const res = spawnSync('claude', ['--version'], {
-      encoding: 'utf8',
-      timeout: 3000,
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    const version = (res.stdout || '').trim();
-    const match = version.match(/\bv?(\d+)\.(\d+)\.(\d+)\b/);
-    if (match) {
-      const [, major, minor, patch] = match.map(Number);
-      return major > 2 || (major === 2 && minor > 1) || (major === 2 && minor === 1 && patch >= 83);
-    }
-  } catch {}
-  return false;
+  const ver = getClaudeVersion();
+  if (!ver) return false;
+  return ver.major > 2 || (ver.major === 2 && ver.minor > 1)
+    || (ver.major === 2 && ver.minor === 1 && ver.patch >= 83);
 }
 
 function isDirEmpty(dir) {
