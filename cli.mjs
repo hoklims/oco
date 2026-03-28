@@ -22,6 +22,41 @@ const MANIFEST_FILE = '.oco-install-manifest.json';
 const DROPIN_FILE = 'managed-settings.d/50-oco.json';
 const VERSION = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf8')).version;
 
+const MODE_DESCRIPTIONS = {
+  full: 'plugin + runtime — all features active',
+  'plugin-only': 'plugin installed, runtime not found — hooks, skills, agents work; MCP tools return fallback results',
+  incomplete: 'some plugin files missing — run: npx oco-claude-plugin repair',
+  broken: 'settings or hooks missing — plugin will not load, run: npx oco-claude-plugin install --force',
+};
+
+function resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable }) {
+  if (!settingsOk || !allHooksOk) return 'broken';
+  if (!bridgeOk) return 'incomplete';
+  if (ocoAvailable) return 'full';
+  return 'plugin-only';
+}
+
+function getOcoVersion() {
+  try {
+    const res = spawnSync('oco', ['--version'], {
+      encoding: 'utf8', timeout: 3000, windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const match = (res.stdout || '').trim().match(/\b(\d+\.\d+\.\d+)/);
+    return match ? match[1] : null;
+  } catch { return null; }
+}
+
+function checkOcoUsable() {
+  try {
+    const res = spawnSync('oco', ['--help'], {
+      encoding: 'utf8', timeout: 5000, windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return res.status === 0;
+  } catch { return false; }
+}
+
 // --- CLI Argument Parsing ---
 
 const [,, command, ...args] = process.argv;
@@ -145,8 +180,8 @@ async function install() {
   console.log(`\n  Installed: ${copied} file(s), ${skipped} skipped.`);
 
   // 5. Post-install diagnostic — show real mode, not just files copied
-  console.log('\n  Post-install check');
   const ocoAvailable = commandExists('oco');
+  const ocoVersion = ocoAvailable ? getOcoVersion() : null;
   const allHooksOk = ['hooks/pre-tool-use.mjs', 'hooks/post-tool-use.mjs',
     'hooks/stop.mjs', 'hooks/user-prompt-submit.cjs',
   ].every(f => existsSync(join(targetDir, f)));
@@ -154,10 +189,18 @@ async function install() {
   const settingsOk = existsSync(join(targetDir, DROPIN_FILE)) || existsSync(settingsPath);
 
   const check = (ok, msg) => console.log(`    ${ok ? '✓' : '✗'} ${msg}`);
+
+  console.log('\n  Plugin layer');
   check(allHooksOk, '4/4 hooks');
   check(settingsOk, useDropin ? 'managed-settings.d/50-oco.json' : 'settings.json');
   check(bridgeOk, 'MCP bridge');
-  check(ocoAvailable, `oco binary${ocoAvailable ? '' : ' (optional — MCP tools degraded)'}`);
+
+  console.log('\n  Runtime layer');
+  if (ocoAvailable) {
+    check(true, `oco binary found${ocoVersion ? ` (v${ocoVersion})` : ''}`);
+  } else {
+    check(false, 'oco binary not found');
+  }
 
   // Dual install warning
   const otherDir = isGlobal ? resolveTargetSafe('project') : resolveTargetSafe('global');
@@ -169,22 +212,22 @@ async function install() {
   }
 
   // Mode
-  let mode;
-  if (!settingsOk || !allHooksOk) mode = 'broken';
-  else if (!bridgeOk) mode = 'degraded';
-  else if (ocoAvailable) mode = 'full';
-  else mode = 'plugin';
+  const mode = resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable });
+  console.log(`\n  Mode: ${mode} (${MODE_DESCRIPTIONS[mode]})`);
 
-  const modeDesc = {
-    full: 'hooks + skills + MCP tools active',
-    plugin: 'hooks + skills active, MCP tools degraded without oco binary',
-    degraded: 'partial — some components missing',
-    broken: 'settings or hooks missing — plugin will not load',
-  };
-  console.log(`\n  Mode: ${mode} (${modeDesc[mode]})`);
+  if (mode === 'plugin-only') {
+    console.log(`
+  What works now:
+    • Safety hooks (destructive command blocking, verification enforcement)
+    • 5 skills (/oco-inspect-repo-area, /oco-verify-fix, etc.)
+    • 3 agents (codebase-investigator, patch-verifier, refactor-reviewer)
+    • MCP verify_patch and working_memory (no binary needed)
 
-  if (!ocoAvailable) {
-    console.log(`\n  For full MCP support: cargo install --path apps/dev-cli`);
+  What needs the oco binary:
+    • MCP search_codebase, trace_error, begin_task, collect_findings
+
+  To install the runtime (requires Rust toolchain and access to OCO source):
+    cd /path/to/oco && cargo install --path apps/dev-cli`);
   }
   console.log(`\n  Open Claude Code in this project to activate.\n`);
 }
@@ -303,7 +346,16 @@ function status() {
   if (missing.length > 0) {
     console.log(`  Missing:    ${missing.join(', ')}`);
   }
-  console.log(`  OCO binary: ${ocoAvailable ? 'found' : 'not found (optional)'}`);
+  const ocoVersion = ocoAvailable ? getOcoVersion() : null;
+  console.log(`  Runtime:    ${ocoAvailable ? `found${ocoVersion ? ` (v${ocoVersion})` : ''}` : 'not installed'}`);
+
+  const allHooksOk = ['hooks/pre-tool-use.mjs', 'hooks/post-tool-use.mjs',
+    'hooks/stop.mjs', 'hooks/user-prompt-submit.cjs',
+  ].every(f => existsSync(join(targetDir, f)));
+  const settingsOk = existsSync(join(targetDir, DROPIN_FILE)) || existsSync(join(targetDir, 'settings.json'));
+  const bridgeOk = existsSync(join(targetDir, 'mcp/bridge.cjs'));
+  const mode = resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable });
+  console.log(`  Mode:       ${mode}`);
   console.log();
 }
 
@@ -371,8 +423,8 @@ function doctor() {
   else if (existsSync(settingsPath)) warn('settings.json (legacy mode, prefer managed-settings.d)');
   else fail('No settings found (hooks will not load)');
 
-  // --- Files ---
-  console.log('\n  Components');
+  // --- Plugin layer ---
+  console.log('\n  Plugin layer');
   const expectedHooks = [
     'hooks/pre-tool-use.mjs', 'hooks/post-tool-use.mjs',
     'hooks/stop.mjs', 'hooks/user-prompt-submit.cjs',
@@ -406,14 +458,29 @@ function doctor() {
   if (existsSync(join(targetDir, 'mcp/bridge.cjs'))) ok('MCP bridge');
   else warn('MCP bridge missing (mcp/bridge.cjs)');
 
-  // --- Optional: oco binary ---
-  const ocoAvailable = commandExists('oco');
-  if (ocoAvailable) ok('oco binary found');
-  else warn('oco binary not found (optional — MCP tools degraded)');
-
   // --- Version match ---
   if (manifest.version !== VERSION) {
     warn(`Installed v${manifest.version}, available v${VERSION} — run: npx oco-claude-plugin install --force`);
+  }
+
+  // --- Runtime layer ---
+  console.log('\n  Runtime layer');
+  const ocoAvailable = commandExists('oco');
+  if (ocoAvailable) {
+    const ocoVersion = getOcoVersion();
+    const ocoUsable = checkOcoUsable();
+    if (ocoUsable) {
+      ok(`oco binary found${ocoVersion ? ` (v${ocoVersion})` : ''} — functional`);
+    } else {
+      warn(`oco binary found${ocoVersion ? ` (v${ocoVersion})` : ''} but returned an error`);
+      console.log('      Run: oco --help  to diagnose');
+    }
+  } else {
+    warn('oco binary not found');
+    console.log('      MCP tools search_codebase, trace_error, begin_task, collect_findings');
+    console.log('      will return fallback results without the runtime.');
+    console.log('      To install (requires Rust toolchain + OCO source repo):');
+    console.log('        cd /path/to/oco && cargo install --path apps/dev-cli');
   }
 
   // --- Conflicts ---
@@ -431,34 +498,18 @@ function doctor() {
   const settingsOk = existsSync(dropinPath) || existsSync(settingsPath);
   const bridgeOk = existsSync(join(targetDir, 'mcp/bridge.cjs'));
 
-  let mode;
-  if (!settingsOk || !allHooksOk) mode = 'broken';
-  else if (!bridgeOk || issues.errors > 0) mode = 'degraded';
-  else if (ocoAvailable) mode = 'full';
-  else mode = 'plugin';
+  const mode = resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable });
+  console.log(`\n  Mode: ${mode} (${MODE_DESCRIPTIONS[mode]})`);
 
-  const modeDescriptions = {
-    full: 'hooks + skills + MCP tools active',
-    plugin: 'hooks + skills active, MCP tools degraded without oco binary',
-    degraded: 'partial — some components missing',
-    broken: 'settings or hooks missing — plugin will not load',
-  };
-
-  console.log(`\n  Mode: ${mode} (${modeDescriptions[mode]})`);
-
-  if (mode === 'broken') {
+  if (mode === 'broken' || mode === 'incomplete') {
     console.log(`\n  Run: npx oco-claude-plugin repair`);
-  } else if (mode === 'degraded') {
-    console.log(`\n  Run: npx oco-claude-plugin repair`);
-  } else if (!ocoAvailable) {
-    console.log(`\n  For full MCP support: cargo install --path apps/dev-cli`);
   }
 
   console.log();
 
-  // Exit codes: 0 = ok, 1 = warnings/degraded, 2 = broken
+  // Exit codes: 0 = ok, 1 = warnings/incomplete, 2 = broken
   if (mode === 'broken') return 2;
-  if (issues.warnings > 0 || mode === 'degraded') return 1;
+  if (issues.warnings > 0 || mode === 'incomplete') return 1;
   return 0;
 }
 

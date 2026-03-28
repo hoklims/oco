@@ -32,10 +32,10 @@ npx oco-claude-plugin repair             # restore missing files
 
 | Mode | Condition | What works |
 |---|---|---|
-| **full** | hooks + settings + bridge + `oco` binary | Everything: hooks, skills, agents, MCP tools |
-| **plugin** | hooks + settings + bridge, no `oco` binary | Hooks, skills, agents. MCP tools return task packets. |
-| **degraded** | Some components missing | Partial functionality |
-| **broken** | Settings or hooks missing | Plugin will not load |
+| **full** | plugin + `oco` binary on PATH | Everything: hooks, skills, agents, all MCP tools |
+| **plugin-only** | plugin installed, no `oco` binary | Hooks, skills, agents, MCP verify_patch/working_memory. Other MCP tools return fallback results. |
+| **incomplete** | Some plugin files missing | Partial functionality — run `repair` to restore |
+| **broken** | Settings or hooks missing | Plugin will not load — run `install --force` |
 
 Run `doctor` to see your current mode.
 
