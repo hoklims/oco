@@ -23,6 +23,8 @@ use crate::server::AppState;
 pub struct StartSessionRequest {
     pub user_request: String,
     pub workspace_root: Option<String>,
+    /// External session ID for correlation (e.g. Claude Code session).
+    pub external_session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -96,6 +98,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/sessions/{session_id}", get(get_session))
         .route("/api/v1/sessions/{session_id}/stop", post(stop_session))
         .route("/api/v1/sessions/{session_id}/trace", get(get_trace))
+        .route(
+            "/api/v1/sessions/{session_id}/hooks",
+            get(get_session_hooks),
+        )
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/index", post(index_workspace))
         .route("/api/v1/search", post(search_workspace))
@@ -127,10 +133,11 @@ async fn start_session(
         "Creating new session"
     );
 
-    match state
-        .session_manager
-        .create_session(&req.user_request, req.workspace_root.as_deref())
-    {
+    match state.session_manager.create_session(
+        &req.user_request,
+        req.workspace_root.as_deref(),
+        req.external_session_id.as_deref(),
+    ) {
         Ok(session_id) => (
             StatusCode::CREATED,
             Json(serde_json::json!({
@@ -197,6 +204,27 @@ async fn get_trace(
         Ok(traces) => (
             StatusCode::OK,
             Json(serde_json::json!({ "traces": traces })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// `GET /api/v1/sessions/{id}/hooks` — get hook events received during this session.
+async fn get_session_hooks(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state.session_manager.get_hook_events(&session_id).await {
+        Ok(events) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "session_id": session_id,
+                "count": events.len(),
+                "events": events,
+            })),
         ),
         Err(e) => (
             StatusCode::NOT_FOUND,
@@ -347,8 +375,14 @@ async fn handle_mcp_tool_call(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let workspace = arguments.get("workspace_root").and_then(|v| v.as_str());
+            let ext_sid = arguments
+                .get("external_session_id")
+                .and_then(|v| v.as_str());
 
-            match state.session_manager.create_session(request, workspace) {
+            match state
+                .session_manager
+                .create_session(request, workspace, ext_sid)
+            {
                 Ok(session_id) => crate::protocol::JsonRpcResponse::success(
                     id,
                     serde_json::json!({
@@ -888,5 +922,300 @@ mod tests {
         let err = rpc.error.unwrap();
         assert_eq!(err.code, -32601);
         assert!(err.message.contains("nonexistent/method"));
+    }
+
+    // -- Session correlation ---------------------------------------------------
+
+    #[tokio::test]
+    async fn session_created_with_external_id() {
+        let state = test_state();
+        let sid = state
+            .session_manager
+            .create_session("test request", None, Some("claude-abc-123"))
+            .unwrap();
+
+        let info = state.session_manager.get_session(&sid).await.unwrap();
+        assert_eq!(info.external_session_id.as_deref(), Some("claude-abc-123"));
+    }
+
+    #[tokio::test]
+    async fn session_created_without_external_id() {
+        let state = test_state();
+        let sid = state
+            .session_manager
+            .create_session("test request", None, None)
+            .unwrap();
+
+        let info = state.session_manager.get_session(&sid).await.unwrap();
+        assert!(info.external_session_id.is_none());
+
+        // SessionInfo JSON should not contain external_session_id when None
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(!json.contains("external_session_id"));
+    }
+
+    #[tokio::test]
+    async fn session_info_serializes_external_id() {
+        let state = test_state();
+        let sid = state
+            .session_manager
+            .create_session("test", None, Some("ext-42"))
+            .unwrap();
+
+        let info = state.session_manager.get_session(&sid).await.unwrap();
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"external_session_id\":\"ext-42\""));
+    }
+
+    // -- Hook payload hygiene -------------------------------------------------
+
+    #[tokio::test]
+    async fn record_hook_event_returns_false_for_unknown_session() {
+        let state = test_state();
+        let recorded = state
+            .session_manager
+            .record_hook_event("nonexistent-session", "PostToolUse", "test_tool")
+            .await;
+        assert!(!recorded);
+    }
+
+    #[tokio::test]
+    async fn record_hook_event_returns_true_for_active_session() {
+        let state = test_state();
+        let sid = state
+            .session_manager
+            .create_session("test", None, None)
+            .unwrap();
+
+        let recorded = state
+            .session_manager
+            .record_hook_event(&sid, "PostToolUse", "test_tool")
+            .await;
+        assert!(recorded);
+    }
+
+    #[test]
+    fn rate_limiter_allows_within_limit() {
+        use crate::hooks::RateLimiter;
+        let limiter = RateLimiter::new(10);
+        for _ in 0..10 {
+            assert!(limiter.check());
+        }
+        // 11th request should be rejected
+        assert!(!limiter.check());
+    }
+
+    #[test]
+    fn rate_limiter_resets_after_window() {
+        use crate::hooks::RateLimiter;
+        let limiter = RateLimiter::new(5);
+        // Exhaust the limit
+        for _ in 0..5 {
+            assert!(limiter.check());
+        }
+        assert!(!limiter.check());
+
+        // Manually advance the window
+        limiter
+            .window_start
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        // Should allow again
+        assert!(limiter.check());
+    }
+
+    // -- PostCompact re-injection ---------------------------------------------
+
+    #[tokio::test]
+    async fn compact_snapshot_returns_none_for_unknown_session() {
+        let state = test_state();
+        let snap = state
+            .session_manager
+            .get_compact_snapshot("nonexistent")
+            .await;
+        assert!(snap.is_none());
+    }
+
+    #[tokio::test]
+    async fn compact_snapshot_returns_none_for_session_without_state() {
+        let state = test_state();
+        // create_session starts a background thread but orchestration_state
+        // is None until the loop sets it (which won't complete in test).
+        let sid = state
+            .session_manager
+            .create_session("test", None, None)
+            .unwrap();
+
+        let snap = state.session_manager.get_compact_snapshot(&sid).await;
+        assert!(snap.is_none());
+    }
+
+    #[tokio::test]
+    async fn compact_snapshot_returns_none_for_empty_memory() {
+        let state = test_state();
+        let sid = state
+            .session_manager
+            .create_session("test", None, None)
+            .unwrap();
+
+        // Inject a state with default (empty) WorkingMemory
+        let session = oco_shared_types::Session::new("test".into(), None);
+        let orch_state = oco_orchestrator_core::state::OrchestrationState::new(session);
+        state
+            .session_manager
+            .inject_state(&sid, orch_state)
+            .await
+            .unwrap();
+
+        let snap = state.session_manager.get_compact_snapshot(&sid).await;
+        assert!(snap.is_none(), "empty memory should produce no snapshot");
+    }
+
+    #[tokio::test]
+    async fn compact_snapshot_returns_content_when_memory_has_data() {
+        let state = test_state();
+        let sid = state
+            .session_manager
+            .create_session("test", None, None)
+            .unwrap();
+
+        // Inject state with populated WorkingMemory
+        let session = oco_shared_types::Session::new("test".into(), None);
+        let mut orch_state = oco_orchestrator_core::state::OrchestrationState::new(session);
+        orch_state
+            .memory
+            .add_finding(oco_shared_types::MemoryEntry::new(
+                "auth bug found".into(),
+                0.8,
+            ));
+        let fact = oco_shared_types::MemoryEntry::new("token expired".into(), 1.0);
+        let fact_id = fact.id;
+        orch_state.memory.add_finding(fact);
+        orch_state.memory.promote_to_fact(fact_id);
+        state
+            .session_manager
+            .inject_state(&sid, orch_state)
+            .await
+            .unwrap();
+
+        let snap = state.session_manager.get_compact_snapshot(&sid).await;
+        assert!(snap.is_some(), "populated memory should produce a snapshot");
+
+        let snap = snap.unwrap();
+        let facts = snap["verified_facts"].as_array().unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].as_str().unwrap(), "token expired");
+    }
+
+    // -- Hook event persistence -----------------------------------------------
+
+    #[tokio::test]
+    async fn hook_events_stored_for_active_session() {
+        let state = test_state();
+        let sid = state
+            .session_manager
+            .create_session("test", None, None)
+            .unwrap();
+
+        state
+            .session_manager
+            .record_hook_event(&sid, "PostToolUse", "Read")
+            .await;
+        state
+            .session_manager
+            .record_hook_event(&sid, "PostToolUse", "Edit")
+            .await;
+
+        let events = state.session_manager.get_hook_events(&sid).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].hook_name, "PostToolUse");
+        assert_eq!(events[0].detail, "Read");
+        assert!(events[0].recorded);
+        assert_eq!(events[1].detail, "Edit");
+    }
+
+    #[tokio::test]
+    async fn hook_events_empty_for_new_session() {
+        let state = test_state();
+        let sid = state
+            .session_manager
+            .create_session("test", None, None)
+            .unwrap();
+
+        let events = state.session_manager.get_hook_events(&sid).await.unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hook_events_not_found_for_unknown_session() {
+        let state = test_state();
+        let result = state.session_manager.get_hook_events("nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn hook_events_count_in_session_info() {
+        let state = test_state();
+        let sid = state
+            .session_manager
+            .create_session("test", None, None)
+            .unwrap();
+
+        state
+            .session_manager
+            .record_hook_event(&sid, "PostToolUse", "Read")
+            .await;
+        state
+            .session_manager
+            .record_hook_event(&sid, "TaskCompleted", "task-1")
+            .await;
+
+        let info = state.session_manager.get_session(&sid).await.unwrap();
+        assert_eq!(info.hook_events_count, 2);
+    }
+
+    #[tokio::test]
+    async fn hook_events_serialization() {
+        use crate::session_manager::HookEvent;
+
+        let event = HookEvent {
+            timestamp: chrono::Utc::now(),
+            hook_name: "PostToolUse".into(),
+            detail: "Read".into(),
+            session_id: Some("claude-abc".into()),
+            recorded: true,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"hook_name\":\"PostToolUse\""));
+        assert!(json.contains("\"detail\":\"Read\""));
+        assert!(json.contains("\"session_id\":\"claude-abc\""));
+        assert!(json.contains("\"recorded\":true"));
+    }
+
+    #[tokio::test]
+    async fn hook_events_endpoint_returns_detail() {
+        let state = test_state();
+        let sid = state
+            .session_manager
+            .create_session("test", None, None)
+            .unwrap();
+
+        state
+            .session_manager
+            .record_hook_event(&sid, "PostToolUse", "Bash")
+            .await;
+
+        let app = create_router(state);
+        let req = axum::http::Request::builder()
+            .uri(format!("/api/v1/sessions/{sid}/hooks"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["events"][0]["hook_name"], "PostToolUse");
+        assert_eq!(body["events"][0]["detail"], "Bash");
     }
 }

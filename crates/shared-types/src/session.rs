@@ -38,6 +38,10 @@ pub struct Session {
     pub pinned_context: Vec<String>,
     /// Running summary of the session so far (compressed).
     pub summary: Option<String>,
+    /// External session ID for correlation (e.g. Claude Code session).
+    /// Opaque string — never used for routing or logic decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_session_id: Option<String>,
 }
 
 impl Session {
@@ -55,7 +59,14 @@ impl Session {
             workspace_root,
             pinned_context: Vec::new(),
             summary: None,
+            external_session_id: None,
         }
+    }
+
+    /// Set the external session ID for correlation with the calling system.
+    pub fn with_external_session_id(mut self, id: impl Into<String>) -> Self {
+        self.external_session_id = Some(id.into());
+        self
     }
 
     pub fn is_within_budget(&self) -> bool {
@@ -76,4 +87,56 @@ pub enum SessionStatus {
     Failed,
     Cancelled,
     BudgetExhausted,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_without_external_id() {
+        let session = Session::new("test".into(), None);
+        assert!(session.external_session_id.is_none());
+
+        // Serializes without the field
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(!json.contains("external_session_id"));
+    }
+
+    #[test]
+    fn session_with_external_id() {
+        let session = Session::new("test".into(), None).with_external_session_id("claude-abc-123");
+        assert_eq!(
+            session.external_session_id.as_deref(),
+            Some("claude-abc-123")
+        );
+
+        // Serializes with the field
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("\"external_session_id\":\"claude-abc-123\""));
+    }
+
+    #[test]
+    fn session_external_id_survives_roundtrip() {
+        let session = Session::new("test".into(), None).with_external_session_id("ext-42");
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.external_session_id.as_deref(), Some("ext-42"));
+    }
+
+    #[test]
+    fn session_deserialize_without_external_id_defaults_none() {
+        // Serialize a session, strip external_session_id, re-deserialize.
+        // This simulates loading a session saved before the field was added.
+        let original = Session::new("test".into(), None);
+        let mut json_val: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
+        // Remove the field if present (it's skip_serializing_if None, but be safe)
+        json_val
+            .as_object_mut()
+            .unwrap()
+            .remove("external_session_id");
+        let restored: Session = serde_json::from_value(json_val).unwrap();
+        assert!(restored.external_session_id.is_none());
+    }
 }
