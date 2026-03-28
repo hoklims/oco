@@ -204,7 +204,11 @@ pub struct TaskPacket {
 }
 
 impl TaskPacket {
-    pub fn new(intent: impl Into<String>, complexity: TaskComplexity, category: TaskCategory) -> Self {
+    pub fn new(
+        intent: impl Into<String>,
+        complexity: TaskComplexity,
+        category: TaskCategory,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             intent: intent.into(),
@@ -344,7 +348,8 @@ impl StepContract {
                 keys.iter().any(|k| k == &field.name)
             } else {
                 // Unstructured output: exact token match (split on non-alphanumeric boundaries)
-                output.split(|c: char| !c.is_alphanumeric() && c != '_')
+                output
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .any(|token| token == field.name)
             };
             if !found {
@@ -354,13 +359,17 @@ impl StepContract {
         if missing.is_empty() {
             ContractValidation::Satisfied
         } else {
-            ContractValidation::Violated { missing_fields: missing }
+            ContractValidation::Violated {
+                missing_fields: missing,
+            }
         }
     }
 
     /// Check if all transition guards allow the target status.
     pub fn can_transition_to(&self, target: &str, context: &ContractContext) -> bool {
-        self.transition_guards.iter().all(|g| g.allows(target, context))
+        self.transition_guards
+            .iter()
+            .all(|g| g.allows(target, context))
     }
 }
 
@@ -536,13 +545,17 @@ mod tests {
 
     #[test]
     fn task_packet_construction() {
-        let packet = TaskPacket::new("safe_refactor", TaskComplexity::Medium, TaskCategory::Refactor)
-            .with_risk(0.7)
-            .with_zones(vec!["api/auth".into(), "shared/session".into()])
-            .with_forbidden(ForbiddenShortcut::new(
-                "skip_impact_scan",
-                "must scan impact before modifying auth contract",
-            ));
+        let packet = TaskPacket::new(
+            "safe_refactor",
+            TaskComplexity::Medium,
+            TaskCategory::Refactor,
+        )
+        .with_risk(0.7)
+        .with_zones(vec!["api/auth".into(), "shared/session".into()])
+        .with_forbidden(ForbiddenShortcut::new(
+            "skip_impact_scan",
+            "must scan impact before modifying auth contract",
+        ));
 
         assert_eq!(packet.intent, "safe_refactor");
         assert_eq!(packet.complexity, TaskComplexity::Medium);
@@ -554,12 +567,12 @@ mod tests {
 
     #[test]
     fn task_packet_risk_clamped() {
-        let packet = TaskPacket::new("test", TaskComplexity::Low, TaskCategory::General)
-            .with_risk(1.5);
+        let packet =
+            TaskPacket::new("test", TaskComplexity::Low, TaskCategory::General).with_risk(1.5);
         assert_eq!(packet.risk, 1.0);
 
-        let packet2 = TaskPacket::new("test", TaskComplexity::Low, TaskCategory::General)
-            .with_risk(-0.5);
+        let packet2 =
+            TaskPacket::new("test", TaskComplexity::Low, TaskCategory::General).with_risk(-0.5);
         assert_eq!(packet2.risk, 0.0);
     }
 
@@ -606,12 +619,15 @@ mod tests {
             .with_output(ContractField::required("verification_plan"));
 
         // Output contains both fields
-        let result = contract.validate_outputs("patch_summary: changed 3 files\nverification_plan: run cargo test");
+        let result = contract
+            .validate_outputs("patch_summary: changed 3 files\nverification_plan: run cargo test");
         assert_eq!(result, ContractValidation::Satisfied);
 
         // Output missing one field
         let result = contract.validate_outputs("patch_summary: changed 3 files");
-        assert!(matches!(result, ContractValidation::Violated { missing_fields } if missing_fields == vec!["verification_plan"]));
+        assert!(
+            matches!(result, ContractValidation::Violated { missing_fields } if missing_fields == vec!["verification_plan"])
+        );
     }
 
     #[test]

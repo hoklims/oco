@@ -197,7 +197,7 @@ pub enum OrchestrationEvent {
         step_count: usize,
         parallel_group_count: usize,
         critical_path_length: u32,
-        estimated_total_tokens: u32,
+        estimated_total_tokens: u64,
         strategy: String,
         team: Option<TeamSummary>,
         steps: Vec<StepSummary>,
@@ -217,7 +217,7 @@ pub enum OrchestrationEvent {
         step_name: String,
         success: bool,
         duration_ms: u64,
-        tokens_used: u32,
+        tokens_used: u64,
     },
 
     /// Live progress update during plan execution.

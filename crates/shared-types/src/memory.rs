@@ -348,7 +348,11 @@ impl WorkingMemory {
     /// Record that a code area was inspected.
     pub fn record_inspection(&mut self, area: InspectedArea) {
         // Deduplicate by path — update if already inspected
-        if let Some(existing) = self.inspected_areas.iter_mut().find(|a| a.path == area.path) {
+        if let Some(existing) = self
+            .inspected_areas
+            .iter_mut()
+            .find(|a| a.path == area.path)
+        {
             existing.symbols.extend(area.symbols);
             existing.symbols.sort();
             existing.symbols.dedup();
@@ -389,26 +393,24 @@ impl WorkingMemory {
     /// Export a compact JSON snapshot suitable for MCP injection.
     /// Keeps only active entries, omits audit trail.
     pub fn compact_snapshot(&self) -> serde_json::Value {
-        let active_hypotheses: Vec<_> = self.hypotheses.iter()
+        let active_hypotheses: Vec<_> = self
+            .hypotheses
+            .iter()
             .filter(|h| h.status == MemoryStatus::Active)
-            .map(|h| serde_json::json!({
-                "text": h.content,
-                "confidence": format!("{:.0}%", h.effective_confidence() * 100.0),
-                "status": "active",
-            }))
+            .map(|h| {
+                serde_json::json!({
+                    "text": h.content,
+                    "confidence": format!("{:.0}%", h.effective_confidence() * 100.0),
+                    "status": "active",
+                })
+            })
             .collect();
 
-        let facts: Vec<_> = self.verified_facts.iter()
-            .map(|f| &f.content)
-            .collect();
+        let facts: Vec<_> = self.verified_facts.iter().map(|f| &f.content).collect();
 
-        let areas: Vec<_> = self.inspected_areas.iter()
-            .map(|a| &a.path)
-            .collect();
+        let areas: Vec<_> = self.inspected_areas.iter().map(|a| &a.path).collect();
 
-        let questions: Vec<_> = self.questions.iter()
-            .map(|q| &q.content)
-            .collect();
+        let questions: Vec<_> = self.questions.iter().map(|q| &q.content).collect();
 
         let mut snapshot = serde_json::json!({
             "hypotheses": active_hypotheses,

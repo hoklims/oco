@@ -36,7 +36,7 @@ pub struct StepResult {
     pub success: bool,
     pub output: String,
     pub duration_ms: u64,
-    pub tokens_used: u32,
+    pub tokens_used: u64,
 }
 
 /// Cooperative cancellation token for step executors (fix #23).
@@ -153,7 +153,7 @@ impl StepExecutor for StubStepExecutor {
             success,
             output,
             duration_ms: 50,
-            tokens_used: step.estimated_tokens,
+            tokens_used: step.estimated_tokens as u64,
         })
     }
 
@@ -321,7 +321,9 @@ impl GraphRunner {
                         let _ = tx.send(OrchestrationEvent::BudgetWarning {
                             resource: format!(
                                 "all {} ready steps skipped: estimated {}T > remaining {}T",
-                                ready_ids.len(), batch_estimated, remaining
+                                ready_ids.len(),
+                                batch_estimated,
+                                remaining
                             ),
                             utilization: if self.token_budget > 0 {
                                 self.tokens_used as f64 / self.token_budget as f64
@@ -334,11 +336,16 @@ impl GraphRunner {
                 }
                 let trimmed_count = ready_ids.len() - affordable.len();
                 debug!(trimmed = trimmed_count, "budget-trimmed parallel batch");
-                if trimmed_count > 0 && let Some(ref tx) = self.event_tx {
+                if trimmed_count > 0
+                    && let Some(ref tx) = self.event_tx
+                {
                     let _ = tx.send(OrchestrationEvent::BudgetWarning {
                         resource: format!(
                             "{} of {} steps trimmed from batch: estimated {}T > 2x remaining {}T",
-                            trimmed_count, ready_ids.len(), batch_estimated, remaining
+                            trimmed_count,
+                            ready_ids.len(),
+                            batch_estimated,
+                            remaining
                         ),
                         utilization: if self.token_budget > 0 {
                             self.tokens_used as f64 / self.token_budget as f64
@@ -372,7 +379,7 @@ impl GraphRunner {
                 continue;
             };
 
-            self.tokens_used += result.tokens_used as u64;
+            self.tokens_used += result.tokens_used;
 
             if result.success {
                 step.output = Some(result.output.clone());
@@ -380,7 +387,9 @@ impl GraphRunner {
                 // Validate step contract before allowing completion (#61 wiring)
                 if let Some(ref contract) = step.contract {
                     let validation = contract.validate_outputs(&result.output);
-                    if let oco_shared_types::ContractValidation::Violated { missing_fields } = validation {
+                    if let oco_shared_types::ContractValidation::Violated { missing_fields } =
+                        validation
+                    {
                         let step_name = step.name.clone();
                         warn!(
                             step = %step_name,
@@ -388,7 +397,10 @@ impl GraphRunner {
                             "step contract violated — required outputs missing"
                         );
                         step.status = StepStatus::Failed {
-                            reason: format!("contract violated: missing {}", missing_fields.join(", ")),
+                            reason: format!(
+                                "contract violated: missing {}",
+                                missing_fields.join(", ")
+                            ),
                         };
                         self.emit_step_completed(
                             result.step_id,
@@ -405,6 +417,7 @@ impl GraphRunner {
                     let verify_result = self.executor.verify_step(step).await;
                     match verify_result {
                         Ok(vr) if vr.success => {
+                            self.tokens_used += vr.tokens_used;
                             let step_name = step.name.clone();
                             step.status = StepStatus::Completed;
                             self.emit_step_completed(
@@ -423,6 +436,7 @@ impl GraphRunner {
                             );
                         }
                         Ok(vr) => {
+                            self.tokens_used += vr.tokens_used;
                             let step_name = step.name.clone();
                             step.status = StepStatus::Failed {
                                 reason: vr.output.clone(),
@@ -535,7 +549,11 @@ impl GraphRunner {
                         // Fix #8: JoinError (panic/cancel) → produce a Failed StepResult
                         // so the step doesn't "disappear" from the state machine.
                         warn!(error = %e, "step task panicked or was cancelled");
-                        let failed_id = step_ids.get(i).copied().unwrap_or_default();
+                        // Safety: handles and step_ids are built from the same
+                        // iterator so indices are always in sync. Use direct
+                        // indexing to surface logic errors instead of silently
+                        // producing Uuid::nil() which corrupts downstream state.
+                        let failed_id = step_ids[i];
                         results.push(StepResult {
                             step_id: failed_id,
                             success: false,
@@ -707,7 +725,7 @@ impl GraphRunner {
         step_name: &str,
         success: bool,
         duration_ms: u64,
-        tokens_used: u32,
+        tokens_used: u64,
     ) {
         if success {
             info!(step_name, duration_ms, "step completed");
@@ -1206,5 +1224,41 @@ mod tests {
         let result = runner.execute(plan, &ctx()).await.unwrap();
         assert!(result.steps[0].output.is_some());
         assert!(result.steps[0].output.as_ref().unwrap().contains("task"));
+    }
+
+    // -- Verify gate token accounting --
+
+    #[tokio::test]
+    async fn verify_gate_tokens_counted_in_budget() {
+        let step = PlanStep::new("impl", "Implement feature")
+            .with_verify()
+            .with_estimated_tokens(1000);
+        let plan = make_plan(vec![step]);
+
+        let executor = Arc::new(StubStepExecutor::all_pass());
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
+
+        let _result = runner.execute(plan, &ctx()).await.unwrap();
+        // Step tokens (1000) + verify gate tokens (500 from StubStepExecutor)
+        assert_eq!(runner.tokens_used(), 1500);
+    }
+
+    #[tokio::test]
+    async fn verify_gate_failure_tokens_counted_in_budget() {
+        let step = PlanStep::new("impl", "Implement feature")
+            .with_verify()
+            .with_estimated_tokens(1000);
+        let plan = make_plan(vec![step]);
+
+        let executor =
+            Arc::new(StubStepExecutor::all_pass().with_failure("verify:impl", "tests failed"));
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
+
+        let result = runner.execute(plan, &ctx()).await.unwrap();
+        assert!(result.has_failures());
+        // Step tokens (1000) + failed verify gate tokens (500)
+        assert_eq!(runner.tokens_used(), 1500);
     }
 }

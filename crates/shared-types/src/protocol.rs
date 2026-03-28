@@ -172,11 +172,7 @@ pub fn investigation_protocol() -> WorkProtocol {
             },
         ],
         flow: ProtocolFlow::Pipeline,
-        applicable_when: vec![
-            "bug".into(),
-            "regression".into(),
-            "investigation".into(),
-        ],
+        applicable_when: vec!["bug".into(), "regression".into(), "investigation".into()],
     }
 }
 
@@ -189,10 +185,7 @@ pub fn review_protocol() -> WorkProtocol {
             RoleSpec {
                 name: "coordinator".into(),
                 description: "Orchestrate the review, assign areas, collect results".into(),
-                artifact: RoleArtifact::required(
-                    "review_plan",
-                    "{ areas: [], assignments: {} }",
-                ),
+                artifact: RoleArtifact::required("review_plan", "{ areas: [], assignments: {} }"),
                 preferred_model: Some("sonnet".into()),
                 capabilities: vec!["code_search".into()],
             },
@@ -218,11 +211,7 @@ pub fn review_protocol() -> WorkProtocol {
             },
         ],
         flow: ProtocolFlow::Hub,
-        applicable_when: vec![
-            "review".into(),
-            "refactor".into(),
-            "security".into(),
-        ],
+        applicable_when: vec!["review".into(), "refactor".into(), "security".into()],
     }
 }
 

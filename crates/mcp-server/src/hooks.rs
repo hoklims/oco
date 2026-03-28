@@ -164,6 +164,33 @@ fn validate_event(
     Ok(())
 }
 
+/// Validate the event name and deserialize the payload `data` field in one step.
+///
+/// Combines `validate_event` + `serde_json::from_value` with uniform error
+/// handling, eliminating the repeated match block in each handler.
+fn extract_hook_data<T: serde::de::DeserializeOwned>(
+    payload: HookPayload,
+    expected: &str,
+) -> Result<(T, HookPayload), (StatusCode, Json<HookResponse>)> {
+    if payload.event != expected {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(HookResponse::error(format!(
+                "event mismatch: expected \"{expected}\", got \"{}\"",
+                payload.event
+            ))),
+        ));
+    }
+    let data: T = serde_json::from_value(payload.data.clone()).map_err(|e| {
+        warn!(error = %e, "invalid {expected} data payload");
+        (
+            StatusCode::BAD_REQUEST,
+            Json(HookResponse::error("invalid payload")),
+        )
+    })?;
+    Ok((data, payload))
+}
+
 // ---------------------------------------------------------------------------
 // PostToolUse — record tool observations in telemetry
 // ---------------------------------------------------------------------------
@@ -188,19 +215,9 @@ pub async fn hook_post_tool(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
-    if let Err(resp) = validate_event(&payload, "PostToolUse") {
-        return resp;
-    }
-
-    let data: PostToolUseData = match serde_json::from_value(payload.data) {
-        Ok(d) => d,
-        Err(e) => {
-            warn!(error = %e, "invalid PostToolUse data payload");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(HookResponse::error("invalid payload")),
-            );
-        }
+    let (data, payload): (PostToolUseData, _) = match extract_hook_data(payload, "PostToolUse") {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
 
     debug!(
@@ -244,19 +261,10 @@ pub async fn hook_task_completed(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
-    if let Err(resp) = validate_event(&payload, "TaskCompleted") {
-        return resp;
-    }
-
-    let data: TaskCompletedData = match serde_json::from_value(payload.data) {
-        Ok(d) => d,
-        Err(e) => {
-            warn!(error = %e, "invalid TaskCompleted data payload");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(HookResponse::error("invalid payload")),
-            );
-        }
+    let (data, payload): (TaskCompletedData, _) = match extract_hook_data(payload, "TaskCompleted")
+    {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
 
     info!(
@@ -297,19 +305,9 @@ pub async fn hook_file_changed(
     State(_state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
-    if let Err(resp) = validate_event(&payload, "FileChanged") {
-        return resp;
-    }
-
-    let data: FileChangedData = match serde_json::from_value(payload.data) {
-        Ok(d) => d,
-        Err(e) => {
-            warn!(error = %e, "invalid FileChanged data payload");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(HookResponse::error("invalid payload")),
-            );
-        }
+    let (data, _payload): (FileChangedData, _) = match extract_hook_data(payload, "FileChanged") {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
 
     debug!(
@@ -378,19 +376,9 @@ pub async fn hook_stop(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
-    if let Err(resp) = validate_event(&payload, "Stop") {
-        return resp;
-    }
-
-    let data: StopData = match serde_json::from_value(payload.data) {
-        Ok(d) => d,
-        Err(e) => {
-            warn!(error = %e, "invalid Stop data payload");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(HookResponse::error("invalid payload")),
-            );
-        }
+    let (data, payload): (StopData, _) = match extract_hook_data(payload, "Stop") {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
 
     info!(

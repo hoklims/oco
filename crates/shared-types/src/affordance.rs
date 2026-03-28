@@ -214,11 +214,8 @@ mod tests {
                 "patch touches shared contract used by 4 callers",
             ))
             .suggest(
-                SuggestedAction::new(
-                    "run_targeted_verify",
-                    "implementation step completed",
-                )
-                .with_tool("oco.verify_patch"),
+                SuggestedAction::new("run_targeted_verify", "implementation step completed")
+                    .with_tool("oco.verify_patch"),
             )
             .block(BlockedAction::block_completion_unverified())
             .with_status(CompletionStatus::Blocked);
@@ -241,11 +238,16 @@ mod tests {
     #[test]
     fn compact_response_builder() {
         let resp = CompactResponse::new("Found 3 callers of AuthMiddleware.handle")
-            .with_evidence(serde_json::json!({"callers": ["api/routes.rs", "web/app.rs", "admin/setup.rs"]}))
+            .with_evidence(
+                serde_json::json!({"callers": ["api/routes.rs", "web/app.rs", "admin/setup.rs"]}),
+            )
             .with_risk("Modifying signature will break all 3 callers")
             .with_affordances(
                 DecisionAffordance::new()
-                    .suggest(SuggestedAction::new("impact_scan", "check all callers before modifying"))
+                    .suggest(SuggestedAction::new(
+                        "impact_scan",
+                        "check all callers before modifying",
+                    ))
                     .block(BlockedAction::block_completion_unverified()),
             )
             .with_confidence(0.85);
@@ -273,16 +275,21 @@ mod tests {
     #[test]
     fn serialization_roundtrip() {
         let aff = DecisionAffordance::new()
-            .suggest(SuggestedAction::new("investigate", "need more context")
-                .with_tool("oco.search_codebase")
-                .with_args(serde_json::json!({"query": "AuthMiddleware"})))
+            .suggest(
+                SuggestedAction::new("investigate", "need more context")
+                    .with_tool("oco.search_codebase")
+                    .with_args(serde_json::json!({"query": "AuthMiddleware"})),
+            )
             .block(BlockedAction::new("complete", "not verified"));
 
         let json = serde_json::to_string(&aff).unwrap();
         let parsed: DecisionAffordance = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.best_next_actions.len(), 1);
         assert_eq!(parsed.blocked_actions.len(), 1);
-        assert_eq!(parsed.best_next_actions[0].tool.as_deref(), Some("oco.search_codebase"));
+        assert_eq!(
+            parsed.best_next_actions[0].tool.as_deref(),
+            Some("oco.search_codebase")
+        );
     }
 
     #[test]

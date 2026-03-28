@@ -867,12 +867,14 @@ impl OrchestrationLoop {
         }
 
         // Update working memory planner state after plan execution (#62 wiring)
-        state.memory.update_planner_state(oco_shared_types::PlannerState {
-            current_step: None,
-            replan_count: 0,
-            phase: Some("completed".into()),
-            lease_id: None,
-        });
+        state
+            .memory
+            .update_planner_state(oco_shared_types::PlannerState {
+                current_step: None,
+                replan_count: 0,
+                phase: Some("completed".into()),
+                lease_id: None,
+            });
 
         Ok(())
     }
@@ -1154,7 +1156,7 @@ impl StepExecutor for LoopStepExecutor {
 
         let response = self.llm.complete(request).await?;
 
-        let tokens_used = (response.input_tokens + response.output_tokens) as u32;
+        let tokens_used = (response.input_tokens + response.output_tokens) as u64;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         Ok(StepResult {

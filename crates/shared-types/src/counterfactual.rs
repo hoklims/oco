@@ -160,7 +160,10 @@ pub fn analyze_counterfactual(input: &CounterfactualInput) -> CounterfactualResu
     // --- Check: hypotheses status from working memory ---
     if input.active_hypotheses > 1 {
         remaining_alternatives.push(Alternative::new(
-            format!("{} hypotheses still active — root cause may not be the one addressed", input.active_hypotheses),
+            format!(
+                "{} hypotheses still active — root cause may not be the one addressed",
+                input.active_hypotheses
+            ),
             0.3 * input.active_hypotheses as f64,
             "Invalidate remaining hypotheses with targeted checks",
         ));
@@ -194,7 +197,9 @@ pub fn analyze_counterfactual(input: &CounterfactualInput) -> CounterfactualResu
     // --- Determine recommendation ---
     let recommendation = if confidence >= 0.8 && missing_proof.is_empty() {
         Recommendation::Proceed
-    } else if confidence < 0.4 || (!missing_proof.is_empty() && input.verification != VerificationOutcome::Passed) {
+    } else if confidence < 0.4
+        || (!missing_proof.is_empty() && input.verification != VerificationOutcome::Passed)
+    {
         Recommendation::Block {
             reason: if !missing_proof.is_empty() {
                 missing_proof[0].clone()
@@ -287,7 +292,10 @@ mod tests {
         let result = analyze_counterfactual(&input);
         assert!(result.confidence < 0.5);
         assert!(!result.missing_proof.is_empty());
-        assert!(matches!(result.recommendation, Recommendation::Block { .. }));
+        assert!(matches!(
+            result.recommendation,
+            Recommendation::Block { .. }
+        ));
         assert!(!result.allows_completion(0.5));
     }
 
@@ -302,7 +310,10 @@ mod tests {
         };
         let result = analyze_counterfactual(&input);
         assert!(result.confidence < 0.4);
-        assert!(matches!(result.recommendation, Recommendation::Block { .. }));
+        assert!(matches!(
+            result.recommendation,
+            Recommendation::Block { .. }
+        ));
     }
 
     #[test]
@@ -332,7 +343,12 @@ mod tests {
             ..Default::default()
         };
         let result = analyze_counterfactual(&input);
-        assert!(result.remaining_alternatives.iter().any(|a| a.description.contains("Contradicting")));
+        assert!(
+            result
+                .remaining_alternatives
+                .iter()
+                .any(|a| a.description.contains("Contradicting"))
+        );
         assert!(result.needs_investigation());
     }
 
@@ -345,7 +361,10 @@ mod tests {
             ..Default::default()
         };
         let result = analyze_counterfactual(&input);
-        assert!(matches!(result.recommendation, Recommendation::Block { .. }));
+        assert!(matches!(
+            result.recommendation,
+            Recommendation::Block { .. }
+        ));
     }
 
     #[test]
@@ -361,7 +380,10 @@ mod tests {
         let result = analyze_counterfactual(&input);
         assert!(!result.missing_proof.is_empty());
         // Should recommend investigation, not outright block (verification passed)
-        assert!(matches!(result.recommendation, Recommendation::Investigate { .. }));
+        assert!(matches!(
+            result.recommendation,
+            Recommendation::Investigate { .. }
+        ));
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub trait LlmCallFn: Send + Sync {
         system_prompt: &str,
         user_message: &str,
         max_tokens: u32,
-    ) -> Result<(String, u32), PlannerError>;
+    ) -> Result<(String, u64), PlannerError>;
 }
 
 /// Stub LLM call for testing — returns a predefined plan JSON.
@@ -48,7 +48,7 @@ impl LlmCallFn for StubLlmCall {
         _system: &str,
         _user: &str,
         _max_tokens: u32,
-    ) -> Result<(String, u32), PlannerError> {
+    ) -> Result<(String, u64), PlannerError> {
         Ok((self.response.clone(), 100))
     }
 }
@@ -725,7 +725,7 @@ mod tests {
                 _system: &str,
                 _user: &str,
                 _max_tokens: u32,
-            ) -> Result<(String, u32), PlannerError> {
+            ) -> Result<(String, u64), PlannerError> {
                 let n = self.call_count.fetch_add(1, Ordering::SeqCst);
                 if n == 0 {
                     // First call: valid task but mangled JSON

@@ -133,7 +133,7 @@ pub enum UiEvent {
         step_name: String,
         success: bool,
         duration_ms: u64,
-        tokens_used: u32,
+        tokens_used: u64,
     },
 
     /// Live progress bar during plan execution.

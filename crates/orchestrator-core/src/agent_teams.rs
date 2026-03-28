@@ -175,7 +175,7 @@ pub struct TeammateResult {
     pub step_id: Uuid,
     pub success: bool,
     pub output: String,
-    pub tokens_used: u32,
+    pub tokens_used: u64,
 }
 
 // ---------------------------------------------------------------------------

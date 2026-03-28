@@ -84,7 +84,7 @@ impl StepContextBuilder {
     /// Each step gets a share of the total budget proportional to its token estimate.
     pub fn budget_for_step(step: &PlanStep, plan: &ExecutionPlan, total_budget: u32) -> u32 {
         let total_estimated = plan.estimated_total_tokens().max(1);
-        let step_share = step.estimated_tokens as f64 / total_estimated as f64;
+        let step_share = step.estimated_tokens as f64 / total_estimated as f64; // both promoted to f64
         // At least 10% of total, at most 80%
         let share = step_share.clamp(0.1, 0.8);
         (total_budget as f64 * share) as u32

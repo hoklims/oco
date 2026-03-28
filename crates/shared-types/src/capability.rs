@@ -101,7 +101,12 @@ impl ExecutionPhase {
     /// Capability categories relevant to this phase.
     pub fn relevant_capabilities(&self) -> &[&str] {
         match self {
-            Self::Explore => &["code_search", "file_read", "symbol_lookup", "dependency_trace"],
+            Self::Explore => &[
+                "code_search",
+                "file_read",
+                "symbol_lookup",
+                "dependency_trace",
+            ],
             Self::Plan => &["code_search", "file_read", "impact_analysis", "code_review"],
             Self::Implement => &["file_edit", "shell_exec", "code_search", "file_read"],
             Self::Verify => &["test_run", "build", "lint", "typecheck", "shell_exec"],
@@ -1415,7 +1420,9 @@ mod tests {
         reg.register(CapabilityDescriptor {
             id: "search".into(),
             name: "Code Search".into(),
-            kind: CapabilityKind::Tool { executor: "search".into() },
+            kind: CapabilityKind::Tool {
+                executor: "search".into(),
+            },
             capabilities: vec!["code_search".into()],
             cost: CapabilityCost::new(CostTier::Free),
             constraints: vec![],
@@ -1425,7 +1432,9 @@ mod tests {
         reg.register(CapabilityDescriptor {
             id: "editor".into(),
             name: "File Editor".into(),
-            kind: CapabilityKind::Tool { executor: "file".into() },
+            kind: CapabilityKind::Tool {
+                executor: "file".into(),
+            },
             capabilities: vec!["file_edit".into()],
             cost: CapabilityCost::new(CostTier::Cheap),
             constraints: vec![],
@@ -1445,7 +1454,9 @@ mod tests {
         reg.register(CapabilityDescriptor {
             id: "search".into(),
             name: "Code Search".into(),
-            kind: CapabilityKind::Tool { executor: "search".into() },
+            kind: CapabilityKind::Tool {
+                executor: "search".into(),
+            },
             capabilities: vec!["code_search".into()],
             cost: CapabilityCost::new(CostTier::Free),
             constraints: vec![],
@@ -1455,7 +1466,9 @@ mod tests {
         reg.register(CapabilityDescriptor {
             id: "editor".into(),
             name: "File Editor".into(),
-            kind: CapabilityKind::Tool { executor: "file".into() },
+            kind: CapabilityKind::Tool {
+                executor: "file".into(),
+            },
             capabilities: vec!["file_edit".into()],
             cost: CapabilityCost::new(CostTier::Cheap),
             constraints: vec![],
@@ -1475,7 +1488,9 @@ mod tests {
         reg.register(CapabilityDescriptor {
             id: "test_runner".into(),
             name: "Test Runner".into(),
-            kind: CapabilityKind::Tool { executor: "shell".into() },
+            kind: CapabilityKind::Tool {
+                executor: "shell".into(),
+            },
             capabilities: vec!["test_run".into(), "shell_exec".into()],
             cost: CapabilityCost::new(CostTier::Moderate),
             constraints: vec![],
@@ -1485,7 +1500,9 @@ mod tests {
         reg.register(CapabilityDescriptor {
             id: "editor".into(),
             name: "File Editor".into(),
-            kind: CapabilityKind::Tool { executor: "file".into() },
+            kind: CapabilityKind::Tool {
+                executor: "file".into(),
+            },
             capabilities: vec!["file_edit".into()],
             cost: CapabilityCost::new(CostTier::Cheap),
             constraints: vec![],
@@ -1508,8 +1525,20 @@ mod tests {
 
     #[test]
     fn execution_phase_relevant_capabilities() {
-        assert!(ExecutionPhase::Explore.relevant_capabilities().contains(&"code_search"));
-        assert!(ExecutionPhase::Implement.relevant_capabilities().contains(&"file_edit"));
-        assert!(ExecutionPhase::Verify.relevant_capabilities().contains(&"test_run"));
+        assert!(
+            ExecutionPhase::Explore
+                .relevant_capabilities()
+                .contains(&"code_search")
+        );
+        assert!(
+            ExecutionPhase::Implement
+                .relevant_capabilities()
+                .contains(&"file_edit")
+        );
+        assert!(
+            ExecutionPhase::Verify
+                .relevant_capabilities()
+                .contains(&"test_run")
+        );
     }
 }

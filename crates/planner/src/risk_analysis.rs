@@ -86,8 +86,12 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
                 0.8,
                 "Verify gate: targeted test must fail before fix, pass after",
             ));
-            preview.uncertainties.push("Root cause may not be in the obvious location".into());
-            preview.suggested_verify_gates.push("regression_test".into());
+            preview
+                .uncertainties
+                .push("Root cause may not be in the obvious location".into());
+            preview
+                .suggested_verify_gates
+                .push("regression_test".into());
         }
         TaskCategory::Refactor => {
             preview.risks.push(Risk::new(
@@ -127,7 +131,9 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
                 0.95,
                 "Verify gate: scan for similar patterns across codebase",
             ));
-            preview.uncertainties.push("Attack surface may extend beyond the obvious location".into());
+            preview
+                .uncertainties
+                .push("Attack surface may extend beyond the obvious location".into());
             preview.suggested_verify_gates.push("security_scan".into());
         }
         _ => {}
@@ -143,7 +149,9 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
                 0.6,
                 "Budget monitoring + early termination if >50% budget used in explore phase",
             ));
-            preview.uncertainties.push("Full scope may only become clear during investigation".into());
+            preview
+                .uncertainties
+                .push("Full scope may only become clear during investigation".into());
         }
         TaskComplexity::Medium => {
             preview.risks.push(Risk::new(
@@ -160,7 +168,14 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
     // --- Keyword-based risks (exact token match to avoid false positives) ---
     let has_token = |keywords: &[&str]| tokens.iter().any(|t| keywords.contains(t));
 
-    if has_token(&["auth", "authentication", "session", "token", "login", "logout"]) {
+    if has_token(&[
+        "auth",
+        "authentication",
+        "session",
+        "token",
+        "login",
+        "logout",
+    ]) {
         preview.risks.push(Risk::new(
             "auth_regression",
             "Changes to auth/session code may break authentication flows",
@@ -168,7 +183,9 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
             0.9,
             "Verify gate: auth integration tests must pass",
         ));
-        preview.missing_artifacts.push("Auth flow test coverage".into());
+        preview
+            .missing_artifacts
+            .push("Auth flow test coverage".into());
     }
 
     if has_token(&["database", "migration", "schema", "migrate", "db"]) {
@@ -189,10 +206,19 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
             0.7,
             "Verify gate: impact scan before deletion",
         ));
-        preview.missing_artifacts.push("Dependency/caller analysis of deletion targets".into());
+        preview
+            .missing_artifacts
+            .push("Dependency/caller analysis of deletion targets".into());
     }
 
-    if has_token(&["concurrent", "async", "parallel", "mutex", "race", "deadlock"]) {
+    if has_token(&[
+        "concurrent",
+        "async",
+        "parallel",
+        "mutex",
+        "race",
+        "deadlock",
+    ]) {
         preview.risks.push(Risk::new(
             "race_condition",
             "Concurrent code changes may introduce race conditions",
@@ -207,13 +233,19 @@ pub fn analyze_risks(request: &str, context: &PlanningContext) -> FailurePreview
         context.repo_profile.risk_level,
         oco_shared_types::RiskLevel::High | oco_shared_types::RiskLevel::Critical
     ) {
-        preview.uncertainties.push("High-risk repo: extra caution required".into());
+        preview
+            .uncertainties
+            .push("High-risk repo: extra caution required".into());
     }
 
     // --- Compute overall risk score ---
     if !preview.risks.is_empty() {
         // Max individual risk score, boosted by count
-        let max_score = preview.risks.iter().map(|r| r.score()).fold(0.0f64, f64::max);
+        let max_score = preview
+            .risks
+            .iter()
+            .map(|r| r.score())
+            .fold(0.0f64, f64::max);
         let count_boost = ((preview.risks.len() as f64 - 1.0) * 0.05).min(0.2);
         preview.risk_score = (max_score + count_boost).clamp(0.0, 1.0);
     }
@@ -247,8 +279,16 @@ mod tests {
 
         assert!(preview.risks.iter().any(|r| r.id == "missed_callers"));
         assert!(preview.risks.iter().any(|r| r.id == "behavior_change"));
-        assert!(preview.suggested_verify_gates.contains(&"build".to_string()));
-        assert!(preview.suggested_verify_gates.contains(&"typecheck".to_string()));
+        assert!(
+            preview
+                .suggested_verify_gates
+                .contains(&"build".to_string())
+        );
+        assert!(
+            preview
+                .suggested_verify_gates
+                .contains(&"typecheck".to_string())
+        );
     }
 
     #[test]
@@ -266,7 +306,11 @@ mod tests {
         let preview = analyze_risks("fix SQL injection in user search", &ctx);
 
         assert!(preview.risks.iter().any(|r| r.id == "incomplete_fix"));
-        let security_risk = preview.risks.iter().find(|r| r.id == "incomplete_fix").unwrap();
+        let security_risk = preview
+            .risks
+            .iter()
+            .find(|r| r.id == "incomplete_fix")
+            .unwrap();
         assert!(security_risk.severity > 0.9);
     }
 
