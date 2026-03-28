@@ -1218,4 +1218,146 @@ mod tests {
         assert_eq!(body["events"][0]["hook_name"], "PostToolUse");
         assert_eq!(body["events"][0]["detail"], "Bash");
     }
+
+    // -- Session ID resolution (cross-ID correlation) -------------------------
+    //
+    // These tests simulate the real-world flow: Claude Code sends its own
+    // session_id in hook payloads, which differs from the OCO internal UUID.
+    // Before the review fix, all these lookups silently returned None.
+
+    #[tokio::test]
+    async fn resolve_session_id_by_oco_uuid() {
+        let state = test_state();
+        let oco_sid = state
+            .session_manager
+            .create_session("test", None, None)
+            .unwrap();
+
+        let resolved = state.session_manager.resolve_session_id(&oco_sid).await;
+        assert_eq!(resolved.as_deref(), Some(oco_sid.as_str()));
+    }
+
+    #[tokio::test]
+    async fn resolve_session_id_by_external_id() {
+        let state = test_state();
+        let oco_sid = state
+            .session_manager
+            .create_session("test", None, Some("claude-sess-xyz"))
+            .unwrap();
+
+        // Lookup by Claude Code session_id → should find the OCO session
+        let resolved = state
+            .session_manager
+            .resolve_session_id("claude-sess-xyz")
+            .await;
+        assert_eq!(resolved.as_deref(), Some(oco_sid.as_str()));
+    }
+
+    #[tokio::test]
+    async fn resolve_session_id_unknown_returns_none() {
+        let state = test_state();
+        let _ = state
+            .session_manager
+            .create_session("test", None, Some("claude-abc"))
+            .unwrap();
+
+        let resolved = state
+            .session_manager
+            .resolve_session_id("totally-unknown")
+            .await;
+        assert!(resolved.is_none());
+    }
+
+    #[tokio::test]
+    async fn hook_events_recorded_via_external_session_id() {
+        // Simulates the real flow: create_session with external_id,
+        // then record_hook_event using the external_id (as Claude Code would).
+        let state = test_state();
+        let oco_sid = state
+            .session_manager
+            .create_session("test", None, Some("claude-sess-42"))
+            .unwrap();
+
+        // Resolve external → OCO, then record
+        let resolved = state
+            .session_manager
+            .resolve_session_id("claude-sess-42")
+            .await
+            .unwrap();
+        let recorded = state
+            .session_manager
+            .record_hook_event(&resolved, "PostToolUse", "Read")
+            .await;
+        assert!(recorded);
+
+        // Verify the event is stored in the OCO session
+        let events = state
+            .session_manager
+            .get_hook_events(&oco_sid)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].detail, "Read");
+    }
+
+    #[tokio::test]
+    async fn compact_snapshot_via_external_session_id() {
+        let state = test_state();
+        let oco_sid = state
+            .session_manager
+            .create_session("test", None, Some("claude-compact-1"))
+            .unwrap();
+
+        // Inject state with data
+        let session = oco_shared_types::Session::new("test".into(), None);
+        let mut orch_state = oco_orchestrator_core::state::OrchestrationState::new(session);
+        let fact = oco_shared_types::MemoryEntry::new("important fact".into(), 1.0);
+        let fact_id = fact.id;
+        orch_state.memory.add_finding(fact);
+        orch_state.memory.promote_to_fact(fact_id);
+        state
+            .session_manager
+            .inject_state(&oco_sid, orch_state)
+            .await
+            .unwrap();
+
+        // Resolve via external_id (as hook_post_compact would)
+        let resolved = state
+            .session_manager
+            .resolve_session_id("claude-compact-1")
+            .await
+            .unwrap();
+        let snap = state.session_manager.get_compact_snapshot(&resolved).await;
+        assert!(snap.is_some());
+        assert_eq!(snap.unwrap()["verified_facts"][0], "important fact");
+    }
+
+    // -- Rate limiter CAS behavior --------------------------------------------
+
+    #[test]
+    fn rate_limiter_concurrent_window_reset_is_bounded() {
+        use crate::hooks::RateLimiter;
+        // Simulate the scenario: limiter at window boundary
+        let limiter = RateLimiter::new(5);
+
+        // Exhaust current window
+        for _ in 0..5 {
+            assert!(limiter.check());
+        }
+        assert!(!limiter.check());
+
+        // Force window_start to 0 to simulate a new second
+        limiter
+            .window_start
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+
+        // First check wins the CAS and resets
+        assert!(limiter.check());
+        // Subsequent checks in the same window use the normal counter
+        for _ in 1..5 {
+            assert!(limiter.check());
+        }
+        // 6th should be rejected
+        assert!(!limiter.check());
+    }
 }
