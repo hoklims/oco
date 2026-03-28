@@ -177,21 +177,25 @@ impl RateLimiter {
 
     /// Returns `true` if the request is within the rate limit.
     pub(crate) fn check(&self) -> bool {
+        use std::sync::atomic::Ordering;
+
         let now = Self::now_secs();
-        let window = self.window_start.load(std::sync::atomic::Ordering::Relaxed);
+        let window = self.window_start.load(Ordering::Acquire);
 
         if now != window {
-            // New second — reset counter. Race is benign (worst case: a few
-            // extra requests slip through at window boundary).
-            self.window_start
-                .store(now, std::sync::atomic::Ordering::Relaxed);
-            self.count.store(1, std::sync::atomic::Ordering::Relaxed);
-            return true;
+            // CAS: only one thread wins the window reset
+            if self
+                .window_start
+                .compare_exchange(window, now, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                self.count.store(1, Ordering::Release);
+                return true;
+            }
+            // Lost the race — fall through to normal increment
         }
 
-        let prev = self
-            .count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let prev = self.count.fetch_add(1, Ordering::Relaxed);
         prev < self.max_per_second
     }
 
@@ -286,6 +290,19 @@ fn validate_event(
     Ok(())
 }
 
+/// Resolve the payload session_id to an OCO session ID.
+///
+/// The hook payload carries a Claude Code session ID which may differ from the
+/// OCO internal UUID. This helper tries direct lookup first, then reverse
+/// lookup by external_session_id.
+async fn resolve_oco_session_id(
+    state: &AppState,
+    payload_session_id: Option<&str>,
+) -> Option<String> {
+    let sid = payload_session_id?;
+    state.session_manager.resolve_session_id(sid).await
+}
+
 /// Validate the event name and deserialize the payload `data` field in one step.
 ///
 /// Combines `validate_event` + `serde_json::from_value` with uniform error
@@ -350,10 +367,10 @@ pub async fn hook_post_tool(
     );
 
     // Record in active session telemetry if we can match the session
-    if let Some(ref session_id) = payload.session_id {
+    if let Some(oco_sid) = resolve_oco_session_id(&state, payload.session_id.as_deref()).await {
         state
             .session_manager
-            .record_hook_event(session_id, "PostToolUse", &data.tool_name)
+            .record_hook_event(&oco_sid, "PostToolUse", &data.tool_name)
             .await;
     }
 
@@ -394,10 +411,10 @@ pub async fn hook_task_completed(
         "hook: task-completed"
     );
 
-    if let Some(ref session_id) = payload.session_id {
+    if let Some(oco_sid) = resolve_oco_session_id(&state, payload.session_id.as_deref()).await {
         state
             .session_manager
-            .record_hook_event(session_id, "TaskCompleted", &data.task_id)
+            .record_hook_event(&oco_sid, "TaskCompleted", &data.task_id)
             .await;
     }
 
@@ -469,8 +486,8 @@ pub async fn hook_post_compact(
     );
 
     // Try to retrieve a compact snapshot from the active session
-    let snapshot = match payload.session_id.as_deref() {
-        Some(sid) => state.session_manager.get_compact_snapshot(sid).await,
+    let snapshot = match resolve_oco_session_id(&state, payload.session_id.as_deref()).await {
+        Some(oco_sid) => state.session_manager.get_compact_snapshot(&oco_sid).await,
         None => None,
     };
 
@@ -521,10 +538,10 @@ pub async fn hook_stop(
         "hook: stop — session terminated"
     );
 
-    if let Some(ref session_id) = payload.session_id
-        && let Err(e) = state.session_manager.stop_session(session_id).await
+    if let Some(oco_sid) = resolve_oco_session_id(&state, payload.session_id.as_deref()).await
+        && let Err(e) = state.session_manager.stop_session(&oco_sid).await
     {
-        warn!(session_id, error = %e, "failed to stop session from hook");
+        warn!(session_id = %oco_sid, error = %e, "failed to stop session from hook");
     }
 
     (StatusCode::OK, Json(HookResponse::ok()))

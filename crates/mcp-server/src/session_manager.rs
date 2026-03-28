@@ -293,6 +293,28 @@ impl SessionManager {
         if has_content { Some(snapshot) } else { None }
     }
 
+    /// Resolve a session ID — tries direct OCO key first, then reverse lookup
+    /// by `external_session_id` (Claude Code session ID).
+    pub async fn resolve_session_id(&self, id: &str) -> Option<String> {
+        // Direct lookup by OCO session UUID
+        if self.sessions.contains_key(id) {
+            return Some(id.to_string());
+        }
+        // Reverse lookup by external_session_id (Claude Code session)
+        let snapshot: Vec<(String, Arc<Mutex<SessionState>>)> = self
+            .sessions
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
+        for (oco_id, session) in snapshot {
+            let guard = session.lock().await;
+            if guard.external_session_id.as_deref() == Some(id) {
+                return Some(oco_id);
+            }
+        }
+        None
+    }
+
     /// Get all hook events for a session.
     pub async fn get_hook_events(&self, id: &str) -> anyhow::Result<Vec<HookEvent>> {
         let session = self

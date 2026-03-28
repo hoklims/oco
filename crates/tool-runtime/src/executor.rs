@@ -229,14 +229,13 @@ impl FileToolExecutor {
                 reason: e.to_string(),
             })?;
         if tokio::fs::rename(&tmp, &resolved).await.is_err() {
-            // rename can fail cross-device; fall back to copy+remove
-            tokio::fs::copy(&tmp, &resolved).await.map_err(|e| {
-                ToolRuntimeError::ExecutionFailed {
-                    tool_name: "write_file".to_string(),
-                    reason: format!("atomic rename fallback failed: {e}"),
-                }
+            // rename can fail cross-device; fall back to copy+remove, always cleanup tmp
+            let copy_result = tokio::fs::copy(&tmp, &resolved).await;
+            let _ = tokio::fs::remove_file(&tmp).await; // always attempt cleanup
+            copy_result.map_err(|e| ToolRuntimeError::ExecutionFailed {
+                tool_name: "write_file".to_string(),
+                reason: format!("atomic rename fallback failed: {e}"),
             })?;
-            let _ = tokio::fs::remove_file(&tmp).await;
         }
 
         Ok(ToolResult {

@@ -320,9 +320,7 @@ impl OrchestrationLoop {
             if self.cancel.as_ref().is_some_and(|t| t.is_cancelled()) {
                 info!(session_id = %state.session.id.0, "Stopping orchestration (external cancel)");
                 state.push_action(OrchestratorAction::Stop {
-                    reason: StopReason::Error {
-                        message: "Session cancelled by external signal".into(),
-                    },
+                    reason: StopReason::UserCancelled,
                 });
                 break;
             }

@@ -521,9 +521,9 @@ fn atomic_write(path: &Path, content: impl AsRef<[u8]>) -> Result<()> {
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, path).or_else(|_| {
         // rename can fail cross-device; fall back to copy+remove
-        std::fs::copy(&tmp, path)?;
-        let _ = std::fs::remove_file(&tmp);
-        Ok(())
+        let r = std::fs::copy(&tmp, path).map(|_| ());
+        let _ = std::fs::remove_file(&tmp); // always attempt cleanup
+        r.map_err(anyhow::Error::from)
     })
 }
 

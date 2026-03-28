@@ -29,7 +29,13 @@ function safeReadJson(path, fallback = {}) {
 function atomicWriteFileSync(path, content) {
   const tmp = path + '.tmp';
   writeFileSync(tmp, content);
-  renameSync(tmp, path);
+  try {
+    renameSync(tmp, path);
+  } catch {
+    // Cross-device fallback (EXDEV)
+    try { writeFileSync(path, readFileSync(tmp)); } catch { /* propagate original */ }
+    try { rmSync(tmp); } catch { /* ignore cleanup failure */ }
+  }
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
