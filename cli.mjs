@@ -57,6 +57,29 @@ function checkOcoUsable() {
   } catch { return false; }
 }
 
+/**
+ * Run `claude mcp list` and check if oco appears.
+ * Returns: 'connected' | 'listed' | 'missing' | 'unavailable'
+ */
+function checkMcpHealth() {
+  try {
+    const res = spawnSync('claude', ['mcp', 'list'], {
+      encoding: 'utf8', timeout: 30000, windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const output = (res.stdout || '') + (res.stderr || '');
+    if (!output.includes('mcp') && !output.includes('MCP') && !output.includes('Connected')) {
+      return 'unavailable';
+    }
+    // Look for oco line in output
+    const lines = output.split('\n');
+    const ocoLine = lines.find(l => /^oco[:\s]/i.test(l.trim()));
+    if (!ocoLine) return 'missing';
+    if (ocoLine.includes('Connected')) return 'connected';
+    return 'listed';
+  } catch { return 'unavailable'; }
+}
+
 // --- CLI Argument Parsing ---
 
 const [,, command, ...args] = process.argv;
@@ -162,7 +185,30 @@ async function install() {
     console.log(`  merge settings.json (managed-settings.d not available)`);
   }
 
-  // 4. Write manifest
+  // 4. Write .mcp.json (project-level only) — ensures `claude mcp list` visibility
+  //    managed-settings.d/ activates MCP in-session, but `claude mcp list` reads .mcp.json
+  if (!isGlobal) {
+    const projectRoot = findProjectRoot(process.cwd());
+    const mcpJsonPath = join(projectRoot, '.mcp.json');
+    const mcpEntry = fragment.mcpServers || {};
+
+    if (existsSync(mcpJsonPath)) {
+      // Merge: add oco key without overwriting other servers
+      const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf8'));
+      const merged = { ...existing, mcpServers: { ...(existing.mcpServers || {}), ...mcpEntry } };
+      if (JSON.stringify(merged) !== JSON.stringify(existing)) {
+        writeFileSync(mcpJsonPath, JSON.stringify(merged, null, 2) + '\n');
+        console.log(`  merge .mcp.json (added oco server)`);
+      } else {
+        console.log(`  skip  .mcp.json (oco already declared)`);
+      }
+    } else {
+      writeFileSync(mcpJsonPath, JSON.stringify({ mcpServers: mcpEntry }, null, 2) + '\n');
+      console.log(`  write .mcp.json`);
+    }
+  }
+
+  // 5. Write manifest
   const manifest = {
     version: VERSION,
     installedAt: new Date().toISOString(),
@@ -195,11 +241,38 @@ async function install() {
   check(settingsOk, useDropin ? 'managed-settings.d/50-oco.json' : 'settings.json');
   check(bridgeOk, 'MCP bridge');
 
+  // Check .mcp.json
+  if (!isGlobal) {
+    const projectRoot = findProjectRoot(process.cwd());
+    const mcpJsonPath = join(projectRoot, '.mcp.json');
+    if (existsSync(mcpJsonPath)) {
+      try {
+        const mcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf8'));
+        check(!!mcpJson.mcpServers?.oco, '.mcp.json');
+      } catch { check(false, '.mcp.json (invalid JSON)'); }
+    } else {
+      check(false, '.mcp.json');
+    }
+  }
+
   console.log('\n  Runtime layer');
   if (ocoAvailable) {
     check(true, `oco binary found${ocoVersion ? ` (v${ocoVersion})` : ''}`);
   } else {
     check(false, 'oco binary not found');
+  }
+
+  // MCP live check
+  console.log('\n  MCP health');
+  const mcpStatus = checkMcpHealth();
+  if (mcpStatus === 'connected') {
+    check(true, 'claude mcp list — oco connected');
+  } else if (mcpStatus === 'listed') {
+    check(false, 'claude mcp list — oco listed but not connected');
+  } else if (mcpStatus === 'missing') {
+    check(false, 'claude mcp list — oco not found');
+  } else {
+    console.log(`    - claude mcp list — skipped (claude CLI not available)`);
   }
 
   // Dual install warning
@@ -306,11 +379,33 @@ async function uninstall() {
     }
   }
 
-  // 4. Remove manifest
+  // 4. Clean .mcp.json (remove oco server entry)
+  if (!isGlobal) {
+    const projectRoot = findProjectRoot(process.cwd());
+    const mcpJsonPath = join(projectRoot, '.mcp.json');
+    if (existsSync(mcpJsonPath)) {
+      try {
+        const mcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf8'));
+        if (mcpJson.mcpServers?.oco) {
+          delete mcpJson.mcpServers.oco;
+          if (Object.keys(mcpJson.mcpServers).length === 0) delete mcpJson.mcpServers;
+          if (Object.keys(mcpJson).length === 0 || (Object.keys(mcpJson).length === 1 && mcpJson.mcpServers && Object.keys(mcpJson.mcpServers).length === 0)) {
+            rmSync(mcpJsonPath);
+            console.log(`  rm    .mcp.json (empty after cleanup)`);
+          } else {
+            writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + '\n');
+            console.log(`  clean .mcp.json (removed oco server)`);
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 5. Remove manifest
   rmSync(manifestPath);
   console.log(`  rm    ${MANIFEST_FILE}`);
 
-  // 5. Remove .claude/ if empty
+  // 6. Remove .claude/ if empty
   if (existsSync(targetDir) && isDirEmpty(targetDir)) {
     rmSync(targetDir, { recursive: true });
     console.log(`  rmdir .claude/`);
@@ -457,6 +552,22 @@ function doctor() {
 
   if (existsSync(join(targetDir, 'mcp/bridge.cjs'))) ok('MCP bridge');
   else warn('MCP bridge missing (mcp/bridge.cjs)');
+
+  // Check .mcp.json visibility
+  if (source !== 'global') {
+    const projectRoot = findProjectRoot(process.cwd());
+    const mcpJsonPath = join(projectRoot, '.mcp.json');
+    if (existsSync(mcpJsonPath)) {
+      try {
+        const mcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf8'));
+        if (mcpJson.mcpServers?.oco) ok('.mcp.json (oco server declared — visible in claude mcp list)');
+        else warn('.mcp.json exists but missing oco entry — run: npx oco-claude-plugin install --force');
+      } catch { warn('.mcp.json exists but is not valid JSON'); }
+    } else {
+      warn('.mcp.json not found — oco will work in-session but not appear in claude mcp list');
+      console.log('      Run: npx oco-claude-plugin install --force');
+    }
+  }
 
   // --- Version match ---
   if (manifest.version !== VERSION) {
