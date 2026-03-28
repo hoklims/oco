@@ -27,12 +27,14 @@ const VERSION = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf8')
 const [,, command, ...args] = process.argv;
 const isGlobal = args.includes('--global') || args.includes('-g');
 const isForce = args.includes('--force') || args.includes('-f');
+const isDryRun = args.includes('--dry-run');
 
 switch (command) {
   case 'install':   await install(); break;
   case 'uninstall': await uninstall(); break;
   case 'status':    status(); break;
   case 'doctor':    process.exit(doctor()); break;
+  case 'repair':    process.exit(await repair()); break;
   default:          usage(); break;
 }
 
@@ -454,6 +456,123 @@ function getClaudeVersion() {
     }
   } catch {}
   return null;
+}
+
+// --- Repair ---
+
+async function repair() {
+  const targetDir = resolveTarget();
+  const fragment = JSON.parse(readFileSync(join(PLUGIN_SRC, 'settings-fragment.json'), 'utf8'));
+
+  console.log(`\n  OCO Claude Code Plugin — Repair${isDryRun ? ' (dry run)' : ''}`);
+  console.log(`  Target: ${targetDir}\n`);
+
+  if (isGlobal) rewritePathsForGlobal(fragment, targetDir);
+
+  let repaired = 0;
+  let ok = 0;
+
+  const expectedFiles = collectFiles(PLUGIN_SRC).filter(f => f !== 'settings-fragment.json');
+
+  // 1. Check and restore missing/damaged plugin files
+  for (const relPath of expectedFiles) {
+    const dest = join(targetDir, relPath);
+    const src = join(PLUGIN_SRC, relPath);
+
+    if (existsSync(dest)) {
+      console.log(`    ✓ ${relPath}`);
+      ok++;
+      continue;
+    }
+
+    if (isDryRun) {
+      console.log(`    ⚡ ${relPath} (would restore)`);
+      repaired++;
+      continue;
+    }
+
+    const destDir = dirname(dest);
+    if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
+
+    try {
+      cpSync(src, dest, { force: true });
+      console.log(`    ⚡ ${relPath} (restored)`);
+      repaired++;
+    } catch (err) {
+      console.log(`    ✗ ${relPath} (restore failed: ${err.code || err.message})`);
+    }
+  }
+
+  // 2. Restore settings if missing
+  const dropinPath = join(targetDir, DROPIN_FILE);
+  const settingsPath = join(targetDir, 'settings.json');
+
+  if (existsSync(dropinPath)) {
+    console.log(`    ✓ ${DROPIN_FILE}`);
+    ok++;
+  } else if (existsSync(settingsPath)) {
+    console.log(`    ✓ settings.json (legacy mode)`);
+    ok++;
+  } else {
+    if (isDryRun) {
+      console.log(`    ⚡ ${DROPIN_FILE} (would restore)`);
+      repaired++;
+    } else {
+      const dropinDir = join(targetDir, 'managed-settings.d');
+      if (!existsSync(dropinDir)) mkdirSync(dropinDir, { recursive: true });
+      writeFileSync(dropinPath, JSON.stringify(fragment, null, 2) + '\n');
+      console.log(`    ⚡ ${DROPIN_FILE} (restored)`);
+      repaired++;
+    }
+  }
+
+  // 3. Restore manifest if missing
+  const manifestPath = join(targetDir, MANIFEST_FILE);
+  if (existsSync(manifestPath)) {
+    ok++;
+  } else {
+    if (isDryRun) {
+      console.log(`    ⚡ ${MANIFEST_FILE} (would restore)`);
+      repaired++;
+    } else {
+      const manifest = {
+        version: VERSION,
+        installedAt: new Date().toISOString(),
+        global: isGlobal,
+        settingsMode: existsSync(dropinPath) ? 'managed-settings.d' : 'settings.json',
+        files: expectedFiles,
+        settingsKeys: {
+          hooks: Object.keys(fragment.hooks || {}),
+          mcpServers: Object.keys(fragment.mcpServers || {}),
+          permissionsAllow: fragment.permissions?.allow || [],
+        },
+      };
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+      console.log(`    ⚡ ${MANIFEST_FILE} (restored)`);
+      repaired++;
+    }
+  }
+
+  // 4. Warn about dual install (never auto-fix)
+  const otherDir = isGlobal ? resolveTargetSafe('project') : resolveTargetSafe('global');
+  const otherManifest = readManifest(otherDir);
+  if (otherManifest) {
+    const otherScope = isGlobal ? 'project' : 'global';
+    console.log(`\n    ⚠ Dual install: ${otherScope} also has v${otherManifest.version}`);
+    console.log(`      To remove: npx oco-claude-plugin uninstall ${otherScope === 'global' ? '--global' : ''}`);
+  }
+
+  if (repaired === 0) {
+    console.log(`\n  All ${ok} component(s) OK. Nothing to repair.`);
+  } else if (isDryRun) {
+    console.log(`\n  ${repaired} file(s) would be restored. Run without --dry-run to apply.`);
+  } else {
+    console.log(`\n  ${repaired} file(s) repaired, ${ok} already OK.`);
+    console.log(`  Run 'npx oco-claude-plugin doctor' to verify.`);
+  }
+
+  console.log();
+  return repaired > 0 && !isDryRun ? 0 : (repaired > 0 ? 1 : 0);
 }
 
 // --- Helpers ---
