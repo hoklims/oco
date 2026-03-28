@@ -187,6 +187,8 @@ pub struct GraphRunner {
     tokens_used: u64,
     /// Agent Teams executor for Teammate steps (#44).
     agent_teams: Option<crate::agent_teams::AgentTeamsExecutor>,
+    /// External cancellation token (signaled by session manager on stop hook).
+    cancel: Option<CancellationToken>,
 }
 
 impl GraphRunner {
@@ -198,6 +200,7 @@ impl GraphRunner {
             token_budget: 100_000,
             tokens_used: 0,
             agent_teams: None,
+            cancel: None,
         }
     }
 
@@ -208,6 +211,12 @@ impl GraphRunner {
 
     pub fn with_budget(mut self, budget: u64) -> Self {
         self.token_budget = budget;
+        self
+    }
+
+    /// Set an external cancellation token for cooperative shutdown.
+    pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
+        self.cancel = Some(token);
         self
     }
 
@@ -238,6 +247,12 @@ impl GraphRunner {
         let mut last_completed_count = 0usize;
 
         loop {
+            // External cancellation check
+            if self.cancel.as_ref().is_some_and(|t| t.is_cancelled()) {
+                warn!("graph execution cancelled by external signal");
+                break;
+            }
+
             // Budget check
             if self.tokens_used >= self.token_budget {
                 warn!("token budget exhausted during graph execution");
@@ -1093,6 +1108,91 @@ mod tests {
         let c = StepConstraints::new(5000);
         assert_eq!(c.token_budget, 5000);
         assert!(!c.cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn external_cancel_stops_graph_execution() {
+        // Setup: 3 sequential steps (a → b → c)
+        let a = PlanStep::new("a", "first");
+        let b = PlanStep::new("b", "second").with_depends_on(vec![a.id]);
+        let c = PlanStep::new("c", "third").with_depends_on(vec![b.id]);
+        let plan = make_plan(vec![a, b, c]);
+
+        // Create a cancel token and signal it immediately
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let executor = Arc::new(StubStepExecutor::all_pass());
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner)
+            .with_budget(50_000)
+            .with_cancellation(token);
+
+        let result = runner.execute(plan, &ctx()).await.unwrap();
+        // Plan should NOT be complete — cancelled before any step ran
+        assert!(!result.is_complete());
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_execution_stops_remaining_steps() {
+        // Setup: a → b (sequential)
+        let a = PlanStep::new("a", "first");
+        let b = PlanStep::new("b", "second").with_depends_on(vec![a.id]);
+        let plan = make_plan(vec![a.clone(), b.clone()]);
+
+        let token = CancellationToken::new();
+
+        // Use a custom executor that cancels after step "a" completes
+        struct CancelAfterFirstExecutor {
+            token: CancellationToken,
+        }
+        #[async_trait::async_trait]
+        impl StepExecutor for CancelAfterFirstExecutor {
+            async fn execute_step(
+                &self,
+                step: &PlanStep,
+                _context: &[String],
+                _constraints: &StepConstraints,
+            ) -> Result<StepResult, OrchestratorError> {
+                let result = StepResult {
+                    step_id: step.id,
+                    success: true,
+                    output: format!("done: {}", step.name),
+                    duration_ms: 10,
+                    tokens_used: 100,
+                };
+                // Cancel after executing step "a"
+                if step.name == "a" {
+                    self.token.cancel();
+                }
+                Ok(result)
+            }
+
+            async fn verify_step(&self, step: &PlanStep) -> Result<StepResult, OrchestratorError> {
+                Ok(StepResult {
+                    step_id: step.id,
+                    success: true,
+                    output: "verified".into(),
+                    duration_ms: 10,
+                    tokens_used: 50,
+                })
+            }
+        }
+
+        let executor = Arc::new(CancelAfterFirstExecutor {
+            token: token.clone(),
+        });
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner)
+            .with_budget(50_000)
+            .with_cancellation(token);
+
+        let result = runner.execute(plan, &ctx()).await.unwrap();
+        // Step "a" should have completed, step "b" should NOT
+        let step_a = result.get_step(a.id).unwrap();
+        assert!(step_a.is_terminal(), "step a should have completed");
+        let step_b = result.get_step(b.id).unwrap();
+        assert!(!step_b.is_terminal(), "step b should not have run");
     }
 
     // -- Toxic scenarios (fix #24) --

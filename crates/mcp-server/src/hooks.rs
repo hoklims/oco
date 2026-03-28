@@ -23,8 +23,22 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{debug, info, warn};
+
+// ---------------------------------------------------------------------------
+// Hook infrastructure constants
+// ---------------------------------------------------------------------------
+
+/// Maximum hook request body size (bytes).
+const HOOK_BODY_LIMIT: usize = 64 * 1024;
+
+/// Handler timeout — protects against lock contention or slow I/O.
+const HOOK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Global rate limit for hook endpoints (requests per second).
+const HOOK_RATE_LIMIT_RPS: u64 = 100;
 
 use crate::server::AppState;
 
@@ -62,11 +76,19 @@ pub async fn hook_auth_middleware(
     next.run(request).await.into_response()
 }
 
-/// Build the hook sub-router with auth middleware and body size limit.
+/// Build the hook sub-router with auth, body limit, timeout, and rate limit.
 ///
 /// Applied only to `/api/v1/hooks/*` routes.
+///
+/// Layer order (outermost → innermost):
+/// 1. Auth — rejects unauthenticated requests immediately
+/// 2. Rate limit — sheds excess load before parsing body
+/// 3. Body limit — rejects oversized payloads
+/// 4. Timeout — bounds handler execution time
 pub fn hook_router(state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
     use axum::routing::post;
+
+    let rate_limiter = Arc::new(RateLimiter::new(HOOK_RATE_LIMIT_RPS));
 
     axum::Router::new()
         .route("/post-tool", post(hook_post_tool))
@@ -75,10 +97,110 @@ pub fn hook_router(state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
         .route("/post-compact", post(hook_post_compact))
         .route("/stop", post(hook_stop))
         .route("/{event}", post(hook_catchall))
-        // 64 KB body limit — hooks carry small JSON payloads
-        .layer(RequestBodyLimitLayer::new(64 * 1024))
-        // TODO: add rate limiting middleware for production deployments
+        // Body limit (64 KB)
+        .layer(RequestBodyLimitLayer::new(HOOK_BODY_LIMIT))
+        // Rate limit, timeout, and custom error responses for 413
+        .layer(middleware::from_fn(move |req, next: middleware::Next| {
+            let limiter = Arc::clone(&rate_limiter);
+            async move {
+                // Rate limit check
+                if !limiter.check() {
+                    warn!("hook rate limit exceeded");
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(serde_json::json!({
+                            "error": "rate limit exceeded",
+                            "max_rps": HOOK_RATE_LIMIT_RPS,
+                        })),
+                    )
+                        .into_response();
+                }
+
+                // Timeout: bound handler execution, then check for 413
+                match tokio::time::timeout(HOOK_TIMEOUT, next.run(req)).await {
+                    Ok(response) => {
+                        let response = response.into_response();
+                        // Convert bare 413 to JSON response
+                        if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                            return (
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                Json(serde_json::json!({
+                                    "error": "payload too large",
+                                    "max_bytes": HOOK_BODY_LIMIT,
+                                })),
+                            )
+                                .into_response();
+                        }
+                        response
+                    }
+                    Err(_elapsed) => {
+                        warn!(
+                            timeout_secs = HOOK_TIMEOUT.as_secs(),
+                            "hook handler timed out"
+                        );
+                        (
+                            StatusCode::REQUEST_TIMEOUT,
+                            Json(serde_json::json!({
+                                "error": "handler timed out",
+                                "timeout_secs": HOOK_TIMEOUT.as_secs(),
+                            })),
+                        )
+                            .into_response()
+                    }
+                }
+            }
+        }))
+        // Outermost: auth
         .layer(middleware::from_fn_with_state(state, hook_auth_middleware))
+}
+
+// ---------------------------------------------------------------------------
+// Simple rate limiter (atomic counter, 1-second window)
+// ---------------------------------------------------------------------------
+
+/// Global rate limiter with a sliding 1-second window.
+/// Uses atomic operations — no locks, no allocations.
+pub(crate) struct RateLimiter {
+    max_per_second: u64,
+    count: std::sync::atomic::AtomicU64,
+    pub(crate) window_start: std::sync::atomic::AtomicU64,
+}
+
+impl RateLimiter {
+    pub(crate) fn new(max_per_second: u64) -> Self {
+        Self {
+            max_per_second,
+            count: std::sync::atomic::AtomicU64::new(0),
+            window_start: std::sync::atomic::AtomicU64::new(Self::now_secs()),
+        }
+    }
+
+    /// Returns `true` if the request is within the rate limit.
+    pub(crate) fn check(&self) -> bool {
+        let now = Self::now_secs();
+        let window = self.window_start.load(std::sync::atomic::Ordering::Relaxed);
+
+        if now != window {
+            // New second — reset counter. Race is benign (worst case: a few
+            // extra requests slip through at window boundary).
+            self.window_start
+                .store(now, std::sync::atomic::Ordering::Relaxed);
+            self.count.store(1, std::sync::atomic::Ordering::Relaxed);
+            return true;
+        }
+
+        let prev = self
+            .count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        prev < self.max_per_second
+    }
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -228,13 +350,11 @@ pub async fn hook_post_tool(
     );
 
     // Record in active session telemetry if we can match the session
-    if let Some(ref session_id) = payload.session_id
-        && let Err(e) = state
+    if let Some(ref session_id) = payload.session_id {
+        state
             .session_manager
-            .record_hook_event(session_id, "post_tool_use", &data.tool_name)
-            .await
-    {
-        warn!(session_id, error = %e, "failed to record post_tool_use hook event");
+            .record_hook_event(session_id, "PostToolUse", &data.tool_name)
+            .await;
     }
 
     (StatusCode::OK, Json(HookResponse::ok()))
@@ -274,13 +394,11 @@ pub async fn hook_task_completed(
         "hook: task-completed"
     );
 
-    if let Some(ref session_id) = payload.session_id
-        && let Err(e) = state
+    if let Some(ref session_id) = payload.session_id {
+        state
             .session_manager
-            .record_hook_event(session_id, "task_completed", &data.task_id)
-            .await
-    {
-        warn!(session_id, error = %e, "failed to record task_completed hook event");
+            .record_hook_event(session_id, "TaskCompleted", &data.task_id)
+            .await;
     }
 
     (StatusCode::OK, Json(HookResponse::ok()))
@@ -333,8 +451,12 @@ pub async fn hook_file_changed(
 // ---------------------------------------------------------------------------
 
 /// `POST /api/v1/hooks/post-compact` — called after Claude Code compacts context.
+///
+/// Re-injects a compact snapshot of the session's working memory so that
+/// verified facts, active hypotheses, plan state, and open questions survive
+/// context compaction.
 pub async fn hook_post_compact(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
     if let Err(resp) = validate_event(&payload, "PostCompact") {
@@ -346,15 +468,27 @@ pub async fn hook_post_compact(
         "hook: post-compact — context compaction detected"
     );
 
-    // TODO(#45): re-inject WorkingMemory and current plan into context
-    // This requires the session to have a plan reference.
+    // Try to retrieve a compact snapshot from the active session
+    let snapshot = match payload.session_id.as_deref() {
+        Some(sid) => state.session_manager.get_compact_snapshot(sid).await,
+        None => None,
+    };
 
-    (
-        StatusCode::OK,
-        Json(HookResponse::ok_with_message(
-            "compaction acknowledged, context re-injection pending",
-        )),
-    )
+    match snapshot {
+        Some(snap) => {
+            let message = format!(
+                "OCO context to preserve after compact:\n{}",
+                serde_json::to_string_pretty(&snap).unwrap_or_default()
+            );
+            debug!(
+                session = ?payload.session_id,
+                snapshot_keys = ?snap.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+                "post-compact: re-injecting working memory snapshot"
+            );
+            (StatusCode::OK, Json(HookResponse::ok_with_message(message)))
+        }
+        None => (StatusCode::OK, Json(HookResponse::ok())),
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -100,6 +100,7 @@ impl OrchestrationState {
                 .map(|c| c.utilization())
                 .unwrap_or(0.0),
             alternatives_considered: alternatives,
+            external_session_id: self.session.external_session_id.clone(),
         };
         self.traces.push(trace);
     }

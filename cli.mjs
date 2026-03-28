@@ -10,11 +10,27 @@
  * Zero external dependencies. Node >= 18.
  */
 
-import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync, renameSync } from 'node:fs';
 import { join, dirname, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execSync, spawnSync } from 'node:child_process';
+
+/** Parse JSON file safely — returns fallback on read/parse error. */
+function safeReadJson(path, fallback = {}) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+/** Write via temp file + rename to prevent corruption on crash. */
+function atomicWriteFileSync(path, content) {
+  const tmp = path + '.tmp';
+  writeFileSync(tmp, content);
+  renameSync(tmp, path);
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_SRC = join(__dirname, 'plugin');
@@ -155,12 +171,12 @@ async function install() {
     if (!existsSync(dropinDir)) {
       mkdirSync(dropinDir, { recursive: true });
     }
-    writeFileSync(dropinPath, JSON.stringify(fragment, null, 2) + '\n');
+    atomicWriteFileSync(dropinPath, JSON.stringify(fragment, null, 2) + '\n');
     console.log(`  write ${DROPIN_FILE}`);
 
     // Migrate: remove OCO entries from settings.json if present
     if (existsSync(settingsPath)) {
-      const existing = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      const existing = safeReadJson(settingsPath);
       const cleaned = removeOcoSettings(existing, {
         hooks: Object.keys(fragment.hooks || {}),
         mcpServers: Object.keys(fragment.mcpServers || {}),
@@ -170,18 +186,18 @@ async function install() {
         rmSync(settingsPath);
         console.log(`  rm    settings.json (migrated to drop-in)`);
       } else if (JSON.stringify(cleaned) !== JSON.stringify(existing)) {
-        writeFileSync(settingsPath, JSON.stringify(cleaned, null, 2) + '\n');
+        atomicWriteFileSync(settingsPath, JSON.stringify(cleaned, null, 2) + '\n');
         console.log(`  clean settings.json (migrated OCO entries to drop-in)`);
       }
     }
   } else {
     // Fallback: merge into settings.json (pre-v2.1.83 Claude Code)
     const existing = existsSync(settingsPath)
-      ? JSON.parse(readFileSync(settingsPath, 'utf8'))
+      ? safeReadJson(settingsPath)
       : {};
 
     const merged = mergeSettings(existing, fragment);
-    writeFileSync(settingsPath, JSON.stringify(merged, null, 2) + '\n');
+    atomicWriteFileSync(settingsPath, JSON.stringify(merged, null, 2) + '\n');
     console.log(`  merge settings.json (managed-settings.d not available)`);
   }
 
@@ -194,16 +210,16 @@ async function install() {
 
     if (existsSync(mcpJsonPath)) {
       // Merge: add oco key without overwriting other servers
-      const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf8'));
+      const existing = safeReadJson(mcpJsonPath);
       const merged = { ...existing, mcpServers: { ...(existing.mcpServers || {}), ...mcpEntry } };
       if (JSON.stringify(merged) !== JSON.stringify(existing)) {
-        writeFileSync(mcpJsonPath, JSON.stringify(merged, null, 2) + '\n');
+        atomicWriteFileSync(mcpJsonPath, JSON.stringify(merged, null, 2) + '\n');
         console.log(`  merge .mcp.json (added oco server)`);
       } else {
         console.log(`  skip  .mcp.json (oco already declared)`);
       }
     } else {
-      writeFileSync(mcpJsonPath, JSON.stringify({ mcpServers: mcpEntry }, null, 2) + '\n');
+      atomicWriteFileSync(mcpJsonPath, JSON.stringify({ mcpServers: mcpEntry }, null, 2) + '\n');
       console.log(`  write .mcp.json`);
     }
   }
@@ -221,7 +237,7 @@ async function install() {
       permissionsAllow: fragment.permissions?.allow || [],
     },
   };
-  writeFileSync(join(targetDir, MANIFEST_FILE), JSON.stringify(manifest, null, 2) + '\n');
+  atomicWriteFileSync(join(targetDir, MANIFEST_FILE), JSON.stringify(manifest, null, 2) + '\n');
 
   console.log(`\n  Installed: ${copied} file(s), ${skipped} skipped.`);
 
@@ -319,7 +335,12 @@ async function uninstall() {
     process.exit(0);
   }
 
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const manifest = safeReadJson(manifestPath, null);
+  if (!manifest || !Array.isArray(manifest.files)) {
+    console.error(`  ⚠ Manifest corrupted — deleting and re-running install will fix this.`);
+    rmSync(manifestPath);
+    process.exit(1);
+  }
 
   // 1. Remove installed files
   let removed = 0;
@@ -366,14 +387,14 @@ async function uninstall() {
     // Legacy mode: clean settings.json
     const settingsPath = join(targetDir, 'settings.json');
     if (existsSync(settingsPath)) {
-      const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      const settings = safeReadJson(settingsPath);
       const cleaned = removeOcoSettings(settings, manifest.settingsKeys);
 
       if (Object.keys(cleaned).length === 0) {
         rmSync(settingsPath);
         console.log(`  rm    settings.json (empty after cleanup)`);
       } else {
-        writeFileSync(settingsPath, JSON.stringify(cleaned, null, 2) + '\n');
+        atomicWriteFileSync(settingsPath, JSON.stringify(cleaned, null, 2) + '\n');
         console.log(`  clean settings.json`);
       }
     }
@@ -385,7 +406,7 @@ async function uninstall() {
     const mcpJsonPath = join(projectRoot, '.mcp.json');
     if (existsSync(mcpJsonPath)) {
       try {
-        const mcpJson = JSON.parse(readFileSync(mcpJsonPath, 'utf8'));
+        const mcpJson = safeReadJson(mcpJsonPath);
         if (mcpJson.mcpServers?.oco) {
           delete mcpJson.mcpServers.oco;
           if (Object.keys(mcpJson.mcpServers).length === 0) delete mcpJson.mcpServers;
@@ -393,7 +414,7 @@ async function uninstall() {
             rmSync(mcpJsonPath);
             console.log(`  rm    .mcp.json (empty after cleanup)`);
           } else {
-            writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + '\n');
+            atomicWriteFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2) + '\n');
             console.log(`  clean .mcp.json (removed oco server)`);
           }
         }
@@ -428,7 +449,11 @@ function status() {
     process.exit(0);
   }
 
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const manifest = safeReadJson(manifestPath, null);
+  if (!manifest || !Array.isArray(manifest.files)) {
+    console.error(`  ⚠ Manifest corrupted — run: npx oco-claude-plugin install --force`);
+    process.exit(1);
+  }
   const present = manifest.files.filter(f => existsSync(join(targetDir, f)));
   const missing = manifest.files.filter(f => !existsSync(join(targetDir, f)));
   const ocoAvailable = commandExists('oco');
@@ -717,7 +742,7 @@ async function repair() {
     } else {
       const dropinDir = join(targetDir, 'managed-settings.d');
       if (!existsSync(dropinDir)) mkdirSync(dropinDir, { recursive: true });
-      writeFileSync(dropinPath, JSON.stringify(fragment, null, 2) + '\n');
+      atomicWriteFileSync(dropinPath, JSON.stringify(fragment, null, 2) + '\n');
       console.log(`    ⚡ ${DROPIN_FILE} (restored)`);
       repaired++;
     }
@@ -744,7 +769,7 @@ async function repair() {
           permissionsAllow: fragment.permissions?.allow || [],
         },
       };
-      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+      atomicWriteFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
       console.log(`    ⚡ ${MANIFEST_FILE} (restored)`);
       repaired++;
     }

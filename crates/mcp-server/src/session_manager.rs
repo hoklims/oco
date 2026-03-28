@@ -8,6 +8,7 @@ use serde::Serialize;
 use tokio::sync::{Mutex, watch};
 use tracing::{error, info};
 
+use oco_orchestrator_core::graph_runner::CancellationToken;
 use oco_orchestrator_core::llm::{LlmProvider, StubLlmProvider};
 use oco_orchestrator_core::state::OrchestrationState;
 use oco_orchestrator_core::{OrchestrationLoop, OrchestratorConfig};
@@ -36,7 +37,30 @@ pub struct SessionInfo {
     pub updated_at: DateTime<Utc>,
     pub complexity: String,
     pub user_request: String,
+    /// External session ID for correlation (e.g. Claude Code session).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_session_id: Option<String>,
+    /// Number of hook events received during this session.
+    pub hook_events_count: u32,
 }
+
+/// A recorded hook event — kept in memory for debug/observability.
+#[derive(Debug, Clone, Serialize)]
+pub struct HookEvent {
+    pub timestamp: DateTime<Utc>,
+    /// Hook event name (e.g. "PostToolUse", "TaskCompleted", "Stop").
+    pub hook_name: String,
+    /// Event-specific detail (tool_name, task_id, file paths, reason…).
+    pub detail: String,
+    /// Claude Code session_id from the hook payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Whether the event was recorded against an active session.
+    pub recorded: bool,
+}
+
+/// Maximum hook events retained per session.
+const MAX_HOOK_EVENTS: usize = 1000;
 
 /// Internal state held per session.
 pub struct SessionState {
@@ -47,6 +71,12 @@ pub struct SessionState {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub user_request: String,
+    /// Shared cancellation token — signaled on stop to interrupt the orchestration loop.
+    pub cancel: CancellationToken,
+    /// External session ID for correlation (e.g. Claude Code session).
+    pub external_session_id: Option<String>,
+    /// Hook events received during this session (bounded, append-only).
+    pub hook_events: Vec<HookEvent>,
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +113,12 @@ impl SessionManager {
     /// The orchestration loop runs on a dedicated OS thread (with its own
     /// single-threaded tokio runtime) because `OrchestrationLoop` is `!Send`
     /// due to the underlying `rusqlite::Connection`.
-    pub fn create_session(&self, request: &str, workspace: Option<&str>) -> anyhow::Result<String> {
+    pub fn create_session(
+        &self,
+        request: &str,
+        workspace: Option<&str>,
+        external_session_id: Option<&str>,
+    ) -> anyhow::Result<String> {
         // Enforce concurrency limit (upper bound: total sessions count).
         let total = self.sessions.len();
         if total as u32 >= self.config.max_concurrent_sessions {
@@ -103,6 +138,8 @@ impl SessionManager {
         };
         let (status_tx, status_rx) = watch::channel(initial_update);
 
+        let cancel = CancellationToken::new();
+
         let state = SessionState {
             orchestration_state: None,
             status: SessionStatus::Active,
@@ -111,6 +148,9 @@ impl SessionManager {
             created_at: now,
             updated_at: now,
             user_request: request.to_string(),
+            cancel: cancel.clone(),
+            external_session_id: external_session_id.map(|s| s.to_string()),
+            hook_events: Vec::new(),
         };
 
         let state = Arc::new(Mutex::new(state));
@@ -122,6 +162,8 @@ impl SessionManager {
         let user_request = request.to_string();
         let workspace_owned = workspace.map(|s| s.to_string());
         let sid = session_id.clone();
+        let cancel_for_thread = cancel;
+        let ext_sid = external_session_id.map(|s| s.to_string());
 
         // `OrchestrationLoop` is !Send (rusqlite Connection).
         // Run it on a dedicated OS thread with its own current-thread runtime.
@@ -138,6 +180,10 @@ impl SessionManager {
                     info!(session_id = %sid, "Background orchestration starting");
 
                     let mut oloop = OrchestrationLoop::new(config, llm);
+                    oloop.with_cancellation(cancel_for_thread);
+                    if let Some(ref ext_id) = ext_sid {
+                        oloop.with_external_session_id(ext_id);
+                    }
 
                     match oloop.run(user_request, workspace_owned).await {
                         Ok(final_state) => {
@@ -221,8 +267,42 @@ impl SessionManager {
 
         guard.status = SessionStatus::Cancelled;
         guard.updated_at = Utc::now();
-        info!(session_id = %id, "Session cancelled");
+        // Signal the cancellation token — the orchestration loop checks this cooperatively.
+        guard.cancel.cancel();
+        info!(session_id = %id, "Session cancelled (token signaled)");
         Ok(())
+    }
+
+    /// Get a compact snapshot of the session's working memory for post-compact re-injection.
+    ///
+    /// Returns `None` if the session doesn't exist, has no orchestration state,
+    /// or if the working memory is empty.
+    pub async fn get_compact_snapshot(&self, id: &str) -> Option<serde_json::Value> {
+        let session = self.sessions.get(id).map(|e| e.value().clone())?;
+        let guard = session.lock().await;
+        let state = guard.orchestration_state.as_ref()?;
+        let snapshot = state.memory.compact_snapshot();
+        // Return None for empty snapshots — don't inject noise
+        let obj = snapshot.as_object()?;
+        let has_content = obj.values().any(|v| match v {
+            serde_json::Value::Array(a) => !a.is_empty(),
+            serde_json::Value::Object(o) => !o.is_empty(),
+            serde_json::Value::Null => false,
+            _ => true,
+        });
+        if has_content { Some(snapshot) } else { None }
+    }
+
+    /// Get all hook events for a session.
+    pub async fn get_hook_events(&self, id: &str) -> anyhow::Result<Vec<HookEvent>> {
+        let session = self
+            .sessions
+            .get(id)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
+
+        let guard = session.lock().await;
+        Ok(guard.hook_events.clone())
     }
 
     /// Get the decision trace for a session.
@@ -273,31 +353,66 @@ impl SessionManager {
         count
     }
 
-    /// Record a hook event for a session (telemetry).
+    /// Record a hook event for a session (telemetry + persistence).
     ///
-    /// This is a best-effort operation — if the session doesn't exist or is
-    /// already completed, the event is silently dropped.
-    pub async fn record_hook_event(
-        &self,
-        session_id: &str,
-        hook_name: &str,
-        detail: &str,
-    ) -> Result<(), anyhow::Error> {
+    /// Returns `true` if the event was recorded against an active session,
+    /// `false` if it was dropped (session not found or not active).
+    /// The event is always stored (with `recorded: false` for drops) as long
+    /// as the session exists, for post-mortem debug.
+    pub async fn record_hook_event(&self, session_id: &str, hook_name: &str, detail: &str) -> bool {
         // Clone the Arc before releasing the DashMap read guard to avoid
         // holding it across the `.lock().await` (potential deadlock).
         let session = self.sessions.get(session_id).map(|e| e.value().clone());
-        if let Some(session) = session {
-            let guard = session.lock().await;
-            if guard.status == SessionStatus::Active {
-                tracing::debug!(
+        match session {
+            Some(session) => {
+                let mut guard = session.lock().await;
+                let recorded = guard.status == SessionStatus::Active;
+
+                // Store the event (bounded)
+                if guard.hook_events.len() < MAX_HOOK_EVENTS {
+                    guard.hook_events.push(HookEvent {
+                        timestamp: Utc::now(),
+                        hook_name: hook_name.to_string(),
+                        detail: detail.to_string(),
+                        session_id: Some(session_id.to_string()),
+                        recorded,
+                    });
+                } else if guard.hook_events.len() == MAX_HOOK_EVENTS {
+                    tracing::warn!(
+                        session_id,
+                        max = MAX_HOOK_EVENTS,
+                        "hook event buffer full, further events will be dropped"
+                    );
+                }
+
+                if recorded {
+                    tracing::debug!(
+                        session_id,
+                        hook_name,
+                        detail,
+                        "recorded hook event for active session"
+                    );
+                } else {
+                    tracing::warn!(
+                        session_id,
+                        hook_name,
+                        detail,
+                        status = ?guard.status,
+                        "hook event dropped: session not active"
+                    );
+                }
+                recorded
+            }
+            None => {
+                tracing::warn!(
                     session_id,
                     hook_name,
                     detail,
-                    "recorded hook event for active session"
+                    "hook event dropped: session not found"
                 );
+                false
             }
         }
-        Ok(())
     }
 
     // -- helpers ------------------------------------------------------------
@@ -325,6 +440,21 @@ impl SessionManager {
             updated_at: guard.updated_at,
             complexity,
             user_request: guard.user_request.clone(),
+            external_session_id: guard.external_session_id.clone(),
+            hook_events_count: guard.hook_events.len() as u32,
         }
+    }
+
+    /// Inject an OrchestrationState into a session (test-only).
+    #[cfg(test)]
+    pub async fn inject_state(&self, id: &str, state: OrchestrationState) -> anyhow::Result<()> {
+        let session = self
+            .sessions
+            .get(id)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
+        let mut guard = session.lock().await;
+        guard.orchestration_state = Some(state);
+        Ok(())
     }
 }

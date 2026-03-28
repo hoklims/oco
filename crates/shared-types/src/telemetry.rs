@@ -26,6 +26,9 @@ pub struct DecisionTrace {
     pub context_utilization: f64,
     /// Alternative actions considered (for auditability).
     pub alternatives_considered: Vec<ActionCandidate>,
+    /// External session ID for correlation (e.g. Claude Code session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,4 +263,71 @@ pub enum OrchestrationEvent {
         files_done: u32,
         symbols_so_far: u32,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decision_trace_without_external_id_omits_field() {
+        let trace = DecisionTrace {
+            id: uuid::Uuid::nil(),
+            session_id: crate::SessionId::new(),
+            step: 0,
+            timestamp: chrono::Utc::now(),
+            duration_ms: 10,
+            action: crate::OrchestratorAction::Stop {
+                reason: crate::StopReason::TaskComplete,
+            },
+            reason: "test".into(),
+            complexity: crate::TaskComplexity::Trivial,
+            knowledge_confidence: 0.5,
+            budget_snapshot: BudgetSnapshot {
+                tokens_used: 0,
+                tokens_remaining: 1000,
+                tool_calls_used: 0,
+                tool_calls_remaining: 10,
+                retrievals_used: 0,
+                verify_cycles_used: 0,
+                elapsed_secs: 0,
+            },
+            context_utilization: 0.0,
+            alternatives_considered: vec![],
+            external_session_id: None,
+        };
+        let json = serde_json::to_string(&trace).unwrap();
+        assert!(!json.contains("external_session_id"));
+    }
+
+    #[test]
+    fn decision_trace_with_external_id_serializes() {
+        let trace = DecisionTrace {
+            id: uuid::Uuid::nil(),
+            session_id: crate::SessionId::new(),
+            step: 0,
+            timestamp: chrono::Utc::now(),
+            duration_ms: 10,
+            action: crate::OrchestratorAction::Stop {
+                reason: crate::StopReason::TaskComplete,
+            },
+            reason: "test".into(),
+            complexity: crate::TaskComplexity::Trivial,
+            knowledge_confidence: 0.5,
+            budget_snapshot: BudgetSnapshot {
+                tokens_used: 0,
+                tokens_remaining: 1000,
+                tool_calls_used: 0,
+                tool_calls_remaining: 10,
+                retrievals_used: 0,
+                verify_cycles_used: 0,
+                elapsed_secs: 0,
+            },
+            context_utilization: 0.0,
+            alternatives_considered: vec![],
+            external_session_id: Some("claude-xyz".into()),
+        };
+        let json = serde_json::to_string(&trace).unwrap();
+        assert!(json.contains("\"external_session_id\":\"claude-xyz\""));
+    }
 }

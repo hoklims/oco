@@ -2,7 +2,7 @@ mod ui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -505,13 +505,26 @@ fn save_run_artifacts(
         "success": success,
         "final_response": final_response,
         "created_at": state.session.created_at.to_rfc3339(),
+        "external_session_id": state.session.external_session_id,
     });
-    std::fs::write(
-        run_dir.join("summary.json"),
+    atomic_write(
+        &run_dir.join("summary.json"),
         serde_json::to_string_pretty(&summary)?,
     )?;
 
     Ok(())
+}
+
+/// Write to a temp file then rename — prevents corrupted files on crash.
+fn atomic_write(path: &Path, content: impl AsRef<[u8]>) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, path).or_else(|_| {
+        // rename can fail cross-device; fall back to copy+remove
+        std::fs::copy(&tmp, path)?;
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
+    })
 }
 
 fn cmd_index(r: &mut dyn Renderer, path: String) -> Result<()> {
@@ -610,7 +623,7 @@ fn cmd_init(r: &mut dyn Renderer, output: String) -> Result<()> {
     }
     let config = oco_orchestrator_core::OrchestratorConfig::default();
     let toml_str = config.to_toml()?;
-    std::fs::write(&path, toml_str)?;
+    atomic_write(&path, toml_str)?;
     r.emit(UiEvent::Success {
         message: format!("Created {output} — edit to configure provider, budgets, etc."),
     });

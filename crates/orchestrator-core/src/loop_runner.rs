@@ -81,6 +81,10 @@ pub struct OrchestrationLoop {
     metrics: Option<oco_telemetry::SessionMetrics>,
     /// Optional channel for live event streaming to UI.
     event_tx: Option<tokio::sync::mpsc::UnboundedSender<OrchestrationEvent>>,
+    /// External cancellation token (signaled by session manager on stop hook).
+    cancel: Option<crate::graph_runner::CancellationToken>,
+    /// External session ID for correlation (e.g. Claude Code session).
+    external_session_id: Option<String>,
 }
 
 impl OrchestrationLoop {
@@ -98,6 +102,8 @@ impl OrchestrationLoop {
             trace_collector: oco_telemetry::DecisionTraceCollector::new(),
             metrics: None,
             event_tx: None,
+            cancel: None,
+            external_session_id: None,
         }
     }
 
@@ -107,6 +113,21 @@ impl OrchestrationLoop {
         tx: tokio::sync::mpsc::UnboundedSender<OrchestrationEvent>,
     ) -> &mut Self {
         self.event_tx = Some(tx);
+        self
+    }
+
+    /// Set the external session ID for correlation with the calling system.
+    pub fn with_external_session_id(&mut self, id: impl Into<String>) -> &mut Self {
+        self.external_session_id = Some(id.into());
+        self
+    }
+
+    /// Set an external cancellation token (e.g. from session manager stop hook).
+    pub fn with_cancellation(
+        &mut self,
+        token: crate::graph_runner::CancellationToken,
+    ) -> &mut Self {
+        self.cancel = Some(token);
         self
     }
 
@@ -170,7 +191,10 @@ impl OrchestrationLoop {
             }
         }
 
-        let session = Session::new(user_request.clone(), workspace_root);
+        let mut session = Session::new(user_request.clone(), workspace_root);
+        if let Some(ref ext_id) = self.external_session_id {
+            session.external_session_id = Some(ext_id.clone());
+        }
         let mut state = OrchestrationState::new(session);
 
         // Apply max_steps override from config (e.g. eval scenario overrides).
@@ -292,6 +316,17 @@ impl OrchestrationLoop {
 
         // Flat loop for Trivial/Low tasks.
         loop {
+            // Check external cancellation (stop hook)
+            if self.cancel.as_ref().is_some_and(|t| t.is_cancelled()) {
+                info!(session_id = %state.session.id.0, "Stopping orchestration (external cancel)");
+                state.push_action(OrchestratorAction::Stop {
+                    reason: StopReason::Error {
+                        message: "Session cancelled by external signal".into(),
+                    },
+                });
+                break;
+            }
+
             // Check stop conditions
             if let Some(reason) = state.should_stop() {
                 info!(session_id = %state.session.id.0, reason = ?reason, "Stopping orchestration");
@@ -813,6 +848,9 @@ impl OrchestrationLoop {
         let mut runner = GraphRunner::new(executor, planner).with_budget(budget);
         if let Some(tx) = event_tx {
             runner = runner.with_event_channel(tx);
+        }
+        if let Some(ref token) = self.cancel {
+            runner = runner.with_cancellation(token.clone());
         }
 
         let completed_plan = runner.execute(plan, &planning_ctx).await?;

@@ -220,12 +220,24 @@ impl FileToolExecutor {
         let resolved = self.resolve_path(path)?;
         let start = Instant::now();
 
-        tokio::fs::write(&resolved, content).await.map_err(|e| {
-            ToolRuntimeError::ExecutionFailed {
+        // Atomic write: temp file + rename to prevent corruption on crash
+        let tmp = resolved.with_extension("oco_tmp");
+        tokio::fs::write(&tmp, content)
+            .await
+            .map_err(|e| ToolRuntimeError::ExecutionFailed {
                 tool_name: "write_file".to_string(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
+        if tokio::fs::rename(&tmp, &resolved).await.is_err() {
+            // rename can fail cross-device; fall back to copy+remove
+            tokio::fs::copy(&tmp, &resolved).await.map_err(|e| {
+                ToolRuntimeError::ExecutionFailed {
+                    tool_name: "write_file".to_string(),
+                    reason: format!("atomic rename fallback failed: {e}"),
+                }
+            })?;
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
 
         Ok(ToolResult {
             tool_name: "write_file".to_string(),
