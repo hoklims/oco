@@ -10,7 +10,7 @@
  * Zero external dependencies. Node >= 18.
  */
 
-import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync, renameSync } from 'node:fs';
 import { join, dirname, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -151,7 +151,8 @@ async function install() {
     }
 
     try {
-      cpSync(src, dest, { force: true });
+      // Use read+write instead of cpSync to avoid Windows NTFS false errors
+      writeFileSync(dest, readFileSync(src));
       copied++;
       console.log(`  copy  ${relPath}`);
     } catch (err) {
@@ -723,7 +724,7 @@ async function repair() {
     if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
 
     try {
-      cpSync(src, dest, { force: true });
+      writeFileSync(dest, readFileSync(src));
       console.log(`    ⚡ ${relPath} (restored)`);
       repaired++;
     } catch (err) {
