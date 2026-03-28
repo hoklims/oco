@@ -467,6 +467,35 @@ impl SessionManager {
         }
     }
 
+    /// Create a session without starting the background orchestration loop (test-only).
+    /// The session stays Active indefinitely, making tests deterministic.
+    #[cfg(test)]
+    pub fn create_test_session(&self, request: &str, external_session_id: Option<&str>) -> String {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let initial_update = SessionStatusUpdate {
+            status: "active".into(),
+            steps: 0,
+            tokens_used: 0,
+        };
+        let (status_tx, status_rx) = watch::channel(initial_update);
+        let state = SessionState {
+            orchestration_state: None,
+            status: SessionStatus::Active,
+            status_tx,
+            status_rx,
+            created_at: now,
+            updated_at: now,
+            user_request: request.to_string(),
+            cancel: CancellationToken::new(),
+            external_session_id: external_session_id.map(|s| s.to_string()),
+            hook_events: Vec::new(),
+        };
+        self.sessions
+            .insert(session_id.clone(), Arc::new(Mutex::new(state)));
+        session_id
+    }
+
     /// Inject an OrchestrationState into a session (test-only).
     #[cfg(test)]
     pub async fn inject_state(&self, id: &str, state: OrchestrationState) -> anyhow::Result<()> {

@@ -982,10 +982,7 @@ mod tests {
     #[tokio::test]
     async fn record_hook_event_returns_true_for_active_session() {
         let state = test_state();
-        let sid = state
-            .session_manager
-            .create_session("test", None, None)
-            .unwrap();
+        let sid = state.session_manager.create_test_session("test", None);
 
         let recorded = state
             .session_manager
@@ -1038,12 +1035,7 @@ mod tests {
     #[tokio::test]
     async fn compact_snapshot_returns_none_for_session_without_state() {
         let state = test_state();
-        // create_session starts a background thread but orchestration_state
-        // is None until the loop sets it (which won't complete in test).
-        let sid = state
-            .session_manager
-            .create_session("test", None, None)
-            .unwrap();
+        let sid = state.session_manager.create_test_session("test", None);
 
         let snap = state.session_manager.get_compact_snapshot(&sid).await;
         assert!(snap.is_none());
@@ -1052,10 +1044,7 @@ mod tests {
     #[tokio::test]
     async fn compact_snapshot_returns_none_for_empty_memory() {
         let state = test_state();
-        let sid = state
-            .session_manager
-            .create_session("test", None, None)
-            .unwrap();
+        let sid = state.session_manager.create_test_session("test", None);
 
         // Inject a state with default (empty) WorkingMemory
         let session = oco_shared_types::Session::new("test".into(), None);
@@ -1073,10 +1062,7 @@ mod tests {
     #[tokio::test]
     async fn compact_snapshot_returns_content_when_memory_has_data() {
         let state = test_state();
-        let sid = state
-            .session_manager
-            .create_session("test", None, None)
-            .unwrap();
+        let sid = state.session_manager.create_test_session("test", None);
 
         // Inject state with populated WorkingMemory
         let session = oco_shared_types::Session::new("test".into(), None);
@@ -1111,10 +1097,7 @@ mod tests {
     #[tokio::test]
     async fn hook_events_stored_for_active_session() {
         let state = test_state();
-        let sid = state
-            .session_manager
-            .create_session("test", None, None)
-            .unwrap();
+        let sid = state.session_manager.create_test_session("test", None);
 
         state
             .session_manager
@@ -1136,10 +1119,7 @@ mod tests {
     #[tokio::test]
     async fn hook_events_empty_for_new_session() {
         let state = test_state();
-        let sid = state
-            .session_manager
-            .create_session("test", None, None)
-            .unwrap();
+        let sid = state.session_manager.create_test_session("test", None);
 
         let events = state.session_manager.get_hook_events(&sid).await.unwrap();
         assert!(events.is_empty());
@@ -1155,10 +1135,7 @@ mod tests {
     #[tokio::test]
     async fn hook_events_count_in_session_info() {
         let state = test_state();
-        let sid = state
-            .session_manager
-            .create_session("test", None, None)
-            .unwrap();
+        let sid = state.session_manager.create_test_session("test", None);
 
         state
             .session_manager
@@ -1194,10 +1171,7 @@ mod tests {
     #[tokio::test]
     async fn hook_events_endpoint_returns_detail() {
         let state = test_state();
-        let sid = state
-            .session_manager
-            .create_session("test", None, None)
-            .unwrap();
+        let sid = state.session_manager.create_test_session("test", None);
 
         state
             .session_manager
@@ -1228,10 +1202,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_session_id_by_oco_uuid() {
         let state = test_state();
-        let oco_sid = state
-            .session_manager
-            .create_session("test", None, None)
-            .unwrap();
+        let oco_sid = state.session_manager.create_test_session("test", None);
 
         let resolved = state.session_manager.resolve_session_id(&oco_sid).await;
         assert_eq!(resolved.as_deref(), Some(oco_sid.as_str()));
@@ -1242,8 +1213,7 @@ mod tests {
         let state = test_state();
         let oco_sid = state
             .session_manager
-            .create_session("test", None, Some("claude-sess-xyz"))
-            .unwrap();
+            .create_test_session("test", Some("claude-sess-xyz"));
 
         // Lookup by Claude Code session_id → should find the OCO session
         let resolved = state
@@ -1258,8 +1228,7 @@ mod tests {
         let state = test_state();
         let _ = state
             .session_manager
-            .create_session("test", None, Some("claude-abc"))
-            .unwrap();
+            .create_test_session("test", Some("claude-abc"));
 
         let resolved = state
             .session_manager
@@ -1275,8 +1244,7 @@ mod tests {
         let state = test_state();
         let oco_sid = state
             .session_manager
-            .create_session("test", None, Some("claude-sess-42"))
-            .unwrap();
+            .create_test_session("test", Some("claude-sess-42"));
 
         // Resolve external → OCO, then record
         let resolved = state
@@ -1305,8 +1273,7 @@ mod tests {
         let state = test_state();
         let oco_sid = state
             .session_manager
-            .create_session("test", None, Some("claude-compact-1"))
-            .unwrap();
+            .create_test_session("test", Some("claude-compact-1"));
 
         // Inject state with data
         let session = oco_shared_types::Session::new("test".into(), None);
