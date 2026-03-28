@@ -213,7 +213,11 @@ async function install() {
   if (!isGlobal) {
     const projectRoot = findProjectRoot(process.cwd());
     const mcpJsonPath = join(projectRoot, '.mcp.json');
-    const mcpEntry = fragment.mcpServers || {};
+    // Resolve bridge path to absolute so it works from any subdirectory
+    const mcpEntry = JSON.parse(JSON.stringify(fragment.mcpServers || {}));
+    if (mcpEntry.oco?.args?.[0]) {
+      mcpEntry.oco.args[0] = join(targetDir, 'mcp/bridge.cjs');
+    }
 
     if (existsSync(mcpJsonPath)) {
       // Merge: add oco key without overwriting other servers
