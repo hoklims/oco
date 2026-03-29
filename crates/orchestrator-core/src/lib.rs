@@ -24,6 +24,7 @@ pub mod state;
 pub use config::OrchestratorConfig;
 pub use error::OrchestratorError;
 pub use graph_runner::GraphRunner;
+pub use llm::RetryingLlmProvider;
 pub use llm_router::LlmRouter;
 pub use loop_runner::OrchestrationLoop;
 pub use runtime::OrchestratorRuntime;

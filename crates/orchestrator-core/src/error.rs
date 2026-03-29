@@ -29,6 +29,12 @@ pub enum OrchestratorError {
     #[error("LLM provider error: {0}")]
     LlmError(String),
 
+    #[error("rate limited (retry after {retry_after_ms}ms): {message}")]
+    RateLimited {
+        retry_after_ms: u64,
+        message: String,
+    },
+
     #[error("configuration error: {0}")]
     ConfigError(String),
 

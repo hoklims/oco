@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::error::OrchestratorError;
 
@@ -312,15 +313,35 @@ impl LlmProvider for AnthropicProvider {
         let status = response.status();
 
         if !status.is_success() {
+            // Extract Retry-After header before consuming the body.
+            let retry_after_ms = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(|secs| secs * 1000)
+                .unwrap_or(0);
+
             let raw = response.text().await.unwrap_or_default();
             let detail = serde_json::from_str::<AnthropicErrorEnvelope>(&raw)
                 .map(|e| format!("{}: {}", e.error.error_type, e.error.message))
                 .unwrap_or(raw);
 
+            if status.as_u16() == 429 {
+                warn!(retry_after_ms, "anthropic rate limit hit");
+                return Err(OrchestratorError::RateLimited {
+                    retry_after_ms: if retry_after_ms > 0 {
+                        retry_after_ms
+                    } else {
+                        1000
+                    },
+                    message: format!("anthropic rate limit exceeded: {detail}"),
+                });
+            }
+
             let err_msg = match status.as_u16() {
                 401 => format!("anthropic authentication failed: {detail}"),
                 403 => format!("anthropic permission denied: {detail}"),
-                429 => format!("anthropic rate limit exceeded: {detail}"),
                 500..=599 => format!("anthropic server error ({status}): {detail}"),
                 _ => format!("anthropic API error ({status}): {detail}"),
             };
@@ -780,6 +801,106 @@ impl LlmProvider for OllamaProvider {
 }
 
 // ---------------------------------------------------------------------------
+// RetryingLlmProvider — wraps any provider with exponential backoff on 429
+// ---------------------------------------------------------------------------
+
+/// Wraps an [`LlmProvider`] with automatic retry on rate-limit (429) errors.
+///
+/// Uses exponential backoff with jitter, respecting `Retry-After` headers
+/// when available. Consumes the previously-unused `max_retries` config field.
+pub struct RetryingLlmProvider {
+    inner: Arc<dyn LlmProvider>,
+    max_retries: u32,
+    /// Base delay for exponential backoff (doubled each retry).
+    base_delay_ms: u64,
+}
+
+impl RetryingLlmProvider {
+    /// Create a new retrying wrapper.
+    ///
+    /// `max_retries` = 0 means no retries (pass-through).
+    pub fn new(inner: Arc<dyn LlmProvider>, max_retries: u32) -> Self {
+        Self {
+            inner,
+            max_retries,
+            base_delay_ms: 1000,
+        }
+    }
+
+    /// Override the base delay (useful for tests).
+    #[cfg(test)]
+    pub fn with_base_delay_ms(mut self, ms: u64) -> Self {
+        self.base_delay_ms = ms;
+        self
+    }
+
+    /// Compute backoff delay: max(retry_after, base * 2^attempt) + jitter.
+    fn backoff_ms(&self, attempt: u32, retry_after_ms: u64) -> u64 {
+        let exponential = self.base_delay_ms.saturating_mul(1u64 << attempt);
+        let base = exponential.max(retry_after_ms);
+        // Add ~25% jitter to avoid thundering herd.
+        let jitter = base / 4;
+        // Deterministic jitter from attempt number (no rand dependency needed).
+        let jitter_offset = (attempt as u64 * 7919) % (jitter.max(1));
+        base.saturating_add(jitter_offset).min(60_000) // cap at 60s
+    }
+}
+
+#[async_trait]
+impl LlmProvider for RetryingLlmProvider {
+    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, OrchestratorError> {
+        let mut last_err = None;
+
+        for attempt in 0..=self.max_retries {
+            let req_clone = request.clone();
+            match self.inner.complete(req_clone).await {
+                Ok(resp) => return Ok(resp),
+                Err(OrchestratorError::RateLimited {
+                    retry_after_ms,
+                    ref message,
+                }) => {
+                    if attempt == self.max_retries {
+                        warn!(
+                            attempt,
+                            max = self.max_retries,
+                            "rate limit: retries exhausted"
+                        );
+                        return Err(OrchestratorError::RateLimited {
+                            retry_after_ms,
+                            message: message.clone(),
+                        });
+                    }
+
+                    let delay = self.backoff_ms(attempt, retry_after_ms);
+                    info!(
+                        attempt,
+                        delay_ms = delay,
+                        retry_after_ms,
+                        "rate limited, backing off"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    last_err = Some(OrchestratorError::RateLimited {
+                        retry_after_ms,
+                        message: message.clone(),
+                    });
+                }
+                Err(e) => return Err(e), // Non-retryable error.
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| OrchestratorError::LlmError("retry loop exited unexpectedly".into())))
+    }
+
+    fn provider_name(&self) -> &str {
+        self.inner.provider_name()
+    }
+
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -860,5 +981,148 @@ mod tests {
         assert_eq!(assistant, "\"assistant\"");
         let system = serde_json::to_string(&LlmRole::System).unwrap();
         assert_eq!(system, "\"system\"");
+    }
+
+    // -- RetryingLlmProvider tests --
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Mock provider that returns RateLimited for the first N calls, then succeeds.
+    struct RateLimitMock {
+        fail_count: AtomicU32,
+        remaining_failures: AtomicU32,
+    }
+
+    impl RateLimitMock {
+        fn new(failures: u32) -> Self {
+            Self {
+                fail_count: AtomicU32::new(0),
+                remaining_failures: AtomicU32::new(failures),
+            }
+        }
+
+        fn calls(&self) -> u32 {
+            self.fail_count.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for RateLimitMock {
+        async fn complete(&self, _request: LlmRequest) -> Result<LlmResponse, OrchestratorError> {
+            self.fail_count.fetch_add(1, Ordering::SeqCst);
+            let remaining = self.remaining_failures.fetch_sub(1, Ordering::SeqCst);
+            if remaining > 0 {
+                Err(OrchestratorError::RateLimited {
+                    retry_after_ms: 100,
+                    message: "rate limited".into(),
+                })
+            } else {
+                Ok(LlmResponse {
+                    content: "success after retry".into(),
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    model: "mock".into(),
+                    stop_reason: Some("end_turn".into()),
+                })
+            }
+        }
+        fn provider_name(&self) -> &str { "mock" }
+        fn model_name(&self) -> &str { "mock" }
+    }
+
+    fn test_request() -> LlmRequest {
+        LlmRequest {
+            messages: vec![LlmMessage { role: LlmRole::User, content: "hi".into() }],
+            max_tokens: 10,
+            temperature: 0.0,
+            system_prompt: None,
+            effort_override: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_succeeds_after_rate_limit() {
+        let mock = Arc::new(RateLimitMock::new(2));
+        let provider = RetryingLlmProvider::new(Arc::clone(&mock) as Arc<dyn LlmProvider>, 3)
+            .with_base_delay_ms(1); // Fast for tests
+
+        let resp = provider.complete(test_request()).await.unwrap();
+        assert_eq!(resp.content, "success after retry");
+        assert_eq!(mock.calls(), 3); // 2 failures + 1 success
+    }
+
+    #[tokio::test]
+    async fn retry_exhausted_returns_rate_limited() {
+        let mock = Arc::new(RateLimitMock::new(5));
+        let provider = RetryingLlmProvider::new(Arc::clone(&mock) as Arc<dyn LlmProvider>, 2)
+            .with_base_delay_ms(1);
+
+        let err = provider.complete(test_request()).await.unwrap_err();
+        assert!(matches!(err, OrchestratorError::RateLimited { .. }));
+        assert_eq!(mock.calls(), 3); // initial + 2 retries
+    }
+
+    #[tokio::test]
+    async fn retry_zero_retries_passthrough() {
+        let mock = Arc::new(RateLimitMock::new(1));
+        let provider = RetryingLlmProvider::new(Arc::clone(&mock) as Arc<dyn LlmProvider>, 0)
+            .with_base_delay_ms(1);
+
+        let err = provider.complete(test_request()).await.unwrap_err();
+        assert!(matches!(err, OrchestratorError::RateLimited { .. }));
+        assert_eq!(mock.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_non_rate_limit_error_not_retried() {
+        struct AlwaysFail;
+
+        #[async_trait]
+        impl LlmProvider for AlwaysFail {
+            async fn complete(&self, _: LlmRequest) -> Result<LlmResponse, OrchestratorError> {
+                Err(OrchestratorError::LlmError("auth failed".into()))
+            }
+            fn provider_name(&self) -> &str { "fail" }
+            fn model_name(&self) -> &str { "fail" }
+        }
+
+        let provider = RetryingLlmProvider::new(Arc::new(AlwaysFail), 3).with_base_delay_ms(1);
+        let err = provider.complete(test_request()).await.unwrap_err();
+        assert!(matches!(err, OrchestratorError::LlmError(_)));
+    }
+
+    #[test]
+    fn backoff_respects_retry_after() {
+        let provider = RetryingLlmProvider::new(
+            Arc::new(StubLlmProvider { model: "test".into() }),
+            3,
+        ).with_base_delay_ms(100);
+
+        // With retry_after=5000ms and attempt=0, base=100ms, so retry_after wins.
+        let delay = provider.backoff_ms(0, 5000);
+        assert!(delay >= 5000);
+
+        // With retry_after=0 and attempt=2, base=400ms (100*2^2).
+        let delay = provider.backoff_ms(2, 0);
+        assert!(delay >= 400);
+    }
+
+    #[test]
+    fn backoff_capped_at_60s() {
+        let provider = RetryingLlmProvider::new(
+            Arc::new(StubLlmProvider { model: "test".into() }),
+            10,
+        ).with_base_delay_ms(1000);
+
+        let delay = provider.backoff_ms(8, 0); // 1000 * 256 = 256000, capped
+        assert!(delay <= 60_000);
+    }
+
+    #[test]
+    fn retrying_delegates_name() {
+        let inner = Arc::new(StubLlmProvider { model: "test-model".into() });
+        let provider = RetryingLlmProvider::new(inner, 3);
+        assert_eq!(provider.provider_name(), "stub");
+        assert_eq!(provider.model_name(), "test-model");
     }
 }

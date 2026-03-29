@@ -12,7 +12,7 @@ use oco_context_engine::{ContextBuilder, TokenEstimator};
 use oco_retrieval::FtsIndex;
 use oco_shared_types::{
     AssembledContext, ContextItem, ContextPriority, ContextSource, Observation, ObservationKind,
-    ObservationSource, ToolDescriptor, VerificationStrategy,
+    ObservationSource, TierSelector, ToolDescriptor, VerificationStrategy, VerificationTier,
 };
 use oco_tool_runtime::{
     FileToolExecutor, ObservationNormalizer, ShellToolExecutor, ToolExecutor, ToolRegistry,
@@ -533,6 +533,59 @@ impl OrchestratorRuntime {
             },
             token_estimate.min(2000),
         ))
+    }
+
+    /// Execute tiered verification based on which files changed.
+    ///
+    /// Uses [`TierSelector`] to pick Light/Standard/Thorough, then runs
+    /// each strategy in order (stopping on first failure).
+    /// Returns one [`Observation`] per strategy executed.
+    pub async fn execute_verification_tiered(
+        &self,
+        changed_files: &[String],
+    ) -> Result<Vec<Observation>> {
+        let tier = TierSelector::select(changed_files);
+        info!(
+            ?tier,
+            file_count = changed_files.len(),
+            "tiered verification selected"
+        );
+
+        let ws = self.workspace_root.to_string_lossy().to_string();
+        let result = self.verifier.dispatch_tiered(tier, &ws).await?;
+
+        let observations: Vec<Observation> = result
+            .results
+            .iter()
+            .map(|(strategy, output)| {
+                let token_estimate = TokenEstimator::estimate_tokens(&output.stdout)
+                    + TokenEstimator::estimate_tokens(&output.stderr);
+
+                Observation::new(
+                    ObservationSource::Verification {
+                        strategy: format!("{strategy:?}"),
+                    },
+                    ObservationKind::VerificationResult {
+                        passed: output.passed,
+                        output: if output.stdout.len() > 2000 {
+                            format!("{}...(truncated)", &output.stdout[..2000])
+                        } else {
+                            output.stdout.clone()
+                        },
+                        failures: output.failures.clone(),
+                    },
+                    token_estimate.min(2000),
+                )
+            })
+            .collect();
+
+        Ok(observations)
+    }
+
+    /// Get the verification tier for a set of changed files (for callers
+    /// that want to inspect the tier before running verification).
+    pub fn select_verification_tier(changed_files: &[String]) -> VerificationTier {
+        TierSelector::select(changed_files)
     }
 
     /// Build assembled context for an LLM call.

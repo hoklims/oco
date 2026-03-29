@@ -3,12 +3,16 @@
 //! These tests exercise the full orchestration stack end-to-end using
 //! temporary workspaces and the stub LLM provider.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use oco_orchestrator_core::config::OrchestratorConfig;
-use oco_orchestrator_core::llm::StubLlmProvider;
+use oco_orchestrator_core::llm::{
+    AnthropicConfig, AnthropicProvider, LlmProvider, StubLlmProvider,
+};
 use oco_orchestrator_core::loop_runner::OrchestrationLoop;
 use oco_orchestrator_core::runtime::OrchestratorRuntime;
+use oco_orchestrator_core::RetryingLlmProvider;
 use oco_shared_types::{
     Budget, ContextPriority, Observation, ObservationKind, ObservationSource, OrchestratorAction,
     StopReason,
@@ -534,4 +538,137 @@ fn test_symbol_search() {
         "UserResponse should be in api.ts, got: {}",
         ts_sym.path
     );
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: RetryingLlmProvider + AnthropicProvider E2E with real HTTP mock
+// ---------------------------------------------------------------------------
+
+/// Spin up a local HTTP server that returns 429 for the first N requests,
+/// then a valid Anthropic Messages API response.
+async fn start_mock_anthropic_server() -> (tokio::net::TcpListener, Arc<AtomicU32>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock server");
+    let counter = Arc::new(AtomicU32::new(0));
+    (listener, counter)
+}
+
+/// Valid Anthropic Messages API JSON response.
+const ANTHROPIC_OK_BODY: &str = r#"{
+    "id": "msg_mock",
+    "type": "message",
+    "role": "assistant",
+    "content": [{"type": "text", "text": "The answer is 42."}],
+    "model": "claude-sonnet-4-20250514",
+    "stop_reason": "end_turn",
+    "usage": {"input_tokens": 25, "output_tokens": 10}
+}"#;
+
+async fn handle_mock_connection(
+    stream: tokio::net::TcpStream,
+    call_count: u32,
+    fail_until: u32,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = stream;
+    // Read the full request (we don't need to parse it, just consume it).
+    let mut buf = vec![0u8; 8192];
+    let _ = stream.read(&mut buf).await;
+
+    let response = if call_count < fail_until {
+        format!(
+            "HTTP/1.1 429 Too Many Requests\r\n\
+             retry-after: 1\r\n\
+             content-type: application/json\r\n\
+             content-length: {}\r\n\
+             \r\n\
+             {}",
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit hit"}}"#
+                .len(),
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit hit"}}"#
+        )
+    } else {
+        format!(
+            "HTTP/1.1 200 OK\r\n\
+             content-type: application/json\r\n\
+             content-length: {}\r\n\
+             \r\n\
+             {}",
+            ANTHROPIC_OK_BODY.len(),
+            ANTHROPIC_OK_BODY
+        )
+    };
+
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.flush().await;
+}
+
+#[tokio::test]
+async fn test_retrying_provider_real_http_429_then_success() {
+    let (listener, counter) = start_mock_anthropic_server().await;
+    let addr = listener.local_addr().unwrap();
+    let fail_until = 2u32;
+
+    // Spawn mock server in background.
+    let server_counter = Arc::clone(&counter);
+    let server_handle = tokio::spawn(async move {
+        // Accept up to 3 connections (2 failures + 1 success).
+        for _ in 0..3 {
+            if let Ok((stream, _)) = listener.accept().await {
+                let call = server_counter.fetch_add(1, Ordering::SeqCst);
+                handle_mock_connection(stream, call, fail_until).await;
+            }
+        }
+    });
+
+    // Build AnthropicProvider pointing at our mock server.
+    // We need to set a fake API key env var.
+    unsafe { std::env::set_var("__TEST_RETRY_API_KEY__", "sk-fake-key") };
+    let anthropic_config =
+        AnthropicConfig::from_env("claude-sonnet-4-20250514", Some("__TEST_RETRY_API_KEY__"))
+            .unwrap()
+            .with_base_url(format!("http://{addr}"))
+            .with_timeout(std::time::Duration::from_secs(5));
+    let base_provider: Arc<dyn oco_orchestrator_core::llm::LlmProvider> =
+        Arc::new(AnthropicProvider::new(anthropic_config).unwrap());
+
+    // Wrap with retry (max 3 retries, fast backoff for tests).
+    let retrying = RetryingLlmProvider::new(base_provider, 3);
+
+    let request = oco_orchestrator_core::llm::LlmRequest {
+        messages: vec![oco_orchestrator_core::llm::LlmMessage {
+            role: oco_orchestrator_core::llm::LlmRole::User,
+            content: "What is 2+2?".into(),
+        }],
+        max_tokens: 100,
+        temperature: 0.0,
+        system_prompt: None,
+        effort_override: None,
+    };
+
+    // This should succeed after 2 retries.
+    let response = retrying.complete(request).await;
+    unsafe { std::env::remove_var("__TEST_RETRY_API_KEY__") };
+
+    assert!(
+        response.is_ok(),
+        "should succeed after retries, got: {:?}",
+        response.err()
+    );
+
+    let resp = response.unwrap();
+    assert_eq!(resp.content, "The answer is 42.");
+    assert_eq!(resp.input_tokens, 25);
+    assert_eq!(resp.output_tokens, 10);
+
+    // Verify the mock received exactly 3 calls (2 failures + 1 success).
+    let total_calls = counter.load(Ordering::SeqCst);
+    assert_eq!(
+        total_calls, 3,
+        "mock server should have received 3 requests (2x429 + 1x200), got {total_calls}"
+    );
+
+    let _ = server_handle.await;
 }
