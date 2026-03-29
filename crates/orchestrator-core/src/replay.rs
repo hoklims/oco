@@ -228,15 +228,16 @@ impl ReplaySession {
     /// Run the replay loop — emits events through the broadcast channel
     /// respecting speed and pause controls.
     ///
-    /// This is meant to be spawned as a tokio task.
-    pub async fn run(self) {
-        let events = self.dashboard_events;
-        let tx = self.tx;
-        let mut state_rx = self.state_rx;
-        let mut speed_rx = self.speed_rx;
+    /// Uses clones of internal state so it can be called on `&self` (Arc-friendly).
+    pub async fn run(&self) {
+        let events = self.dashboard_events.clone();
+        let tx = self.tx.clone();
+        let mut state_rx = self.state_rx.clone();
+        let mut speed_rx = self.speed_rx.clone();
+        let controls = self.controls.clone();
 
         if events.is_empty() {
-            let _ = self.controls.state.send(PlaybackState::Finished);
+            let _ = controls.state.send(PlaybackState::Finished);
             return;
         }
 
@@ -278,7 +279,7 @@ impl ReplaySession {
             let _ = tx.send(event);
         }
 
-        let _ = self.controls.state.send(PlaybackState::Finished);
+        let _ = controls.state.send(PlaybackState::Finished);
     }
 }
 
@@ -462,7 +463,7 @@ mod tests {
     #[tokio::test]
     async fn replay_run_emits_all_events() {
         let trace = make_trace(sample_events());
-        let session = ReplaySession::new(&trace);
+        let session = Arc::new(ReplaySession::new(&trace));
         let mut rx = session.subscribe();
         let controls = session.controls();
 
@@ -470,7 +471,8 @@ mod tests {
         controls.set_speed(100.0);
 
         // Run replay in background.
-        tokio::spawn(session.run());
+        let s = Arc::clone(&session);
+        tokio::spawn(async move { s.run().await });
 
         let mut received = Vec::new();
         loop {
@@ -497,10 +499,11 @@ mod tests {
     #[tokio::test]
     async fn replay_empty_trace_finishes_immediately() {
         let trace = make_trace(vec![]);
-        let session = ReplaySession::new(&trace);
+        let session = Arc::new(ReplaySession::new(&trace));
         let controls = session.controls();
 
-        tokio::spawn(session.run());
+        let s = Arc::clone(&session);
+        tokio::spawn(async move { s.run().await });
 
         // Give it a moment.
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;

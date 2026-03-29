@@ -77,6 +77,8 @@ pub struct ReplayListItem {
 /// Dashboard sub-router. Mounted under `/api/v1/dashboard`.
 pub fn dashboard_router() -> Router<Arc<AppState>> {
     Router::new()
+        // Run history (scans .oco/runs/ on disk)
+        .route("/runs", get(list_runs))
         // Replay CRUD + control
         .route("/replays", post(create_replay).get(list_replays))
         .route("/replays/{replay_id}/stream", get(replay_stream))
@@ -87,7 +89,92 @@ pub fn dashboard_router() -> Router<Arc<AppState>> {
         .route("/replays/{replay_id}", axum::routing::delete(delete_replay))
 }
 
+// ── Run history types ────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct RunSummary {
+    pub id: String,
+    pub request: String,
+    pub status: String,
+    pub complexity: String,
+    pub steps: u32,
+    pub tokens_used: u64,
+    pub tokens_max: u64,
+    pub duration_ms: u64,
+    pub success: bool,
+    pub created_at: String,
+    pub run_dir: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RunsQuery {
+    /// Workspace root to scan for .oco/runs/. Defaults to ".".
+    #[serde(default = "default_workspace")]
+    pub workspace: String,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+fn default_workspace() -> String {
+    ".".into()
+}
+
+fn default_limit() -> usize {
+    20
+}
+
 // ── Handlers ─────────────────────────────────────────────────
+
+/// `GET /api/v1/dashboard/runs` — list recent runs from disk.
+async fn list_runs(
+    Query(query): Query<RunsQuery>,
+) -> Json<Vec<RunSummary>> {
+    // Try the provided workspace, then CWD.
+    let workspace = std::path::Path::new(&query.workspace);
+    let workspace = if workspace.join(".oco").exists() {
+        workspace.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| workspace.to_path_buf())
+    };
+    let runs_dir = workspace.join(".oco").join("runs");
+
+    let mut runs = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&runs_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let summary_path = path.join("summary.json");
+            if !summary_path.exists() {
+                continue;
+            }
+            if let Ok(val) = std::fs::read_to_string(&summary_path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                .ok_or(())
+            {
+                runs.push(RunSummary {
+                    id: val["session_id"].as_str().unwrap_or("?").into(),
+                    request: val["request"].as_str().unwrap_or("").into(),
+                    status: val["status"].as_str().unwrap_or("unknown").into(),
+                    complexity: val["complexity"].as_str().unwrap_or("?").into(),
+                    steps: val["steps"].as_u64().unwrap_or(0) as u32,
+                    tokens_used: val["tokens_used"].as_u64().unwrap_or(0),
+                    tokens_max: val["tokens_max"].as_u64().unwrap_or(0),
+                    duration_ms: val["duration_ms"].as_u64().unwrap_or(0),
+                    success: val["success"].as_bool().unwrap_or(false),
+                    created_at: val["created_at"].as_str().unwrap_or("").into(),
+                    run_dir: path.to_string_lossy().into(),
+                });
+            }
+        }
+    }
+
+    // Sort by created_at descending.
+    runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    runs.truncate(query.limit);
+
+    Json(runs)
+}
 
 /// `POST /api/v1/dashboard/replays` — create a new replay session.
 async fn create_replay(
@@ -111,6 +198,12 @@ async fn create_replay(
     }
 
     let event_count = session.event_count();
+
+    // Spawn the replay loop in the background.
+    let session_for_run = Arc::clone(&session);
+    tokio::spawn(async move {
+        session_for_run.run().await;
+    });
 
     Ok((
         StatusCode::CREATED,
@@ -162,11 +255,13 @@ async fn replay_stream(
             .and_then(|v| v.parse::<u64>().ok())
     });
 
-    // First, send any events the client missed (catch-up).
+    // First, send all pre-existing events (catch-up).
+    // On first connect (no cursor): send everything (replay may already be done).
+    // On reconnect (with cursor): send only what was missed.
     let catchup: Vec<DashboardEvent> = if let Some(seq) = after_seq {
         session.events_after_seq(seq).to_vec()
     } else {
-        Vec::new()
+        session.events().to_vec()
     };
 
     // Then subscribe to live broadcast for new events.

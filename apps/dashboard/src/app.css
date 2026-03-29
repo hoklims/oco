@@ -3,28 +3,64 @@
 @theme {
   --font-mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
   --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --color-surface: #0f1117;
-  --color-surface-2: #161822;
-  --color-surface-3: #1e2030;
-  --color-border: #2e3148;
-  --color-text: #c8cad8;
-  --color-text-dim: #6b6f8a;
-  --color-text-bright: #e8eaf4;
-  --color-accent: #7c6ef0;
-  --color-accent-dim: rgba(124, 110, 240, 0.15);
-  --color-success: #4ade80;
-  --color-error: #f87171;
-  --color-warning: #fbbf24;
-  --color-info: #60a5fa;
-  --color-running: #818cf8;
+
+  /* XCOM-inspired dark tactical palette */
+  --color-surface: #0a0c10;
+  --color-surface-2: #0f1218;
+  --color-surface-3: #161b24;
+  --color-border: #1e2634;
+  --color-border-bright: #2a3546;
+  --color-text: #8892a4;
+  --color-text-dim: #505a6e;
+  --color-text-bright: #d0d6e0;
+  --color-text-white: #eef0f4;
+  --color-accent: #3b82f6;
+  --color-accent-dim: rgba(59, 130, 246, 0.12);
+  --color-success: #22c55e;
+  --color-success-dim: rgba(34, 197, 94, 0.12);
+  --color-error: #ef4444;
+  --color-error-dim: rgba(239, 68, 68, 0.12);
+  --color-warning: #eab308;
+  --color-warning-dim: rgba(234, 179, 8, 0.12);
+  --color-running: #6366f1;
+  --color-running-dim: rgba(99, 102, 241, 0.12);
+  --color-pending: #374151;
 }
 
 html {
   background: var(--color-surface);
   color: var(--color-text);
   font-family: var(--font-sans);
+  font-size: 14px;
 }
 
-body {
-  margin: 0;
+body { margin: 0; }
+
+/* Tactical scanline overlay */
+.scanlines {
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+}
+
+/* Status pip indicator */
+.pip {
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+}
+
+.pip-success { background: var(--color-success); box-shadow: 0 0 4px var(--color-success); }
+.pip-error { background: var(--color-error); box-shadow: 0 0 4px var(--color-error); }
+.pip-running { background: var(--color-running); box-shadow: 0 0 4px var(--color-running); animation: pulse 1.5s ease-in-out infinite; }
+.pip-pending { background: var(--color-pending); }
+.pip-warning { background: var(--color-warning); box-shadow: 0 0 4px var(--color-warning); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }

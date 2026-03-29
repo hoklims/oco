@@ -17,6 +17,11 @@
     "type": "git",
     "url": "https://github.com/hoklims/oco.git"
   },
+  "scripts": {
+    "dashboard:build": "cd apps/dashboard && npm run build",
+    "dashboard:dev": "cd apps/dashboard && npm run dev",
+    "dashboard:serve": "cd apps/dashboard && npm run build && cd ../.. && cargo run -p oco-dev-cli -- serve --port 0"
+  },
   "license": "Apache-2.0",
   "keywords": [
     "claude-code",

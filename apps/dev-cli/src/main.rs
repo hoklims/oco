@@ -244,18 +244,46 @@ async fn main() -> Result<()> {
 // ═══════════════════════════════════════════════════════════
 
 async fn cmd_serve(r: &mut dyn Renderer, host: String, port: u16) -> Result<()> {
-    r.emit(UiEvent::ServerListening {
-        host: host.clone(),
-        port,
-    });
-
     let mut config =
         oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
     config.bind_address = host;
     config.port = port;
 
-    let server = oco_mcp_server::McpServer::new(config);
-    server.run().await?;
+    let mut server = oco_mcp_server::McpServer::new(config);
+
+    // Auto-detect dashboard dist directory.
+    let dashboard_candidates = [
+        PathBuf::from("apps/dashboard/dist"),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("dashboard")))
+            .unwrap_or_default(),
+    ];
+    let has_dashboard = if let Some(dir) = std::env::var("OCO_DASHBOARD_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dashboard_candidates.iter().find(|d| d.join("index.html").exists()).cloned())
+    {
+        server = server.with_dashboard_dir(dir);
+        true
+    } else {
+        false
+    };
+
+    // Bind first to get the real port (especially when --port 0).
+    let (listener, app) = server.bind().await?;
+    let real_addr = listener.local_addr()?;
+
+    r.emit(UiEvent::ServerListening {
+        host: real_addr.ip().to_string(),
+        port: real_addr.port(),
+    });
+
+    if has_dashboard {
+        eprintln!("Dashboard: http://{real_addr}/dashboard");
+    }
+
+    axum::serve(listener, app).await?;
     Ok(())
 }
 

@@ -3,14 +3,21 @@
 
   let { steps }: { steps: StepRow[] } = $props()
 
-  const statusIcon: Record<StepRow['status'], string> = {
-    pending: '○',
-    running: '◉',
-    passed: '✓',
-    failed: '✗',
+  const statusLabel: Record<StepRow['status'], string> = {
+    pending: 'STANDBY',
+    running: 'ACTIVE',
+    passed: 'DONE',
+    failed: 'FAIL',
   }
 
-  const statusColor: Record<StepRow['status'], string> = {
+  const statusPip: Record<StepRow['status'], string> = {
+    pending: 'pip-pending',
+    running: 'pip-running',
+    passed: 'pip-success',
+    failed: 'pip-error',
+  }
+
+  const statusText: Record<StepRow['status'], string> = {
     pending: 'text-text-dim',
     running: 'text-running',
     passed: 'text-success',
@@ -19,54 +26,55 @@
 </script>
 
 {#if steps.length > 0}
-  <div class="overflow-x-auto">
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="border-b border-border text-text-dim text-left">
-          <th class="py-2 px-3 font-normal w-8"></th>
-          <th class="py-2 px-3 font-normal">Step</th>
-          <th class="py-2 px-3 font-normal">Role</th>
-          <th class="py-2 px-3 font-normal">Mode</th>
-          <th class="py-2 px-3 font-normal text-right">Duration</th>
-          <th class="py-2 px-3 font-normal text-right">Tokens</th>
-          <th class="py-2 px-3 font-normal text-center">Verify</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each steps as step (step.id)}
-          <tr class="border-b border-border/50 hover:bg-surface-3/50 transition-colors">
-            <td class="py-2 px-3 {statusColor[step.status]} font-mono">
-              {statusIcon[step.status]}
-            </td>
-            <td class="py-2 px-3 text-text-bright font-medium truncate max-w-48">
-              {step.name}
-            </td>
-            <td class="py-2 px-3 text-text-dim">{step.role}</td>
-            <td class="py-2 px-3">
-              <span class="text-xs px-1.5 py-0.5 rounded bg-accent-dim text-accent">
-                {step.execution_mode}
-              </span>
-            </td>
-            <td class="py-2 px-3 text-right font-mono text-text-dim">
-              {step.duration_ms != null ? `${step.duration_ms}ms` : '—'}
-            </td>
-            <td class="py-2 px-3 text-right font-mono text-text-dim">
-              {step.tokens_used != null ? step.tokens_used.toLocaleString() : '—'}
-            </td>
-            <td class="py-2 px-3 text-center">
-              {#if step.verify_passed === true}
-                <span class="text-success">✓</span>
-              {:else if step.verify_passed === false}
-                <span class="text-error">✗</span>
-              {:else}
-                <span class="text-text-dim">—</span>
-              {/if}
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+  <div class="divide-y divide-border">
+    {#each steps as step, i (step.id)}
+      <div class="flex items-center gap-3 px-3 py-2 hover:bg-surface-3/30 transition-colors {step.status === 'running' ? 'bg-running-dim' : ''}">
+        <!-- Index -->
+        <span class="text-[10px] font-mono text-text-dim w-4 text-right shrink-0">{i + 1}</span>
+
+        <!-- Status pip -->
+        <div class="pip {statusPip[step.status]} shrink-0"></div>
+
+        <!-- Name + role -->
+        <div class="flex-1 min-w-0">
+          <div class="text-xs text-text-bright truncate">{step.name}</div>
+          <div class="text-[10px] font-mono text-text-dim flex items-center gap-2">
+            <span class="uppercase">{step.role}</span>
+            <span class="text-border-bright">|</span>
+            <span>{step.execution_mode}</span>
+          </div>
+        </div>
+
+        <!-- Status label -->
+        <span class="text-[10px] font-mono uppercase tracking-wider {statusText[step.status]} w-14 text-right shrink-0">
+          {statusLabel[step.status]}
+        </span>
+
+        <!-- Duration -->
+        <span class="text-[10px] font-mono text-text-dim w-14 text-right shrink-0">
+          {step.duration_ms != null ? `${step.duration_ms}ms` : '—'}
+        </span>
+
+        <!-- Tokens -->
+        <span class="text-[10px] font-mono text-text-dim w-12 text-right shrink-0">
+          {step.tokens_used != null ? `${step.tokens_used}` : '—'}
+        </span>
+
+        <!-- Verify -->
+        <div class="w-4 shrink-0 flex justify-center">
+          {#if step.verify_passed === true}
+            <div class="pip pip-success"></div>
+          {:else if step.verify_passed === false}
+            <div class="pip pip-error"></div>
+          {:else}
+            <div class="pip pip-pending"></div>
+          {/if}
+        </div>
+      </div>
+    {/each}
   </div>
 {:else}
-  <div class="text-text-dim text-sm py-4 text-center">No plan steps yet</div>
+  <div class="text-[10px] font-mono text-text-dim uppercase tracking-wider text-center py-6">
+    No plan — flat execution
+  </div>
 {/if}
