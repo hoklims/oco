@@ -18,6 +18,7 @@ pub mod llm;
 pub mod llm_router;
 pub mod loop_runner;
 pub mod ml_client;
+pub mod replay;
 pub mod runtime;
 pub mod state;
 
@@ -26,6 +27,7 @@ pub use error::OrchestratorError;
 pub use graph_runner::GraphRunner;
 pub use llm::RetryingLlmProvider;
 pub use llm_router::LlmRouter;
+pub use replay::{LoadedTrace, ReplayControls, ReplayRegistry, ReplaySession};
 pub use loop_runner::OrchestrationLoop;
 pub use runtime::OrchestratorRuntime;
 pub use state::OrchestrationState;

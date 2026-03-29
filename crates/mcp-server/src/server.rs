@@ -6,6 +6,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use oco_orchestrator_core::llm::LlmProvider;
+use oco_orchestrator_core::replay::ReplayRegistry;
 
 use crate::router::create_router;
 use crate::session_manager::SessionManager;
@@ -14,6 +15,8 @@ use crate::session_manager::SessionManager;
 pub struct AppState {
     pub config: oco_orchestrator_core::OrchestratorConfig,
     pub session_manager: Arc<SessionManager>,
+    /// Manages active replay sessions for the dashboard.
+    pub replay_registry: ReplayRegistry,
     /// Optional shared secret for authenticating hook requests.
     /// If `None`, hook auth is skipped (dev mode).
     pub hook_secret: Option<String>,
@@ -49,6 +52,7 @@ impl McpServer {
         let state = Arc::new(AppState {
             config: self.config,
             session_manager,
+            replay_registry: ReplayRegistry::new(),
             hook_secret,
         });
 

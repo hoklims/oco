@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use oco_code_intel::{CodeParser, CompositeParser, language_from_path};
 use oco_orchestrator_core::runtime::OrchestratorRuntime;
+use oco_retrieval::{CallGraphIndex, StoredCallEdge};
 
 use crate::server::AppState;
 
@@ -107,6 +109,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/search", post(search_workspace))
         .route("/api/v1/mcp", post(mcp_handler))
         .nest("/api/v1/hooks", hooks)
+        .nest("/api/v1/dashboard", crate::dashboard::dashboard_router())
         .with_state(state)
 }
 
@@ -489,12 +492,214 @@ async fn handle_mcp_tool_call(
                 }),
             )
         }
+        "oco_routes" => {
+            let symbol = arguments
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let direction = arguments
+                .get("direction")
+                .and_then(|v| v.as_str())
+                .unwrap_or("both")
+                .to_string();
+            let max_depth = arguments
+                .get("max_depth")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5) as u32;
+
+            if symbol.is_empty() {
+                return crate::protocol::JsonRpcResponse::success(
+                    id,
+                    serde_json::json!({
+                        "content": [{ "type": "text", "text": "Error: symbol is required" }],
+                        "isError": true
+                    }),
+                );
+            }
+
+            let result = tokio::task::spawn_blocking(move || {
+                let graph = build_call_graph_for_workspace(&PathBuf::from("."))?;
+                let mut response = serde_json::Map::new();
+                response.insert("symbol".into(), serde_json::json!(symbol));
+
+                if direction == "callers" || direction == "both" {
+                    let callers = graph.routes_callers(&symbol, max_depth)?;
+                    response.insert(
+                        "callers".into(),
+                        serde_json::to_value(&callers).unwrap_or_default(),
+                    );
+                }
+                if direction == "callees" || direction == "both" {
+                    let callees = graph.routes_callees(&symbol, max_depth)?;
+                    response.insert(
+                        "callees".into(),
+                        serde_json::to_value(&callees).unwrap_or_default(),
+                    );
+                }
+
+                Ok::<_, anyhow::Error>(serde_json::Value::Object(response))
+            })
+            .await;
+
+            let text = match result {
+                Ok(Ok(val)) => serde_json::to_string_pretty(&val).unwrap_or_else(|_| "{}".into()),
+                Ok(Err(e)) => format!("Error: {e}"),
+                Err(e) => format!("Task error: {e}"),
+            };
+
+            crate::protocol::JsonRpcResponse::success(
+                id,
+                serde_json::json!({
+                    "content": [{ "type": "text", "text": text }]
+                }),
+            )
+        }
+        "oco_impact" => {
+            let symbol = arguments
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let max_depth = arguments
+                .get("max_depth")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5) as u32;
+
+            if symbol.is_empty() {
+                return crate::protocol::JsonRpcResponse::success(
+                    id,
+                    serde_json::json!({
+                        "content": [{ "type": "text", "text": "Error: symbol is required" }],
+                        "isError": true
+                    }),
+                );
+            }
+
+            let result = tokio::task::spawn_blocking(move || {
+                let graph = build_call_graph_for_workspace(&PathBuf::from("."))?;
+                let impact = graph.impact(&symbol, max_depth)?;
+                serde_json::to_string_pretty(&impact).map_err(|e| anyhow::anyhow!(e))
+            })
+            .await;
+
+            let text = match result {
+                Ok(Ok(json)) => json,
+                Ok(Err(e)) => format!("Error: {e}"),
+                Err(e) => format!("Task error: {e}"),
+            };
+
+            crate::protocol::JsonRpcResponse::success(
+                id,
+                serde_json::json!({
+                    "content": [{ "type": "text", "text": text }]
+                }),
+            )
+        }
         _ => crate::protocol::JsonRpcResponse::error(
             id,
             -32601,
             format!("Unknown tool: {tool_name}"),
         ),
     }
+}
+
+/// Build or refresh a call graph index with incremental invalidation.
+///
+/// Uses `.oco/call_graph.db` for persistence. Only re-parses files whose
+/// modification timestamp has changed since last indexing.
+fn build_call_graph_for_workspace(workspace: &std::path::Path) -> anyhow::Result<CallGraphIndex> {
+    // Ensure .oco directory exists
+    let oco_dir = workspace.join(".oco");
+    std::fs::create_dir_all(&oco_dir)?;
+
+    let db_path = oco_dir.join("call_graph.db");
+    let db_path_str = db_path.to_string_lossy().to_string();
+    let graph = CallGraphIndex::new(&db_path_str)?;
+    let parser = CompositeParser::new();
+
+    index_directory_incremental(workspace, &parser, &graph)?;
+
+    Ok(graph)
+}
+
+/// Recursively walk a directory and incrementally index call edges.
+///
+/// Only re-parses files whose mtime is newer than the stored timestamp.
+fn index_directory_incremental(
+    dir: &std::path::Path,
+    parser: &CompositeParser,
+    graph: &CallGraphIndex,
+) -> anyhow::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if dir_name.starts_with('.')
+                || matches!(
+                    dir_name,
+                    "node_modules" | "target" | "__pycache__" | "vendor" | "dist" | "build"
+                )
+            {
+                continue;
+            }
+            index_directory_incremental(&path, parser, graph)?;
+            continue;
+        }
+
+        let path_str = path.to_string_lossy().to_string();
+        let Some(language) = language_from_path(&path_str) else {
+            continue;
+        };
+
+        // Check file modification time for incremental indexing
+        let mtime = path
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Skip if file hasn't changed since last indexing
+        if !graph.needs_reindex(&path_str, mtime).unwrap_or(true) {
+            continue;
+        }
+
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+
+        let Ok(parsed) = parser.parse(&content, language) else {
+            continue;
+        };
+
+        let edges: Vec<StoredCallEdge> = parsed
+            .calls
+            .iter()
+            .map(|call| StoredCallEdge {
+                file: path_str.clone(),
+                caller: call.caller.clone(),
+                callee: call.callee.clone(),
+                line: call.line,
+                col: call.col,
+                edge_type: call.kind.to_string(),
+                confidence: call.confidence,
+            })
+            .collect();
+
+        let edge_count = edges.len();
+        graph.index_file_calls(&path_str, &edges)?;
+        graph.record_file_meta(&path_str, mtime, edge_count)?;
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -518,6 +723,7 @@ mod tests {
         Arc::new(AppState {
             config,
             session_manager,
+            replay_registry: oco_orchestrator_core::replay::ReplayRegistry::new(),
             hook_secret: None,
         })
     }
@@ -529,6 +735,7 @@ mod tests {
         Arc::new(AppState {
             config,
             session_manager,
+            replay_registry: oco_orchestrator_core::replay::ReplayRegistry::new(),
             hook_secret: Some(secret.to_string()),
         })
     }
@@ -663,6 +870,8 @@ mod tests {
         assert!(tool_names.contains(&"oco_status".to_string()));
         assert!(tool_names.contains(&"oco_trace".to_string()));
         assert!(tool_names.contains(&"oco_search".to_string()));
+        assert!(tool_names.contains(&"oco_routes".to_string()));
+        assert!(tool_names.contains(&"oco_impact".to_string()));
     }
 
     // -- 5. POST /api/v1/hooks/post-tool — hook endpoint ----------------------

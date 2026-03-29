@@ -6,6 +6,7 @@
 
 pub mod action;
 pub mod affordance;
+pub mod dashboard;
 pub mod agent;
 pub mod budget;
 pub mod capability;
@@ -27,6 +28,7 @@ pub mod verification;
 
 pub use action::*;
 pub use affordance::*;
+pub use dashboard::*;
 pub use agent::*;
 pub use budget::*;
 pub use capability::*;

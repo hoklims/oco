@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/open-context-orchestrator/oco"
@@ -27,6 +27,8 @@ rust-version = "1.85"
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
+tokio-stream = "0.1"
+async-stream = "0.3"
 
 # Web / API
 axum = { version = "0.8", features = ["json", "ws"] }
