@@ -3,6 +3,7 @@
 //! Exposes orchestrator capabilities as MCP tools and resources,
 //! allowing IDE extensions to interact with OCO through the standard MCP protocol.
 
+pub mod dashboard;
 pub mod handlers;
 pub mod hooks;
 pub mod protocol;

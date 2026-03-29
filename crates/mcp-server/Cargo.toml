@@ -8,6 +8,8 @@ description = "MCP (Model Context Protocol) server exposing OCO tools and resour
 [dependencies]
 oco-shared-types = { workspace = true }
 oco-orchestrator-core = { workspace = true }
+oco-retrieval = { workspace = true }
+oco-code-intel = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
@@ -20,6 +22,8 @@ tower-http = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
 chrono = { workspace = true }
+tokio-stream = { workspace = true }
+async-stream = { workspace = true }
 
 [dev-dependencies]
 http-body-util = "0.1"
