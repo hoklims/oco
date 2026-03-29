@@ -8,7 +8,7 @@ pub mod error;
 pub mod runner;
 pub mod runners;
 
-pub use dispatcher::VerificationDispatcher;
+pub use dispatcher::{TieredVerificationResult, VerificationDispatcher};
 pub use error::VerifierError;
 pub use runner::{VerificationOutput, VerificationRunner};
 pub use runners::{BuildRunner, LintRunner, TestRunner, TypeCheckRunner};

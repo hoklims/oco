@@ -270,7 +270,7 @@ async fn cmd_run(
     let mut config = oco_orchestrator_core::OrchestratorConfig::default();
     config.default_budget.max_duration_secs = 120;
 
-    let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
+    let base_llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
         "claude-code" => {
             let model_name = model.unwrap_or_else(|| "sonnet".to_string());
             let cc_config = oco_orchestrator_core::llm::ClaudeCodeConfig::new(&model_name);
@@ -302,6 +302,11 @@ async fn cmd_run(
             );
         }
     };
+
+    // Wrap with retry logic for rate-limit resilience (uses config.llm.max_retries).
+    let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = Arc::new(
+        oco_orchestrator_core::RetryingLlmProvider::new(base_llm, config.llm.max_retries),
+    );
 
     r.emit(UiEvent::RunStarted {
         provider: llm.provider_name().to_string(),
@@ -861,7 +866,7 @@ async fn cmd_eval(
     let config =
         oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
 
-    let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
+    let base_llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
         "claude-code" => Arc::new(oco_orchestrator_core::llm::ClaudeCodeProvider::new(
             oco_orchestrator_core::llm::ClaudeCodeConfig::new("sonnet"),
         )),
@@ -887,6 +892,11 @@ async fn cmd_eval(
             );
         }
     };
+
+    // Wrap with retry logic for rate-limit resilience.
+    let llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = Arc::new(
+        oco_orchestrator_core::RetryingLlmProvider::new(base_llm, config.llm.max_retries),
+    );
 
     let scenario_path = PathBuf::from(&scenarios);
     let loaded = oco_orchestrator_core::eval::load_scenarios(&scenario_path)?;

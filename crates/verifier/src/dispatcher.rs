@@ -1,6 +1,6 @@
 use anyhow::Result;
-use oco_shared_types::VerificationStrategy;
-use tracing::info;
+use oco_shared_types::{VerificationStrategy, VerificationTier};
+use tracing::{info, warn};
 
 use crate::runner::VerificationOutput;
 use crate::runners::{BuildRunner, LintRunner, TestRunner, TypeCheckRunner};
@@ -51,6 +51,63 @@ impl VerificationDispatcher {
                 run_custom_command(command, working_dir, self.timeout_secs).await
             }
         }
+    }
+}
+
+/// Result of a tiered verification run — one entry per strategy executed.
+#[derive(Debug, Clone)]
+pub struct TieredVerificationResult {
+    /// The tier that was selected/used.
+    pub tier: VerificationTier,
+    /// Results per strategy, in execution order.
+    pub results: Vec<(VerificationStrategy, VerificationOutput)>,
+}
+
+impl TieredVerificationResult {
+    /// True if all strategies passed.
+    pub fn all_passed(&self) -> bool {
+        self.results.iter().all(|(_, r)| r.passed)
+    }
+
+    /// Collect all failures across strategies.
+    pub fn all_failures(&self) -> Vec<String> {
+        self.results
+            .iter()
+            .filter(|(_, r)| !r.passed)
+            .flat_map(|(strategy, r)| {
+                let prefix = format!("[{strategy:?}]");
+                r.failures.iter().map(move |f| format!("{prefix} {f}"))
+            })
+            .collect()
+    }
+}
+
+impl VerificationDispatcher {
+    /// Run all strategies for the given tier, stopping at the first failure.
+    ///
+    /// This is the recommended entry point: pass changed file paths through
+    /// [`TierSelector::select`] to get the tier, then call this.
+    pub async fn dispatch_tiered(
+        &self,
+        tier: VerificationTier,
+        working_dir: &str,
+    ) -> Result<TieredVerificationResult> {
+        let strategies = tier.strategies();
+        info!(?tier, count = strategies.len(), "running tiered verification");
+
+        let mut results = Vec::with_capacity(strategies.len());
+        for strategy in strategies {
+            let output = self.dispatch(strategy.clone(), None, working_dir).await?;
+            let passed = output.passed;
+            results.push((strategy.clone(), output));
+
+            if !passed {
+                warn!(?strategy, "tiered verification failed, stopping early");
+                break;
+            }
+        }
+
+        Ok(TieredVerificationResult { tier, results })
     }
 }
 

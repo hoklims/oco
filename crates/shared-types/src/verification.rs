@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,95 @@ pub enum VerificationFreshness {
     Stale,
     /// No verification has been performed yet.
     None,
+}
+
+/// Verification depth tier, selected by heuristic based on changed file patterns.
+///
+/// Inspired by oh-my-claudecode's tier-selector: zero-LLM, file-path-pattern-based.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationTier {
+    /// Build only — cosmetic changes, docs, comments.
+    Light,
+    /// Build + tests — standard code changes.
+    Standard,
+    /// Build + tests + lint + typecheck — security-sensitive, architectural, or config changes.
+    Thorough,
+}
+
+impl VerificationTier {
+    /// Return the verification strategies to run for this tier, in order.
+    pub fn strategies(&self) -> Vec<crate::VerificationStrategy> {
+        use crate::VerificationStrategy;
+        match self {
+            Self::Light => vec![VerificationStrategy::Build],
+            Self::Standard => vec![VerificationStrategy::Build, VerificationStrategy::RunTests],
+            Self::Thorough => vec![
+                VerificationStrategy::Build,
+                VerificationStrategy::TypeCheck,
+                VerificationStrategy::Lint,
+                VerificationStrategy::RunTests,
+            ],
+        }
+    }
+}
+
+/// Selects a [`VerificationTier`] based on which files were changed.
+///
+/// Uses file-path pattern matching — no LLM calls, deterministic, fast.
+pub struct TierSelector;
+
+/// Security-sensitive path patterns (substrings).
+const SECURITY_PATTERNS: &[&str] = &[
+    "auth", "credential", "secret", "oauth", "jwt", "token", "crypto",
+    "password", "permission", "rbac", "acl", "session", "cookie",
+    "csrf", "cors", "sanitiz", "encrypt", "decrypt", "cert",
+];
+
+/// Architectural / config patterns that warrant thorough verification.
+/// All patterns must be lowercase (compared against lowercased path).
+const ARCHITECTURE_PATTERNS: &[&str] = &[
+    "schema", "migrat", "proto", "config", "manifest",
+    "cargo.toml", "package.json", "pyproject.toml", "go.mod",
+    "dockerfile", "docker-compose", "ci", ".github/workflows",
+    ".gitlab-ci", "makefile", "build.rs",
+];
+
+/// Light-tier patterns — docs, comments, cosmetic.
+const LIGHT_PATTERNS: &[&str] = &[
+    ".md", ".txt", ".rst", "README", "LICENSE", "CHANGELOG",
+    "CONTRIBUTING", ".gitignore", ".editorconfig",
+];
+
+impl TierSelector {
+    /// Select a tier from a list of changed file paths.
+    ///
+    /// The highest tier wins: if any file triggers `Thorough`, the whole
+    /// changeset is verified at that level.
+    pub fn select(changed_files: &[impl AsRef<Path>]) -> VerificationTier {
+        let mut tier = VerificationTier::Light;
+
+        for file in changed_files {
+            let path = file.as_ref().to_string_lossy();
+            let path_lower = path.to_lowercase();
+
+            // Check thorough patterns first (security + architecture).
+            if SECURITY_PATTERNS.iter().any(|p| path_lower.contains(p))
+                || ARCHITECTURE_PATTERNS.iter().any(|p| path_lower.contains(p))
+            {
+                return VerificationTier::Thorough;
+            }
+
+            // If not a light-only file, promote to Standard.
+            if tier == VerificationTier::Light
+                && !LIGHT_PATTERNS.iter().any(|p| path_lower.contains(p))
+            {
+                tier = VerificationTier::Standard;
+            }
+        }
+
+        tier
+    }
 }
 
 impl VerificationState {
@@ -123,6 +213,82 @@ impl VerificationState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- TierSelector tests --
+
+    #[test]
+    fn tier_light_for_docs_only() {
+        let files = vec!["README.md", "docs/guide.txt", "CHANGELOG.md"];
+        assert_eq!(TierSelector::select(&files), VerificationTier::Light);
+    }
+
+    #[test]
+    fn tier_standard_for_source_code() {
+        let files = vec!["src/main.rs", "src/lib.rs"];
+        assert_eq!(TierSelector::select(&files), VerificationTier::Standard);
+    }
+
+    #[test]
+    fn tier_thorough_for_security_files() {
+        let files = vec!["src/utils.rs", "src/auth/middleware.rs"];
+        assert_eq!(TierSelector::select(&files), VerificationTier::Thorough);
+    }
+
+    #[test]
+    fn tier_thorough_for_config_files() {
+        let files = vec!["Cargo.toml"];
+        assert_eq!(TierSelector::select(&files), VerificationTier::Thorough);
+    }
+
+    #[test]
+    fn tier_thorough_for_schema_migration() {
+        let files = vec!["src/models.rs", "migrations/001_init.sql"];
+        assert_eq!(TierSelector::select(&files), VerificationTier::Thorough);
+    }
+
+    #[test]
+    fn tier_standard_mixed_with_docs() {
+        let files = vec!["README.md", "src/handler.rs"];
+        assert_eq!(TierSelector::select(&files), VerificationTier::Standard);
+    }
+
+    #[test]
+    fn tier_light_for_empty_changeset() {
+        let files: Vec<&str> = vec![];
+        assert_eq!(TierSelector::select(&files), VerificationTier::Light);
+    }
+
+    #[test]
+    fn tier_strategies_light() {
+        let strats = VerificationTier::Light.strategies();
+        assert_eq!(strats.len(), 1);
+    }
+
+    #[test]
+    fn tier_strategies_standard() {
+        let strats = VerificationTier::Standard.strategies();
+        assert_eq!(strats.len(), 2);
+    }
+
+    #[test]
+    fn tier_strategies_thorough() {
+        let strats = VerificationTier::Thorough.strategies();
+        assert_eq!(strats.len(), 4);
+    }
+
+    #[test]
+    fn tier_thorough_for_jwt_in_path() {
+        let files = vec!["src/jwt_validator.rs"];
+        assert_eq!(TierSelector::select(&files), VerificationTier::Thorough);
+    }
+
+    #[test]
+    fn tier_thorough_for_dockerfile() {
+        let files = vec!["Dockerfile", "src/app.rs"];
+        assert_eq!(TierSelector::select(&files), VerificationTier::Thorough);
+    }
+
+    // -- VerificationState tests --
 
     #[test]
     fn freshness_none_when_no_runs() {
