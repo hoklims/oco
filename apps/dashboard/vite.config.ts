@@ -4,6 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [tailwindcss(), svelte()],
+  base: '/dashboard/',
   server: {
     port: 5173,
     proxy: {

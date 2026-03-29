@@ -2,33 +2,53 @@
   import './app.css'
   import { connectSSE, type SSEStatus } from './lib/sse'
   import type { DashboardEvent, BudgetSnapshot, StepRow } from './lib/types'
-  import EventLog from './lib/EventLog.svelte'
-  import StepTable from './lib/StepTable.svelte'
-  import BudgetGauge from './lib/BudgetGauge.svelte'
+  import MissionCard from './lib/MissionCard.svelte'
+  import MissionView from './lib/MissionView.svelte'
 
   let events = $state<DashboardEvent[]>([])
   let steps = $state<StepRow[]>([])
   let budget = $state<BudgetSnapshot | null>(null)
   let status = $state<SSEStatus>('closed')
   let replayId = $state('')
-  let runDir = $state('')
-  let speed = $state(1)
+  let speed = $state(10)
   let connected = $state(false)
+  let missionRequest = $state('')
 
-  async function createReplay() {
-    if (!runDir.trim()) return
+  type Run = {
+    id: string; request: string; complexity: string; steps: number
+    duration_ms: number; success: boolean; created_at: string; run_dir: string
+    tokens_used: number; tokens_max: number; status: string
+  }
+
+  let runs = $state<Run[]>([])
+  let loading = $state(true)
+  let statsTotal = $derived(runs.length)
+  let statsSuccess = $derived(runs.filter(r => r.success).length)
+  let statsFail = $derived(runs.filter(r => !r.success).length)
+  let statsTotalSteps = $derived(runs.reduce((a, r) => a + r.steps, 0))
+
+  $effect(() => { fetchRuns() })
+
+  async function fetchRuns() {
+    loading = true
+    try {
+      const res = await fetch('/api/v1/dashboard/runs?limit=50')
+      if (res.ok) runs = await res.json()
+    } catch {}
+    loading = false
+  }
+
+  async function selectRun(runDir: string) {
     const res = await fetch('/api/v1/dashboard/replays', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ run_dir: runDir, speed }),
     })
-    if (!res.ok) {
-      const err = await res.json()
-      alert(err.error || 'Failed to create replay')
-      return
-    }
+    if (!res.ok) { alert((await res.json()).error || 'Load failed'); return }
     const data = await res.json()
     replayId = data.replay_id
+    const run = runs.find(r => r.run_dir === runDir)
+    missionRequest = run?.request ?? ''
     connectToReplay(data.stream_url)
   }
 
@@ -36,9 +56,7 @@
 
   function connectToReplay(streamUrl: string) {
     client?.close()
-    events = []
-    steps = []
-    budget = null
+    events = []; steps = []; budget = null
     connected = true
     client = connectSSE(streamUrl)
     client.onStatus(s => { status = s })
@@ -49,49 +67,31 @@
     events = [...events, event]
     const kind = event.kind as Record<string, unknown>
     const type = kind.type as string
-
     switch (type) {
-      case 'plan_generated': {
-        const planSteps = (kind.steps as Array<Record<string, unknown>>) ?? []
-        steps = planSteps.map(s => ({
-          id: s.id as string,
-          name: s.name as string,
-          role: s.role as string,
-          status: 'pending' as const,
-          duration_ms: null,
-          tokens_used: null,
-          execution_mode: s.execution_mode as string,
-          verify_passed: null,
+      case 'plan_generated':
+        steps = ((kind.steps as Array<Record<string, unknown>>) ?? []).map(s => ({
+          id: s.id as string, name: s.name as string, role: s.role as string,
+          status: 'pending' as const, duration_ms: null, tokens_used: null,
+          execution_mode: s.execution_mode as string, verify_passed: null,
         }))
         break
-      }
-      case 'step_started': {
-        const id = kind.step_id as string
-        steps = steps.map(s => s.id === id ? { ...s, status: 'running' as const } : s)
+      case 'step_started':
+        steps = steps.map(s => s.id === (kind.step_id as string) ? { ...s, status: 'running' as const } : s)
         break
-      }
       case 'step_completed': {
         const id = kind.step_id as string
-        steps = steps.map(s => s.id === id ? {
-          ...s,
+        steps = steps.map(s => s.id === id ? { ...s,
           status: (kind.success ? 'passed' : 'failed') as StepRow['status'],
-          duration_ms: kind.duration_ms as number,
-          tokens_used: kind.tokens_used as number,
+          duration_ms: kind.duration_ms as number, tokens_used: kind.tokens_used as number,
         } : s)
         break
       }
-      case 'verify_gate_result': {
-        const id = kind.step_id as string
-        steps = steps.map(s => s.id === id ? {
-          ...s,
-          verify_passed: kind.overall_passed as boolean,
-        } : s)
+      case 'verify_gate_result':
+        steps = steps.map(s => s.id === (kind.step_id as string) ? { ...s, verify_passed: kind.overall_passed as boolean } : s)
         break
-      }
-      case 'progress':
-      case 'flat_step_completed': {
+      case 'progress': case 'flat_step_completed': {
         const snap = (kind.budget ?? kind.budget_snapshot) as BudgetSnapshot | undefined
-        if (snap && snap.tokens_used !== undefined) budget = snap
+        if (snap?.tokens_used !== undefined) budget = snap
         break
       }
     }
@@ -101,104 +101,77 @@
   async function resume() { await fetch(`/api/v1/dashboard/replays/${replayId}/resume`, { method: 'POST' }) }
   async function setSpeed(s: number) {
     speed = s
-    await fetch(`/api/v1/dashboard/replays/${replayId}/speed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    if (replayId) await fetch(`/api/v1/dashboard/replays/${replayId}/speed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ speed: s }),
     })
   }
 
   function disconnect() {
     client?.close()
-    connected = false
-    status = 'closed'
-  }
-
-  const statusColors: Record<SSEStatus, string> = {
-    connecting: 'bg-warning',
-    connected: 'bg-success',
-    reconnecting: 'bg-warning',
-    closed: 'bg-text-dim',
+    connected = false; status = 'closed'
+    events = []; steps = []; budget = null; missionRequest = ''
+    fetchRuns()
   }
 </script>
 
-<div class="h-screen flex flex-col bg-surface text-text">
-  <header class="flex items-center justify-between px-4 py-2 border-b border-border bg-surface-2">
-    <div class="flex items-center gap-3">
-      <h1 class="text-sm font-semibold text-text-bright tracking-wide">OCO Dashboard</h1>
-      <span class="text-xs text-text-dim font-mono">v0.10.0</span>
-    </div>
-    <div class="flex items-center gap-2">
-      <span class="w-2 h-2 rounded-full {statusColors[status]}"></span>
-      <span class="text-xs text-text-dim">{status}</span>
-    </div>
-  </header>
-
-  {#if !connected}
-    <div class="flex-1 flex items-center justify-center">
-      <div class="bg-surface-2 border border-border rounded-xl p-6 w-full max-w-md">
-        <h2 class="text-lg font-semibold text-text-bright mb-4">Load a trace</h2>
-        <div class="space-y-3">
-          <div>
-            <label for="rundir" class="text-xs text-text-dim block mb-1">Run directory</label>
-            <input
-              id="rundir"
-              type="text"
-              bind:value={runDir}
-              placeholder=".oco/runs/abc123..."
-              class="w-full bg-surface-3 border border-border rounded-lg px-3 py-2 text-sm text-text outline-none focus:border-accent"
-            />
+{#if connected}
+  <MissionView
+    {events} {steps} {budget} request={missionRequest}
+    onDisconnect={disconnect} onPause={pause} onResume={resume} onSpeed={setSpeed} {speed} {status}
+  />
+{:else}
+  <div class="min-h-screen bg-surface scanlines">
+    <!-- Header -->
+    <header class="border-b border-border bg-surface-2">
+      <div class="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
+        <div>
+          <div class="text-[10px] font-mono uppercase tracking-[0.2em] text-text-dim">Open Context Orchestrator</div>
+          <div class="text-sm font-semibold text-text-bright mt-0.5">Mission Control</div>
+        </div>
+        <div class="flex items-center gap-4">
+          <!-- Aggregate stats -->
+          <div class="flex items-center gap-3 text-[10px] font-mono">
+            <div><span class="text-text-dim">RUNS</span> <span class="text-text-bright">{statsTotal}</span></div>
+            <div><span class="text-text-dim">PASS</span> <span class="text-success">{statsSuccess}</span></div>
+            <div><span class="text-text-dim">FAIL</span> <span class="text-error">{statsFail}</span></div>
+            <div><span class="text-text-dim">STEPS</span> <span class="text-text-bright">{statsTotalSteps}</span></div>
           </div>
-          <div>
-            <label for="speed" class="text-xs text-text-dim block mb-1">Speed: {speed}x</label>
-            <input id="speed" type="range" min="0.5" max="20" step="0.5" bind:value={speed} class="w-full accent-accent" />
+          <div class="w-px h-6 bg-border"></div>
+          <!-- Speed selector -->
+          <div class="flex items-center gap-1">
+            <span class="text-[10px] font-mono text-text-dim uppercase">Speed</span>
+            {#each [1, 5, 10, 50] as s}
+              <button
+                onclick={() => { speed = s }}
+                class="text-[10px] font-mono px-1.5 py-0.5 {speed === s ? 'bg-accent text-white' : 'text-text-dim bg-surface-3 hover:bg-border-bright'} transition-colors"
+              >{s}x</button>
+            {/each}
           </div>
-          <button
-            onclick={createReplay}
-            disabled={!runDir.trim()}
-            class="w-full bg-accent hover:bg-accent/80 disabled:opacity-40 text-white font-medium py-2 rounded-lg text-sm transition-colors"
-          >Start replay</button>
         </div>
       </div>
-    </div>
-  {:else}
-    <div class="flex-1 flex overflow-hidden">
-      <div class="w-1/2 border-r border-border flex flex-col">
-        <div class="px-3 py-2 border-b border-border bg-surface-2">
-          <span class="text-xs font-semibold text-text-bright">Event Log</span>
-        </div>
-        <div class="flex-1 overflow-hidden">
-          <EventLog {events} />
-        </div>
-      </div>
+    </header>
 
-      <div class="w-1/2 flex flex-col">
-        <div class="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-2">
-          <button onclick={pause} class="text-xs px-2 py-1 rounded bg-surface-3 hover:bg-border text-text-dim">Pause</button>
-          <button onclick={resume} class="text-xs px-2 py-1 rounded bg-surface-3 hover:bg-border text-text-dim">Resume</button>
-          {#each [1, 2, 5, 10, 50] as s}
-            <button
-              onclick={() => setSpeed(s)}
-              class="text-xs px-2 py-1 rounded {speed === s ? 'bg-accent text-white' : 'bg-surface-3 text-text-dim hover:bg-border'}"
-            >{s}x</button>
+    <!-- Mission grid -->
+    <main class="max-w-5xl mx-auto px-6 py-6">
+      {#if loading}
+        <div class="text-center py-16 text-[10px] font-mono text-text-dim uppercase tracking-widest">
+          Scanning archives...
+        </div>
+      {:else if runs.length === 0}
+        <div class="text-center py-16 border border-border bg-surface-2">
+          <div class="text-xs text-text-dim mb-2">No missions recorded</div>
+          <div class="text-[10px] font-mono text-text-dim">
+            Execute <span class="text-accent">oco run "your task"</span> to begin
+          </div>
+        </div>
+      {:else}
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {#each runs as run (run.id)}
+            <MissionCard {run} onSelect={selectRun} />
           {/each}
-          <div class="flex-1"></div>
-          <button onclick={disconnect} class="text-xs px-2 py-1 rounded bg-error/20 text-error hover:bg-error/30">Disconnect</button>
         </div>
-
-        <div class="px-3 py-3 border-b border-border">
-          <div class="text-xs font-semibold text-text-bright mb-2">Budget</div>
-          <BudgetGauge {budget} />
-        </div>
-
-        <div class="flex-1 overflow-y-auto">
-          <div class="px-3 py-2 border-b border-border bg-surface-2">
-            <span class="text-xs font-semibold text-text-bright">Plan Steps</span>
-            <span class="text-xs text-text-dim ml-2">{steps.filter(s => s.status === 'passed').length}/{steps.length}</span>
-          </div>
-          <StepTable {steps} />
-        </div>
-      </div>
-    </div>
-  {/if}
-</div>
+      {/if}
+    </main>
+  </div>
+{/if}

@@ -193,6 +193,23 @@ pub struct ActiveStep {
 
 use crate::telemetry::OrchestrationEvent;
 
+/// Extract a human-readable action type name from an OrchestratorAction.
+fn action_type_name(action: &crate::OrchestratorAction) -> String {
+    use crate::OrchestratorAction;
+    match action {
+        OrchestratorAction::Respond { .. } => "respond".into(),
+        OrchestratorAction::Retrieve { .. } => "retrieve".into(),
+        OrchestratorAction::ToolCall { tool_name, .. } => format!("tool:{tool_name}"),
+        OrchestratorAction::Verify { strategy, .. } => format!("verify:{strategy:?}"),
+        OrchestratorAction::UpdateMemory { .. } => "memory".into(),
+        OrchestratorAction::Stop { reason, .. } => format!("stop:{reason:?}"),
+        OrchestratorAction::Plan { .. } => "plan".into(),
+        OrchestratorAction::Delegate { agent_role, .. } => format!("delegate:{}", agent_role.name),
+        OrchestratorAction::Message { message_type, .. } => format!("message:{message_type:?}"),
+        OrchestratorAction::Replan { .. } => "replan".into(),
+    }
+}
+
 impl DashboardEventKind {
     /// Convert a raw `OrchestrationEvent` into a `DashboardEventKind`.
     ///
@@ -209,7 +226,7 @@ impl DashboardEventKind {
                 ..
             } => DashboardEventKind::FlatStepCompleted {
                 step: *step,
-                action_type: format!("{:?}", std::mem::discriminant(action)),
+                action_type: action_type_name(action),
                 reason: reason.clone(),
                 duration_ms: *duration_ms,
                 budget_snapshot: budget_snapshot.clone(),

@@ -94,7 +94,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     // Claude Code HTTP hooks (v2.1.63+) — isolated sub-router with auth + body limit.
     let hooks = crate::hooks::hook_router(Arc::clone(&state));
 
-    Router::new()
+    let mut router = Router::new()
         .route("/health", get(health))
         .route("/api/v1/sessions", post(start_session).get(list_sessions))
         .route("/api/v1/sessions/{session_id}", get(get_session))
@@ -109,8 +109,19 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/search", post(search_workspace))
         .route("/api/v1/mcp", post(mcp_handler))
         .nest("/api/v1/hooks", hooks)
-        .nest("/api/v1/dashboard", crate::dashboard::dashboard_router())
-        .with_state(state)
+        .nest("/api/v1/dashboard", crate::dashboard::dashboard_router());
+
+    // Serve the dashboard static files if the dist directory exists.
+    if let Some(ref dir) = state.dashboard_dir.as_ref().filter(|d| d.exists()) {
+        tracing::info!(path = %dir.display(), "serving dashboard at /dashboard");
+        router = router.nest_service(
+            "/dashboard",
+            tower_http::services::ServeDir::new(dir)
+                .fallback(tower_http::services::ServeFile::new(dir.join("index.html"))),
+        );
+    }
+
+    router.with_state(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +735,7 @@ mod tests {
             config,
             session_manager,
             replay_registry: oco_orchestrator_core::replay::ReplayRegistry::new(),
+            dashboard_dir: None,
             hook_secret: None,
         })
     }
@@ -736,6 +748,7 @@ mod tests {
             config,
             session_manager,
             replay_registry: oco_orchestrator_core::replay::ReplayRegistry::new(),
+            dashboard_dir: None,
             hook_secret: Some(secret.to_string()),
         })
     }
