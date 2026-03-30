@@ -84,6 +84,9 @@ Respond with ONLY a JSON array of steps. No markdown, no explanation.
 For subagent mode: {{"mode": "subagent", "model": "haiku"}}
 For teammate mode: {{"mode": "teammate", "team_name": "feature-crew"}}
 For mcp_tool mode: {{"mode": "mcp_tool", "server": "yoyo", "tool": "search"}}
+
+Subagent/teammate steps may include a "sub_plan" field with nested steps (max depth 2):
+{{"name": "delegate-analysis", "execution": {{"mode": "subagent"}}, "sub_plan": [{{"name": "sub-task", "description": "...", "depends_on": [], "estimated_tokens": 1000}}]}}
 "#,
         tools = format_items(&context.capabilities.tools),
         mcp = format_items(&context.capabilities.mcp),

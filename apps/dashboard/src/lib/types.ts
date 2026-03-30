@@ -24,6 +24,13 @@ export type DashboardEventKind =
   | { type: 'budget_snapshot' } & BudgetSnapshot
   | { type: 'index_progress'; files_done: number; symbols_so_far: number }
   | { type: 'heartbeat' }
+  // ── Hierarchical plan events ─────────────────────────────
+  | { type: 'sub_plan_started'; parent_step_id: string; sub_step_count: number; sub_steps: SubStepSummary[] }
+  | { type: 'sub_step_progress'; parent_step_id: string; sub_step_id: string; sub_step_name: string; status: 'pending' | 'running' | 'passed' | 'failed' }
+  | { type: 'sub_plan_completed'; parent_step_id: string; success: boolean; duration_ms: number; tokens_used: number }
+  // ── Teammate communication events ────────────────────────
+  | { type: 'teammate_message'; from_step_id: string; to_step_id: string; from_name: string; to_name: string; summary: string }
+  | { type: 'teammate_idle'; step_id: string; step_name: string }
 
 export interface PlanCandidateSummary {
   strategy: string
@@ -54,6 +61,14 @@ export interface StepSummary {
   verify_after: boolean
   estimated_tokens: number
   preferred_model: string | null
+  sub_plan?: { steps: SubStepSummary[]; parallel_groups: number } | null
+}
+
+export interface SubStepSummary {
+  id: string
+  name: string
+  description: string
+  estimated_tokens: number
 }
 
 export interface TeamSummary {

@@ -10,6 +10,10 @@
   import PlanExplorer from './lib/PlanExplorer.svelte'
   import DetailPanel from './lib/DetailPanel.svelte'
   import ClassifyingScene from './lib/ClassifyingScene.svelte'
+  import Playground from './lib/Playground.svelte'
+
+  // ── Playground routing ─────────────────────────────────────
+  const isPlayground = new URLSearchParams(window.location.search).has('playground')
 
   // ── Lifecycle phases ────────────────────────────────────────
   type Phase = 'connecting' | 'waiting' | 'classifying' | 'planning' | 'executing' | 'verifying' | 'complete' | 'failed' | 'demo'
@@ -37,6 +41,13 @@
   let selectedStepId = $state<string | null>(null)
   let thoughts = $state<Thought[]>([])
   let explorationPhase = $state<'idle' | 'generating' | 'comparing' | 'scoring' | 'selecting' | 'done'>('idle')
+  let stepSummaries = $state<Array<{
+    id: string; name: string; depends_on: string[]; verify_after: boolean; execution_mode: string
+  }>>([])
+  let teamInfo = $state<{ name: string; topology: string; member_count: number } | null>(null)
+  let teammateMessages = $state<Array<{ fromStepId: string; toStepId: string; fromName: string; toName: string; summary: string }>>([])
+  let subPlanState = $state<Map<string, { subSteps: Array<{ id: string; name: string; status: 'pending' | 'running' | 'passed' | 'failed' }>; completed: boolean }>>(new Map())
+  let msgTimers: ReturnType<typeof setTimeout>[] = []
   let liveSessionId = $state<string | null>(null)
   let sseStatus = $state<SSEStatus>('connecting')
   let phase = $state<Phase>('connecting')
@@ -61,7 +72,7 @@
   let eventPlayer: EventPlayer | null = null
 
   function resetState() {
-    events = []; steps = []; budget = null; thoughts = []; explorationPhase = 'idle'
+    events = []; steps = []; budget = null; thoughts = []; explorationPhase = 'idle'; stepSummaries = []; teamInfo = null; teammateMessages = []; subPlanState = new Map(); msgTimers.forEach(clearTimeout); msgTimers = []
     selectedSeq = null; selectedStepId = null; missionRequest = ''; complexity = ''; provider = ''
   }
 
@@ -89,6 +100,30 @@
       onEvent: handleEvent,
       onExploration: (p) => { explorationPhase = p },
       onThought: (t) => { thoughts = [...thoughts, t] },
+      onTeammateMessage: (msg) => {
+        teammateMessages = [...teammateMessages, msg]
+        msgTimers.push(setTimeout(() => { teammateMessages = teammateMessages.filter(m => m !== msg) }, 3000))
+      },
+      onSubPlan: (update) => {
+        const pid = update.parentStepId
+        if (update.type === 'started' && update.subSteps) {
+          const subs = update.subSteps.map(s => ({ ...s, status: 'pending' as const }))
+          subPlanState = new Map(subPlanState).set(pid, { subSteps: subs, completed: false })
+        } else if (update.type === 'progress' && update.subStepId && update.status) {
+          const entry = subPlanState.get(pid)
+          if (entry) {
+            subPlanState = new Map(subPlanState).set(pid, {
+              ...entry, subSteps: entry.subSteps.map(s => s.id === update.subStepId ? { ...s, status: update.status! } : s),
+            })
+          }
+        } else if (update.type === 'completed') {
+          const entry = subPlanState.get(pid)
+          if (entry) {
+            subPlanState = new Map(subPlanState).set(pid, { ...entry, completed: true })
+            msgTimers.push(setTimeout(() => { const n = new Map(subPlanState); n.delete(pid); subPlanState = n }, 800))
+          }
+        }
+      },
     })
 
     const baseUrl = `/api/v1/dashboard/sessions/${sessionId}/stream`
@@ -167,6 +202,14 @@
       case 'plan_generated':
         if (phase !== 'demo') phase = 'executing'
         if (explorationPhase === 'idle') explorationPhase = 'done'
+        stepSummaries = ((kind.steps as Array<Record<string, unknown>>) ?? []).map(s => ({
+          id: s.id as string, name: s.name as string,
+          depends_on: (s.depends_on as string[]) ?? [],
+          verify_after: (s.verify_after as boolean) ?? false,
+          execution_mode: (s.execution_mode as string) ?? 'inline',
+        }))
+        const t = kind.team as Record<string, unknown> | null
+        teamInfo = t ? { name: t.name as string, topology: t.topology as string, member_count: t.member_count as number } : null
         steps = ((kind.steps as Array<Record<string, unknown>>) ?? []).map(s => ({
           id: s.id as string, name: s.name as string, role: s.role as string,
           status: 'pending' as const, duration_ms: null, tokens_used: null,
@@ -199,6 +242,56 @@
         break
       }
 
+      // In live mode, EventPlayer's onSubPlan/onTeammateMessage callbacks handle these.
+      // In demo mode (no EventPlayer), handleEvent processes them directly.
+      case 'sub_plan_started': {
+        if (!liveSessionId) {
+          const pid = kind.parent_step_id as string
+          const subs = ((kind.sub_steps as Array<Record<string, unknown>>) ?? []).map(s => ({
+            id: s.id as string, name: s.name as string, status: 'pending' as const,
+          }))
+          subPlanState = new Map(subPlanState).set(pid, { subSteps: subs, completed: false })
+        }
+        break
+      }
+      case 'sub_step_progress': {
+        if (!liveSessionId) {
+          const pid = kind.parent_step_id as string
+          const sid = kind.sub_step_id as string
+          const st = kind.status as 'pending' | 'running' | 'passed' | 'failed'
+          const entry = subPlanState.get(pid)
+          if (entry) {
+            subPlanState = new Map(subPlanState).set(pid, {
+              ...entry, subSteps: entry.subSteps.map(s => s.id === sid ? { ...s, status: st } : s),
+            })
+          }
+        }
+        break
+      }
+      case 'sub_plan_completed': {
+        if (!liveSessionId) {
+          const pid = kind.parent_step_id as string
+          const entry = subPlanState.get(pid)
+          if (entry) {
+            subPlanState = new Map(subPlanState).set(pid, { ...entry, completed: true })
+            msgTimers.push(setTimeout(() => { const n = new Map(subPlanState); n.delete(pid); subPlanState = n }, 800))
+          }
+        }
+        break
+      }
+      case 'teammate_message': {
+        if (!liveSessionId) {
+          const msg = {
+            fromStepId: kind.from_step_id as string, toStepId: kind.to_step_id as string,
+            fromName: kind.from_name as string, toName: kind.to_name as string,
+            summary: kind.summary as string,
+          }
+          teammateMessages = [...teammateMessages, msg]
+          msgTimers.push(setTimeout(() => { teammateMessages = teammateMessages.filter(m => m !== msg) }, 3000))
+        }
+        break
+      }
+
       case 'run_stopped': {
         const reason = kind.reason as Record<string, unknown> | string
         const reasonType = typeof reason === 'string' ? reason : (reason?.type as string) ?? 'unknown'
@@ -214,6 +307,9 @@
   function selectStep(id: string) { selectedStepId = id; selectedSeq = null }
 </script>
 
+{#if isPlayground}
+  <Playground />
+{:else}
 <div class="h-screen flex flex-col bg-bg">
   <!-- Phase stepper bar -->
   {#if liveSessionId}
@@ -330,7 +426,7 @@
     <div class="h-[55%] border-b border-border shrink-0 relative">
       <PlanExplorer phase={explorationPhase} />
       {#if explorationPhase === 'done' || steps.length > 0}
-        <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} />
+        <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
       {:else if phase === 'classifying'}
         <ClassifyingScene mission={missionRequest} {complexity} />
       {:else if phase === 'planning' && explorationPhase === 'idle'}
@@ -382,3 +478,4 @@
     <span class="ml-auto text-text-3">{events.length} events</span>
   </footer>
 </div>
+{/if}

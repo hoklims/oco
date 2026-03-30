@@ -278,6 +278,33 @@ pub enum OrchestrationEvent {
         winner_strategy: String,
         winner_score: f64,
     },
+    /// A sub-plan started executing for a parent step (ADR-008).
+    SubPlanStarted {
+        parent_step_id: Uuid,
+        parent_step_name: String,
+        sub_steps: Vec<(Uuid, String)>,
+    },
+    /// Progress update for a sub-plan step.
+    SubStepProgress {
+        parent_step_id: Uuid,
+        sub_step_id: Uuid,
+        sub_step_name: String,
+        status: String,
+    },
+    /// A sub-plan completed execution.
+    SubPlanCompleted {
+        parent_step_id: Uuid,
+        parent_step_name: String,
+        success: bool,
+    },
+    /// A teammate sent a message to another teammate.
+    TeammateMessage {
+        from_step_id: Uuid,
+        to_step_id: Uuid,
+        from_name: String,
+        to_name: String,
+        summary: String,
+    },
     /// The orchestration loop stopped.
     Stopped {
         reason: crate::StopReason,

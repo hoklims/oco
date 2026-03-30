@@ -179,9 +179,47 @@ pub enum DashboardEventKind {
         symbols_so_far: u32,
     },
 
+    // ── Sub-plans (ADR-008) ────────────────────────────────────
+    /// A sub-plan started executing.
+    SubPlanStarted {
+        parent_step_id: Uuid,
+        parent_step_name: String,
+        sub_steps: Vec<SubStepSummary>,
+    },
+    /// Sub-step status changed.
+    SubStepProgress {
+        parent_step_id: Uuid,
+        sub_step_id: Uuid,
+        sub_step_name: String,
+        status: String,
+    },
+    /// A sub-plan completed.
+    SubPlanCompleted {
+        parent_step_id: Uuid,
+        parent_step_name: String,
+        success: bool,
+    },
+
+    // ── Teammate communication ───────────────────────────────
+    /// A teammate sent a message to another.
+    TeammateMessage {
+        from_step_id: Uuid,
+        to_step_id: Uuid,
+        from_name: String,
+        to_name: String,
+        summary: String,
+    },
+
     // ── Heartbeat ────────────────────────────────────────────
     /// Keepalive for SSE connections. Clients should ignore this.
     Heartbeat,
+}
+
+/// Summary of a sub-step in a sub-plan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubStepSummary {
+    pub id: Uuid,
+    pub name: String,
 }
 
 /// A currently-active step (for progress display).
@@ -371,6 +409,54 @@ impl DashboardEventKind {
             } => DashboardEventKind::IndexProgress {
                 files_done: *files_done,
                 symbols_so_far: *symbols_so_far,
+            },
+            OrchestrationEvent::SubPlanStarted {
+                parent_step_id,
+                parent_step_name,
+                sub_steps,
+            } => DashboardEventKind::SubPlanStarted {
+                parent_step_id: *parent_step_id,
+                parent_step_name: parent_step_name.clone(),
+                sub_steps: sub_steps
+                    .iter()
+                    .map(|(id, name)| SubStepSummary {
+                        id: *id,
+                        name: name.clone(),
+                    })
+                    .collect(),
+            },
+            OrchestrationEvent::SubStepProgress {
+                parent_step_id,
+                sub_step_id,
+                sub_step_name,
+                status,
+            } => DashboardEventKind::SubStepProgress {
+                parent_step_id: *parent_step_id,
+                sub_step_id: *sub_step_id,
+                sub_step_name: sub_step_name.clone(),
+                status: status.clone(),
+            },
+            OrchestrationEvent::SubPlanCompleted {
+                parent_step_id,
+                parent_step_name,
+                success,
+            } => DashboardEventKind::SubPlanCompleted {
+                parent_step_id: *parent_step_id,
+                parent_step_name: parent_step_name.clone(),
+                success: *success,
+            },
+            OrchestrationEvent::TeammateMessage {
+                from_step_id,
+                to_step_id,
+                from_name,
+                to_name,
+                summary,
+            } => DashboardEventKind::TeammateMessage {
+                from_step_id: *from_step_id,
+                to_step_id: *to_step_id,
+                from_name: from_name.clone(),
+                to_name: to_name.clone(),
+                summary: summary.clone(),
             },
         }
     }
@@ -668,6 +754,29 @@ mod tests {
             OrchestrationEvent::IndexProgress {
                 files_done: 0,
                 symbols_so_far: 0,
+            },
+            OrchestrationEvent::SubPlanStarted {
+                parent_step_id: Uuid::nil(),
+                parent_step_name: "p".into(),
+                sub_steps: vec![(Uuid::nil(), "sub".into())],
+            },
+            OrchestrationEvent::SubStepProgress {
+                parent_step_id: Uuid::nil(),
+                sub_step_id: Uuid::nil(),
+                sub_step_name: "sub".into(),
+                status: "running".into(),
+            },
+            OrchestrationEvent::SubPlanCompleted {
+                parent_step_id: Uuid::nil(),
+                parent_step_name: "p".into(),
+                success: true,
+            },
+            OrchestrationEvent::TeammateMessage {
+                from_step_id: Uuid::nil(),
+                to_step_id: Uuid::nil(),
+                from_name: "a".into(),
+                to_name: "b".into(),
+                summary: "sync".into(),
             },
         ];
 

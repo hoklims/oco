@@ -521,6 +521,12 @@ impl GraphRunner {
             // Single step — no need for join overhead
             let step = plan.get_step(step_ids[0]).expect("step must exist");
             self.emit_step_started(step);
+
+            // ADR-008: if the step has a sub-plan, execute it recursively
+            if step.sub_plan.is_some() {
+                return vec![self.execute_sub_plan(step).await];
+            }
+
             let constraints = StepConstraints::new(step.estimated_tokens);
             match self.executor.execute_step(step, &[], &constraints).await {
                 Ok(r) => vec![r],
@@ -580,6 +586,104 @@ impl GraphRunner {
                 }
             }
             results
+        }
+    }
+
+    /// Execute a sub-plan for a parent step (ADR-008).
+    /// Walks the sub-plan's DAG, executing ready sub-steps sequentially,
+    /// emitting SubPlanStarted/SubStepProgress/SubPlanCompleted events.
+    /// Returns an aggregated StepResult for the parent step.
+    async fn execute_sub_plan(&self, parent: &PlanStep) -> StepResult {
+        let start = std::time::Instant::now();
+        let mut sub_plan = *parent.sub_plan.as_ref().unwrap().clone();
+        let mut total_tokens: u64 = 0;
+        let mut all_success = true;
+
+        // Emit SubPlanStarted
+        self.emit_sub_plan_started(parent, &sub_plan);
+
+        // Walk sub-plan DAG until complete
+        loop {
+            // Cancellation check
+            if let Some(ref cancel) = self.cancel
+                && cancel.is_cancelled()
+            {
+                all_success = false;
+                break;
+            }
+
+            let ready: Vec<Uuid> = sub_plan.ready_steps().iter().map(|s| s.id).collect();
+            if ready.is_empty() {
+                if !sub_plan.is_complete() {
+                    all_success = false;
+                }
+                break;
+            }
+
+            for sub_step_id in &ready {
+                // Clone step data before mutating sub_plan
+                let sub_step = sub_plan.get_step(*sub_step_id).unwrap().clone();
+                let sub_name = sub_step.name.clone();
+                let est_tokens = sub_step.estimated_tokens;
+
+                // Emit progress: running
+                self.emit_sub_step_progress(parent.id, *sub_step_id, &sub_name, "running");
+
+                // Mark in-progress
+                if let Some(s) = sub_plan.get_step_mut(*sub_step_id) {
+                    s.status = StepStatus::InProgress;
+                }
+
+                // Execute the sub-step
+                let constraints = StepConstraints::new(est_tokens);
+                let result = self
+                    .executor
+                    .execute_step(&sub_step, &[], &constraints)
+                    .await;
+
+                match result {
+                    Ok(r) => {
+                        total_tokens += r.tokens_used;
+                        let status = if r.success { "passed" } else { "failed" };
+                        self.emit_sub_step_progress(parent.id, *sub_step_id, &sub_name, status);
+                        if let Some(s) = sub_plan.get_step_mut(*sub_step_id) {
+                            s.status = if r.success {
+                                StepStatus::Completed
+                            } else {
+                                all_success = false;
+                                StepStatus::Failed {
+                                    reason: r.output.clone(),
+                                }
+                            };
+                            s.output = Some(r.output);
+                        }
+                    }
+                    Err(e) => {
+                        all_success = false;
+                        self.emit_sub_step_progress(parent.id, *sub_step_id, &sub_name, "failed");
+                        if let Some(s) = sub_plan.get_step_mut(*sub_step_id) {
+                            s.status = StepStatus::Failed {
+                                reason: e.to_string(),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        // Emit SubPlanCompleted
+        self.emit_sub_plan_completed(parent, all_success);
+
+        StepResult {
+            step_id: parent.id,
+            success: all_success,
+            output: if all_success {
+                "sub-plan completed successfully".into()
+            } else {
+                "sub-plan had failures".into()
+            },
+            duration_ms: start.elapsed().as_millis() as u64,
+            tokens_used: total_tokens,
         }
     }
 
@@ -870,6 +974,52 @@ impl GraphRunner {
             });
         }
     }
+
+    // -- Sub-plan event emission (ADR-008) --
+
+    fn emit_sub_plan_started(&self, parent: &PlanStep, sub_plan: &ExecutionPlan) {
+        debug!(parent_step = %parent.name, sub_steps = sub_plan.steps.len(), "sub-plan started");
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(OrchestrationEvent::SubPlanStarted {
+                parent_step_id: parent.id,
+                parent_step_name: parent.name.clone(),
+                sub_steps: sub_plan
+                    .steps
+                    .iter()
+                    .map(|s| (s.id, s.name.clone()))
+                    .collect(),
+            });
+        }
+    }
+
+    fn emit_sub_step_progress(
+        &self,
+        parent_step_id: Uuid,
+        sub_step_id: Uuid,
+        sub_step_name: &str,
+        status: &str,
+    ) {
+        debug!(parent = %parent_step_id, sub_step = %sub_step_name, status, "sub-step progress");
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(OrchestrationEvent::SubStepProgress {
+                parent_step_id,
+                sub_step_id,
+                sub_step_name: sub_step_name.into(),
+                status: status.into(),
+            });
+        }
+    }
+
+    fn emit_sub_plan_completed(&self, parent: &PlanStep, success: bool) {
+        debug!(parent_step = %parent.name, success, "sub-plan completed");
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(OrchestrationEvent::SubPlanCompleted {
+                parent_step_id: parent.id,
+                parent_step_name: parent.name.clone(),
+                success,
+            });
+        }
+    }
 }
 
 // -- Error extension --
@@ -889,7 +1039,7 @@ impl OrchestratorError {
 mod tests {
     use super::*;
     use oco_planner::{DirectPlanner, PlanningContext};
-    use oco_shared_types::{PlanStep, PlanStrategy, TaskCategory, TaskComplexity};
+    use oco_shared_types::{PlanStep, PlanStrategy, StepExecution, TaskCategory, TaskComplexity};
 
     fn make_plan(steps: Vec<PlanStep>) -> ExecutionPlan {
         ExecutionPlan::new(steps, PlanStrategy::Direct)
@@ -1360,5 +1510,86 @@ mod tests {
         assert!(result.has_failures());
         // Step tokens (1000) + failed verify gate tokens (500)
         assert_eq!(runner.tokens_used(), 1500);
+    }
+
+    // -- Sub-plan execution (ADR-008) --
+
+    #[tokio::test]
+    async fn sub_plan_executes_sub_steps() {
+        let sub_a = PlanStep::new("sub-scan", "Scan files");
+        let mut sub_b = PlanStep::new("sub-summarize", "Summarize");
+        sub_b.depends_on = vec![sub_a.id];
+        let sub_plan = ExecutionPlan::new(vec![sub_a, sub_b], PlanStrategy::Direct);
+
+        let parent = PlanStep::new("delegate", "Delegate to subagent")
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(sub_plan);
+        let plan = make_plan(vec![parent]);
+
+        let executor = Arc::new(StubStepExecutor::all_pass());
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
+
+        let result = runner.execute(plan, &ctx()).await.unwrap();
+        assert_eq!(result.steps.len(), 1);
+        assert_eq!(result.steps[0].status, StepStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn sub_plan_emits_events() {
+        let sub_step = PlanStep::new("sub-task", "Do sub-work");
+        let sub_plan = ExecutionPlan::new(vec![sub_step], PlanStrategy::Direct);
+
+        let parent = PlanStep::new("parent", "Parent step")
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(sub_plan);
+        let plan = make_plan(vec![parent]);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let executor = Arc::new(StubStepExecutor::all_pass());
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner)
+            .with_budget(50_000)
+            .with_event_channel(tx);
+
+        let _result = runner.execute(plan, &ctx()).await.unwrap();
+
+        let mut found_sub_started = false;
+        let mut found_sub_progress = false;
+        let mut found_sub_completed = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                OrchestrationEvent::SubPlanStarted { .. } => found_sub_started = true,
+                OrchestrationEvent::SubStepProgress { .. } => found_sub_progress = true,
+                OrchestrationEvent::SubPlanCompleted { success, .. } => {
+                    found_sub_completed = true;
+                    assert!(success);
+                }
+                _ => {}
+            }
+        }
+        assert!(found_sub_started, "should emit SubPlanStarted");
+        assert!(found_sub_progress, "should emit SubStepProgress");
+        assert!(found_sub_completed, "should emit SubPlanCompleted");
+    }
+
+    #[tokio::test]
+    async fn sub_plan_failure_propagates() {
+        let sub_step = PlanStep::new("sub-failing", "Will fail");
+        let sub_plan = ExecutionPlan::new(vec![sub_step.clone()], PlanStrategy::Direct);
+
+        let parent = PlanStep::new("parent", "Parent step")
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(sub_plan);
+        let plan = make_plan(vec![parent]);
+
+        let executor =
+            Arc::new(StubStepExecutor::all_pass().with_failure("sub-failing", "sub-step error"));
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
+
+        let result = runner.execute(plan, &ctx()).await.unwrap();
+        // Parent step should be marked as failed because sub-plan failed
+        assert!(result.has_failures());
     }
 }

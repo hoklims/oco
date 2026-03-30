@@ -20,7 +20,7 @@ export type ExplorationPhase = 'idle' | 'generating' | 'comparing' | 'scoring' |
 
 /** Animation duration per event type (ms). */
 const CHOREOGRAPHY: Record<string, number> = {
-  run_started:         6500,   // ClassifyingScene: scan (2.2s) + analyze (2s) + classify (1.6s) + fade (0.8s)
+  run_started:         12000,  // ClassifyingScene: progressive build-up (11s) + fade (1s)
   plan_exploration:    0,      // DYNAMIC — calculated from candidate complexity
   plan_generated:      2000,   // PlanMap nodes stagger-reveal
   step_started:        600,    // Node glow activates
@@ -34,6 +34,13 @@ const CHOREOGRAPHY: Record<string, number> = {
   heartbeat:           0,      // Skip
   index_progress:      0,      // Skip
   budget_snapshot:     200,    // Quick budget update
+  // Hierarchical plan events
+  sub_plan_started:    1200,   // Sub-branch expansion animation
+  sub_step_progress:   500,    // Sub-node status update
+  sub_plan_completed:  800,    // Sub-branch collapse animation
+  // Teammate communication events
+  teammate_message:    1000,   // Pulse flash between teammates
+  teammate_idle:       300,    // Brief idle indicator
 }
 
 /**
@@ -100,6 +107,26 @@ const PHASE_EVENTS = new Set([
   'plan_exploration', 'plan_generated', 'run_stopped',
 ])
 
+/** Teammate message for visualization. */
+export interface TeammateMessage {
+  fromStepId: string
+  toStepId: string
+  fromName: string
+  toName: string
+  summary: string
+}
+
+/** Sub-plan progress for visualization. */
+export interface SubPlanUpdate {
+  parentStepId: string
+  type: 'started' | 'progress' | 'completed'
+  subStepId?: string
+  subStepName?: string
+  status?: 'pending' | 'running' | 'passed' | 'failed'
+  subSteps?: Array<{ id: string; name: string }>
+  success?: boolean
+}
+
 export interface EventPlayerCallbacks {
   /** Called when an event should be applied to state. */
   onEvent: (event: DashboardEvent) => void
@@ -107,6 +134,10 @@ export interface EventPlayerCallbacks {
   onExploration?: (phase: ExplorationPhase) => void
   /** Called for thought bubbles (generated from step events). */
   onThought?: (thought: Thought) => void
+  /** Called when teammates exchange messages. */
+  onTeammateMessage?: (msg: TeammateMessage) => void
+  /** Called for sub-plan lifecycle events. */
+  onSubPlan?: (update: SubPlanUpdate) => void
 }
 
 export interface EventPlayer {
@@ -187,6 +218,43 @@ export function createEventPlayer(callbacks: EventPlayerCallbacks): EventPlayer 
           variant: success ? 'success' : 'warning',
           stepId: kind.step_id as string,
           offsetMs: 0,
+        })
+      }
+
+      // Route teammate_message to callback
+      if (eventType === 'teammate_message' && callbacks.onTeammateMessage) {
+        callbacks.onTeammateMessage({
+          fromStepId: kind.from_step_id as string,
+          toStepId: kind.to_step_id as string,
+          fromName: kind.from_name as string,
+          toName: kind.to_name as string,
+          summary: kind.summary as string,
+        })
+      }
+
+      // Route sub_plan events to callback
+      if (eventType === 'sub_plan_started' && callbacks.onSubPlan) {
+        const subSteps = (kind.sub_steps as Array<Record<string, unknown>>) ?? []
+        callbacks.onSubPlan({
+          parentStepId: kind.parent_step_id as string,
+          type: 'started',
+          subSteps: subSteps.map(s => ({ id: s.id as string, name: s.name as string })),
+        })
+      }
+      if (eventType === 'sub_step_progress' && callbacks.onSubPlan) {
+        callbacks.onSubPlan({
+          parentStepId: kind.parent_step_id as string,
+          type: 'progress',
+          subStepId: kind.sub_step_id as string,
+          subStepName: kind.sub_step_name as string,
+          status: kind.status as 'pending' | 'running' | 'passed' | 'failed',
+        })
+      }
+      if (eventType === 'sub_plan_completed' && callbacks.onSubPlan) {
+        callbacks.onSubPlan({
+          parentStepId: kind.parent_step_id as string,
+          type: 'completed',
+          success: kind.success as boolean,
         })
       }
 

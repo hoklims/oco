@@ -79,7 +79,10 @@ pub fn dashboard_router() -> Router<Arc<AppState>> {
         // Run history (scans .oco/runs/ on disk)
         .route("/runs", get(list_runs))
         // Live session streaming
-        .route("/sessions", get(list_live_sessions).post(create_tracking_session))
+        .route(
+            "/sessions",
+            get(list_live_sessions).post(create_tracking_session),
+        )
         .route("/sessions/{session_id}/stream", get(live_session_stream))
         .route("/sessions/{session_id}/events", post(inject_session_event))
         // Replay CRUD + control
@@ -610,6 +613,10 @@ fn event_type_name(kind: &oco_shared_types::dashboard::DashboardEventKind) -> &'
         DashboardEventKind::BudgetWarning { .. } => "budget_warning",
         DashboardEventKind::BudgetSnapshot(_) => "budget_snapshot",
         DashboardEventKind::IndexProgress { .. } => "index_progress",
+        DashboardEventKind::SubPlanStarted { .. } => "sub_plan_started",
+        DashboardEventKind::SubStepProgress { .. } => "sub_step_progress",
+        DashboardEventKind::SubPlanCompleted { .. } => "sub_plan_completed",
+        DashboardEventKind::TeammateMessage { .. } => "teammate_message",
         DashboardEventKind::Heartbeat => "heartbeat",
     }
 }
