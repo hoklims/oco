@@ -407,6 +407,7 @@ fn event_type_name(kind: &oco_shared_types::dashboard::DashboardEventKind) -> &'
     match kind {
         DashboardEventKind::RunStarted { .. } => "run_started",
         DashboardEventKind::RunStopped { .. } => "run_stopped",
+        DashboardEventKind::PlanExploration { .. } => "plan_exploration",
         DashboardEventKind::PlanGenerated { .. } => "plan_generated",
         DashboardEventKind::StepStarted { .. } => "step_started",
         DashboardEventKind::StepCompleted { .. } => "step_completed",

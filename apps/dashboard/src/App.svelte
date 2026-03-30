@@ -1,177 +1,131 @@
 <script lang="ts">
   import './app.css'
-  import { connectSSE, type SSEStatus } from './lib/sse'
+  import { onMount } from 'svelte'
   import type { DashboardEvent, BudgetSnapshot, StepRow } from './lib/types'
-  import MissionCard from './lib/MissionCard.svelte'
-  import MissionView from './lib/MissionView.svelte'
+  import { playDemo, type Thought } from './lib/demo'
+  import Timeline from './lib/Timeline.svelte'
+  import PlanMap from './lib/PlanMap.svelte'
+  import PlanExplorer from './lib/PlanExplorer.svelte'
+  import DetailPanel from './lib/DetailPanel.svelte'
 
   let events = $state<DashboardEvent[]>([])
   let steps = $state<StepRow[]>([])
   let budget = $state<BudgetSnapshot | null>(null)
-  let status = $state<SSEStatus>('closed')
-  let replayId = $state('')
-  let speed = $state(10)
-  let connected = $state(false)
   let missionRequest = $state('')
+  let selectedSeq = $state<number | null>(null)
+  let selectedStepId = $state<string | null>(null)
+  let thoughts = $state<Thought[]>([])
+  let explorationPhase = $state<'idle' | 'generating' | 'comparing' | 'scoring' | 'selecting' | 'done'>('idle')
 
-  type Run = {
-    id: string; request: string; complexity: string; steps: number
-    duration_ms: number; success: boolean; created_at: string; run_dir: string
-    tokens_used: number; tokens_max: number; status: string
+  let completedSteps = $derived(steps.filter(s => s.status === 'passed' || s.status === 'failed').length)
+  let totalSteps = $derived(steps.length)
+  let progressPct = $derived(totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0)
+  let isFinished = $derived(events.some(e => (e.kind as Record<string, unknown>).type === 'run_stopped'))
+  let isRunning = $derived(events.length > 0 && !isFinished)
+  let selectedEvent = $derived(selectedSeq != null ? events.find(e => e.seq === selectedSeq) ?? null : null)
+  let selectedStep = $derived(selectedStepId != null ? steps.find(s => s.id === selectedStepId) ?? null : null)
+
+  let cancelDemo: (() => void) | null = null
+  function startDemo() {
+    events = []; steps = []; budget = null; thoughts = []; explorationPhase = 'idle'
+    selectedSeq = null; selectedStepId = null; missionRequest = ''
+    cancelDemo?.()
+    cancelDemo = playDemo(
+      handleEvent,
+      (t) => { thoughts = [...thoughts, t] },
+      (phase) => { explorationPhase = phase },
+    )
   }
-
-  let runs = $state<Run[]>([])
-  let loading = $state(true)
-  let statsTotal = $derived(runs.length)
-  let statsSuccess = $derived(runs.filter(r => r.success).length)
-  let statsFail = $derived(runs.filter(r => !r.success).length)
-  let statsTotalSteps = $derived(runs.reduce((a, r) => a + r.steps, 0))
-
-  $effect(() => { fetchRuns() })
-
-  async function fetchRuns() {
-    loading = true
-    try {
-      const res = await fetch('/api/v1/dashboard/runs?limit=50')
-      if (res.ok) runs = await res.json()
-    } catch {}
-    loading = false
-  }
-
-  async function selectRun(runDir: string) {
-    const res = await fetch('/api/v1/dashboard/replays', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ run_dir: runDir, speed }),
-    })
-    if (!res.ok) { alert((await res.json()).error || 'Load failed'); return }
-    const data = await res.json()
-    replayId = data.replay_id
-    const run = runs.find(r => r.run_dir === runDir)
-    missionRequest = run?.request ?? ''
-    connectToReplay(data.stream_url)
-  }
-
-  let client: ReturnType<typeof connectSSE> | null = null
-
-  function connectToReplay(streamUrl: string) {
-    client?.close()
-    events = []; steps = []; budget = null
-    connected = true
-    client = connectSSE(streamUrl)
-    client.onStatus(s => { status = s })
-    client.onEvent(handleEvent)
-  }
+  onMount(() => { startDemo() })
 
   function handleEvent(event: DashboardEvent) {
     events = [...events, event]
     const kind = event.kind as Record<string, unknown>
     const type = kind.type as string
     switch (type) {
+      case 'run_started': missionRequest = kind.request_summary as string; break
       case 'plan_generated':
         steps = ((kind.steps as Array<Record<string, unknown>>) ?? []).map(s => ({
           id: s.id as string, name: s.name as string, role: s.role as string,
           status: 'pending' as const, duration_ms: null, tokens_used: null,
           execution_mode: s.execution_mode as string, verify_passed: null,
-        }))
-        break
-      case 'step_started':
-        steps = steps.map(s => s.id === (kind.step_id as string) ? { ...s, status: 'running' as const } : s)
-        break
+        })); break
+      case 'step_started': steps = steps.map(s => s.id === (kind.step_id as string) ? { ...s, status: 'running' as const } : s); break
       case 'step_completed': {
         const id = kind.step_id as string
         steps = steps.map(s => s.id === id ? { ...s,
           status: (kind.success ? 'passed' : 'failed') as StepRow['status'],
           duration_ms: kind.duration_ms as number, tokens_used: kind.tokens_used as number,
-        } : s)
-        break
+        } : s); break
       }
-      case 'verify_gate_result':
-        steps = steps.map(s => s.id === (kind.step_id as string) ? { ...s, verify_passed: kind.overall_passed as boolean } : s)
-        break
-      case 'progress': case 'flat_step_completed': {
-        const snap = (kind.budget ?? kind.budget_snapshot) as BudgetSnapshot | undefined
-        if (snap?.tokens_used !== undefined) budget = snap
-        break
-      }
+      case 'verify_gate_result': steps = steps.map(s => s.id === (kind.step_id as string) ? { ...s, verify_passed: kind.overall_passed as boolean } : s); break
+      case 'progress': { const snap = kind.budget as BudgetSnapshot | undefined; if (snap?.tokens_used !== undefined) budget = snap; break }
+      case 'flat_step_completed': { const snap = kind.budget_snapshot as BudgetSnapshot | undefined; if (snap?.tokens_used !== undefined) budget = snap; break }
     }
   }
 
-  async function pause() { await fetch(`/api/v1/dashboard/replays/${replayId}/pause`, { method: 'POST' }) }
-  async function resume() { await fetch(`/api/v1/dashboard/replays/${replayId}/resume`, { method: 'POST' }) }
-  async function setSpeed(s: number) {
-    speed = s
-    if (replayId) await fetch(`/api/v1/dashboard/replays/${replayId}/speed`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ speed: s }),
-    })
-  }
-
-  function disconnect() {
-    client?.close()
-    connected = false; status = 'closed'
-    events = []; steps = []; budget = null; missionRequest = ''
-    fetchRuns()
-  }
+  function selectTimeline(seq: number) { selectedSeq = seq; selectedStepId = null }
+  function selectStep(id: string) { selectedStepId = id; selectedSeq = null }
 </script>
 
-{#if connected}
-  <MissionView
-    {events} {steps} {budget} request={missionRequest}
-    onDisconnect={disconnect} onPause={pause} onResume={resume} onSpeed={setSpeed} {speed} {status}
-  />
-{:else}
-  <div class="min-h-screen bg-surface scanlines">
-    <!-- Header -->
-    <header class="border-b border-border bg-surface-2">
-      <div class="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
-        <div>
-          <div class="text-[10px] font-mono uppercase tracking-[0.2em] text-text-dim">Open Context Orchestrator</div>
-          <div class="text-sm font-semibold text-text-bright mt-0.5">Mission Control</div>
-        </div>
-        <div class="flex items-center gap-4">
-          <!-- Aggregate stats -->
-          <div class="flex items-center gap-3 text-[10px] font-mono">
-            <div><span class="text-text-dim">RUNS</span> <span class="text-text-bright">{statsTotal}</span></div>
-            <div><span class="text-text-dim">PASS</span> <span class="text-success">{statsSuccess}</span></div>
-            <div><span class="text-text-dim">FAIL</span> <span class="text-error">{statsFail}</span></div>
-            <div><span class="text-text-dim">STEPS</span> <span class="text-text-bright">{statsTotalSteps}</span></div>
-          </div>
-          <div class="w-px h-6 bg-border"></div>
-          <!-- Speed selector -->
-          <div class="flex items-center gap-1">
-            <span class="text-[10px] font-mono text-text-dim uppercase">Speed</span>
-            {#each [1, 5, 10, 50] as s}
-              <button
-                onclick={() => { speed = s }}
-                class="text-[10px] font-mono px-1.5 py-0.5 {speed === s ? 'bg-accent text-white' : 'text-text-dim bg-surface-3 hover:bg-border-bright'} transition-colors"
-              >{s}x</button>
-            {/each}
-          </div>
-        </div>
+<div class="h-screen flex flex-col bg-bg">
+  <!-- Header -->
+  <header class="flex items-center gap-4 px-5 py-3 border-b border-border bg-surface shrink-0">
+    <div class="pip {isFinished ? 'pip-done' : isRunning ? 'pip-active' : 'pip-idle'}"></div>
+    <div class="flex-1 min-w-0">
+      <div class="text-[15px] text-text-1 font-medium truncate">{missionRequest || 'Waiting...'}</div>
+    </div>
+    <!-- Budget quick stats in header -->
+    {#if budget}
+      <div class="flex items-center gap-4 text-xs font-mono text-text-3 shrink-0">
+        <span>{budget.tokens_used.toLocaleString()} tok</span>
+        <span>{budget.tool_calls_used} actions</span>
+        <span>{budget.elapsed_secs}s</span>
       </div>
-    </header>
+    {/if}
+    <div class="w-36 shrink-0">
+      <div class="flex items-center gap-2">
+        <div class="rail flex-1"><div class="rail-fill {isFinished ? 'bg-green' : 'bg-blue'}" style="width: {progressPct}%"></div></div>
+        <span class="text-xs font-mono text-text-3">{progressPct}%</span>
+      </div>
+    </div>
+    <button onclick={startDemo} class="px-3 py-1.5 text-xs text-text-3 hover:text-text-1 bg-surface-2 hover:bg-surface-3 rounded transition-colors">
+      Replay
+    </button>
+  </header>
 
-    <!-- Mission grid -->
-    <main class="max-w-5xl mx-auto px-6 py-6">
-      {#if loading}
-        <div class="text-center py-16 text-[10px] font-mono text-text-dim uppercase tracking-widest">
-          Scanning archives...
-        </div>
-      {:else if runs.length === 0}
-        <div class="text-center py-16 border border-border bg-surface-2">
-          <div class="text-xs text-text-dim mb-2">No missions recorded</div>
-          <div class="text-[10px] font-mono text-text-dim">
-            Execute <span class="text-accent">oco run "your task"</span> to begin
-          </div>
-        </div>
-      {:else}
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-          {#each runs as run (run.id)}
-            <MissionCard {run} onSelect={selectRun} />
-          {/each}
-        </div>
-      {/if}
-    </main>
+  <!-- Plan — top zone, takes ~55% height, the star of the show -->
+  <div class="h-[55%] border-b border-border shrink-0 relative">
+    <PlanExplorer phase={explorationPhase} />
+    {#if explorationPhase === 'done' || steps.length > 0}
+      <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} />
+    {:else if explorationPhase !== 'idle'}
+      <!-- Empty plan area during exploration — just the SVG overlay -->
+      <div class="h-full"></div>
+    {/if}
   </div>
-{/if}
+
+  <!-- Bottom: Activity + Detail side by side -->
+  <div class="flex-1 flex overflow-hidden min-h-0">
+    <!-- Activity feed -->
+    <div class="w-1/2 border-r border-border flex flex-col min-w-0">
+      <Timeline {events} {selectedSeq} onSelect={selectTimeline} />
+    </div>
+    <!-- Detail panel -->
+    <div class="w-1/2 flex flex-col min-w-0">
+      <DetailPanel event={selectedEvent} {budget} {selectedStep} {thoughts} />
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="flex items-center gap-3 px-5 py-1.5 border-t border-border bg-surface text-xs font-mono shrink-0">
+    <span class="{isFinished ? 'text-green' : isRunning ? 'text-cyan' : 'text-text-3'} uppercase tracking-wider">
+      {isFinished ? 'Complete' : isRunning ? 'Running' : 'Idle'}
+    </span>
+    {#if isFinished}
+      <span class="text-text-3">|</span>
+      <span class="text-green">Mission accomplished</span>
+    {/if}
+    <span class="ml-auto text-text-3">{events.length} events</span>
+  </footer>
+</div>

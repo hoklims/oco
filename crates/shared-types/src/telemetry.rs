@@ -178,6 +178,18 @@ pub struct CheckResult {
     pub summary: String,
 }
 
+/// Summary of a plan candidate from competitive planning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanCandidateSummary {
+    pub strategy: String,
+    pub step_count: usize,
+    pub estimated_tokens: u64,
+    pub verify_count: usize,
+    pub parallel_groups: usize,
+    pub score: f64,
+    pub winner: bool,
+}
+
 /// Events emitted by the orchestration loop in real time via channel.
 /// Decoupled from UI — the CLI converts these to UiEvents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +264,12 @@ pub enum OrchestrationEvent {
 
     /// Budget crossed a warning threshold.
     BudgetWarning { resource: String, utilization: f64 },
+    /// Competitive planning: multiple candidates were explored and scored.
+    PlanExploration {
+        candidates: Vec<PlanCandidateSummary>,
+        winner_strategy: String,
+        winner_score: f64,
+    },
     /// The orchestration loop stopped.
     Stopped {
         reason: crate::StopReason,

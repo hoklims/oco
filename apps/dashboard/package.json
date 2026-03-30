@@ -19,5 +19,10 @@
     "tailwindcss": "^4.2.2",
     "typescript": "~5.9.3",
     "vite": "^8.0.1"
+  },
+  "dependencies": {
+    "@types/dagre": "^0.7.54",
+    "@xyflow/svelte": "^1.5.2",
+    "dagre": "^0.8.5"
   }
 }
