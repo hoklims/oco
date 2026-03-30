@@ -54,6 +54,23 @@
     return map
   }
 
+  // ── Teammate color palette ──────────────────────────────────
+  const TEAMMATE_COLORS = ['#a78bfa', '#22d3ee', '#f472b6', '#fbbf24', '#34d399', '#fb923c']
+  // Map: stepId → assigned color
+  let teammateColorMap = $derived.by(() => {
+    const map = new Map<string, string>()
+    const deps = getDepsMap()
+    let idx = 0
+    for (const step of steps) {
+      const d = deps.get(step.id)
+      if (d?.execution_mode === 'teammate') {
+        map.set(step.id, TEAMMATE_COLORS[idx % TEAMMATE_COLORS.length])
+        idx++
+      }
+    }
+    return map
+  })
+
   // ── Layout constants ───────────────────────────────────────
   const NODE_W = 190
   const NODE_H = 76
@@ -106,9 +123,10 @@
     for (const step of stepsData) {
       const d = deps.get(step.id)
       const mode = d?.execution_mode ?? step.execution_mode
+      const tmColor = teammateColorMap.get(step.id) ?? null
       nodes.push({
         id: step.id, type: 'dagNode', position: { x: 0, y: 0 },
-        data: { name: step.name, role: step.role, status: step.status, execution_mode: mode, verify_passed: step.verify_passed, duration_ms: step.duration_ms, tokens_used: step.tokens_used },
+        data: { name: step.name, role: step.role, status: step.status, execution_mode: mode, verify_passed: step.verify_passed, duration_ms: step.duration_ms, tokens_used: step.tokens_used, teammateColor: tmColor },
         sourcePosition: Position.Right, targetPosition: Position.Left,
       })
       if (d?.verify_after) {
@@ -133,6 +151,10 @@
           )
 
           if (bothTeammates) {
+            const cSrc = teammateColorMap.get(depId) ?? '#a78bfa'
+            const cTgt = teammateColorMap.get(step.id) ?? '#22d3ee'
+            const flashIsRev = flash ? flash.fromStepId === step.id : false
+            const flashSdrColor = flash ? (teammateColorMap.get(flash.fromStepId) ?? '#e8ecf4') : '#e8ecf4'
             edges.push({
               id: `e-${sourceId}-${step.id}`,
               source: sourceId,
@@ -141,7 +163,12 @@
               animated: false,
               data: {
                 isActive: bothRunning,
+                sourceColor: cSrc,
+                targetColor: cTgt,
                 flashMessage: flash?.summary ?? '',
+                flashSender: flash?.fromName ?? '',
+                flashColor: flashSdrColor,
+                flashReverse: flashIsRev,
               },
             })
           } else {
@@ -310,8 +337,13 @@
         const stepA = steps.find(s => s.id === idA)
         const stepB = steps.find(s => s.id === idB)
         const bothRunning = stepA?.status === 'running' && stepB?.status === 'running'
+        const colorA = teammateColorMap.get(idA) ?? '#a78bfa'
+        const colorB = teammateColorMap.get(idB) ?? '#22d3ee'
         const flash = teammateMessages.find(m =>
           (m.fromStepId === idA && m.toStepId === idB) || (m.fromStepId === idB && m.toStepId === idA))
+        // Determine flash direction: is sender the source or target of this edge?
+        const flashIsReverse = flash ? flash.fromStepId === idB : false
+        const flashSenderColor = flash ? (teammateColorMap.get(flash.fromStepId) ?? '#e8ecf4') : '#e8ecf4'
 
         extraEdges.push({
           id: `e-comm-${idA}-${idB}`,
@@ -319,7 +351,15 @@
           target: idB,
           type: 'pulse',
           animated: false,
-          data: { isActive: bothRunning, flashMessage: flash?.summary ?? '' },
+          data: {
+            isActive: bothRunning,
+            sourceColor: colorA,
+            targetColor: colorB,
+            flashMessage: flash?.summary ?? '',
+            flashSender: flash?.fromName ?? '',
+            flashColor: flashSenderColor,
+            flashReverse: flashIsReverse,
+          },
         })
       }
     }

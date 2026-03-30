@@ -10,6 +10,7 @@
   let verifyPassed = $derived(data.verify_passed as boolean | null)
   let durationMs = $derived(data.duration_ms as number | null)
   let tokensUsed = $derived(data.tokens_used as number | null)
+  let teammateColor = $derived((data.teammateColor as string | null) ?? null)
 
   // ── Role colors ────────────────────────────────────────────
   const roleColor: Record<string, { bg: string; border: string; text: string; glow: string }> = {
@@ -42,7 +43,11 @@
   let modeStyle = $derived(MODE_COLORS[executionMode] ?? null)
 
   // Left accent stripe: 3px solid color for non-inline modes
-  let stripeStyle = $derived(modeStyle ? `border-left: 3px solid ${modeStyle.stripe};` : '')
+  // Teammates use their unique assigned color instead of generic purple
+  let stripeColor = $derived(
+    teammateColor ? teammateColor : modeStyle?.stripe ?? null
+  )
+  let stripeStyle = $derived(stripeColor ? `border-left: 3px solid ${stripeColor};` : '')
 
   // ── Status styles ──────────────────────────────────────────
   let statusBorder = $derived(
@@ -99,7 +104,7 @@
   <!-- Row 3: mode pill + stats -->
   <div class="dag-footer">
     {#if modeStyle}
-      <span class="dag-mode-pill" style="color: {modeStyle.pill}; background: {modeStyle.pillBg}">
+      <span class="dag-mode-pill" style="color: {teammateColor ?? modeStyle.pill}; background: {teammateColor ? teammateColor + '18' : modeStyle.pillBg}">
         {modeStyle.label}
       </span>
     {/if}
