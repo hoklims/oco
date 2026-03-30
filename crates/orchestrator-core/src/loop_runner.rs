@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use async_trait::async_trait;
+
 use oco_shared_types::{
     ActionCandidate, MemoryEntry, MemorySeverity, Observation, ObservationKind, ObservationSource,
     OrchestrationEvent, OrchestratorAction, PlanStep, Session, StopReason, TaskComplexity,
@@ -16,7 +18,7 @@ use crate::llm::{LlmMessage, LlmProvider, LlmRequest, LlmRole};
 use crate::runtime::OrchestratorRuntime;
 use crate::state::OrchestrationState;
 
-use oco_planner::{DirectPlanner, PlanningContext};
+use oco_planner::{DirectPlanner, LlmPlanner, Planner as _, PlanningContext};
 
 /// Extract the file path from a write tool call, if applicable.
 fn extract_write_path(tool_name: &str, arguments: &serde_json::Value) -> Option<String> {
@@ -68,6 +70,37 @@ const WRITE_KEYWORDS: &[&str] = &[
 fn detect_write_task(request: &str) -> bool {
     let lower = request.to_lowercase();
     WRITE_KEYWORDS.iter().any(|kw| lower.contains(kw))
+}
+
+/// Adapter: bridges `LlmProvider` → planner's `LlmCallFn`.
+struct LlmProviderCallFn {
+    provider: Arc<dyn LlmProvider>,
+}
+
+#[async_trait]
+impl oco_planner::LlmCallFn for LlmProviderCallFn {
+    async fn call(
+        &self,
+        system_prompt: &str,
+        user_message: &str,
+        max_tokens: u32,
+    ) -> Result<(String, u64), oco_planner::PlannerError> {
+        let request = LlmRequest {
+            messages: vec![LlmMessage {
+                role: LlmRole::User,
+                content: user_message.to_string(),
+            }],
+            max_tokens,
+            temperature: 0.0,
+            system_prompt: Some(system_prompt.to_string()),
+            effort_override: None,
+        };
+        let response = self.provider.complete(request).await.map_err(|e| {
+            oco_planner::PlannerError::LlmError(e.to_string())
+        })?;
+        let tokens = (response.input_tokens + response.output_tokens) as u64;
+        Ok((response.content, tokens))
+    }
 }
 
 /// The main orchestration loop.
@@ -820,14 +853,58 @@ impl OrchestrationLoop {
         // exceeds the GraphRunner's real budget, pre-reservation trims all steps.
         planning_ctx.budget = state.session.budget.clone();
 
-        // Use DirectPlanner for now — LlmPlanner requires a real LLM call function.
-        // DirectPlanner still creates a structured plan with role, tools, and verify gates.
-        let planner: Arc<dyn oco_planner::Planner> = Arc::new(DirectPlanner);
+        // Route to the right planner based on complexity:
+        // - Trivial/Low → DirectPlanner (no LLM call, instant)
+        // - Medium+ → Competitive planning (2 candidates in parallel), fallback to DirectPlanner
+        let plan = if DirectPlanner::should_handle(complexity) {
+            DirectPlanner
+                .plan(&state.session.user_request, &planning_ctx)
+                .await
+                .map_err(|e| OrchestratorError::PlanningFailed(e.to_string()))?
+        } else {
+            let llm_call = Box::new(LlmProviderCallFn {
+                provider: self.llm.clone(),
+            });
+            let llm_planner = LlmPlanner::new(llm_call);
 
-        let plan = planner
-            .plan(&state.session.user_request, &planning_ctx)
-            .await
-            .map_err(|e| OrchestratorError::PlanningFailed(e.to_string()))?;
+            match llm_planner
+                .plan_competitive(&state.session.user_request, &planning_ctx)
+                .await
+            {
+                Ok((plan, candidates)) => {
+                    // Emit exploration event for the dashboard visualization
+                    let summaries: Vec<oco_shared_types::telemetry::PlanCandidateSummary> =
+                        candidates
+                            .iter()
+                            .map(|c| oco_shared_types::telemetry::PlanCandidateSummary {
+                                strategy: c.strategy.clone(),
+                                step_count: c.plan.steps.len(),
+                                estimated_tokens: c.plan.steps.iter().map(|s| s.estimated_tokens as u64).sum(),
+                                verify_count: c.plan.steps.iter().filter(|s| s.verify_after).count(),
+                                parallel_groups: c.plan.parallel_groups().len(),
+                                score: c.score,
+                                winner: c.winner,
+                            })
+                            .collect();
+
+                    let winner = candidates.iter().find(|c| c.winner);
+                    self.emit_event(OrchestrationEvent::PlanExploration {
+                        candidates: summaries,
+                        winner_strategy: winner.map(|w| w.strategy.clone()).unwrap_or_default(),
+                        winner_score: winner.map(|w| w.score).unwrap_or(0.0),
+                    });
+
+                    plan
+                }
+                Err(e) => {
+                    warn!(error = %e, "competitive planning failed, falling back to DirectPlanner");
+                    DirectPlanner
+                        .plan(&state.session.user_request, &planning_ctx)
+                        .await
+                        .map_err(|e| OrchestratorError::PlanningFailed(e.to_string()))?
+                }
+            }
+        };
 
         info!(
             plan_id = %plan.id,
@@ -840,10 +917,20 @@ impl OrchestrationLoop {
             llm: self.llm.clone(),
         });
 
+        // Build a planner for replans (GraphRunner needs it)
+        let replan_planner: Arc<dyn oco_planner::Planner> = if DirectPlanner::should_handle(complexity) {
+            Arc::new(DirectPlanner)
+        } else {
+            let llm_call = Box::new(LlmProviderCallFn {
+                provider: self.llm.clone(),
+            });
+            Arc::new(LlmPlanner::new(llm_call))
+        };
+
         let event_tx = self.event_tx.clone();
         let budget = state.session.budget.max_total_tokens;
 
-        let mut runner = GraphRunner::new(executor, planner).with_budget(budget);
+        let mut runner = GraphRunner::new(executor, replan_planner).with_budget(budget);
         if let Some(tx) = event_tx {
             runner = runner.with_event_channel(tx);
         }

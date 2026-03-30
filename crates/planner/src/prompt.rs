@@ -102,9 +102,25 @@ For mcp_tool mode: {{"mode": "mcp_tool", "server": "yoyo", "tool": "search"}}
     )
 }
 
+/// Planning strategy bias — used by competitive planning to generate diverse candidates.
+#[derive(Debug, Clone, Copy)]
+pub enum PlanBias {
+    /// Balanced (default) — no bias.
+    Balanced,
+    /// Favor fewer steps, less verification — faster but riskier.
+    Speed,
+    /// Favor more verification gates, conservative approach — slower but safer.
+    Safety,
+}
+
 /// Build the user message for plan generation.
 /// Includes failure-first risk analysis (#67 wiring) for Medium+ tasks.
 pub fn user_message(request: &str, context: &PlanningContext) -> String {
+    user_message_with_bias(request, context, PlanBias::Balanced)
+}
+
+/// Build the user message with a specific planning bias.
+pub fn user_message_with_bias(request: &str, context: &PlanningContext, bias: PlanBias) -> String {
     let mut msg = format!("Generate an execution plan for this task:\n\n{request}");
 
     if !context.working_memory_summary.is_empty() {
@@ -141,6 +157,17 @@ pub fn user_message(request: &str, context: &PlanningContext) -> String {
                     preview.suggested_verify_gates.join(", ")
                 ));
             }
+        }
+    }
+
+    // Append bias hint
+    match bias {
+        PlanBias::Balanced => {}
+        PlanBias::Speed => {
+            msg.push_str("\n\n## Strategy: SPEED\nOptimize for minimal steps and fast execution. Use fewer verify gates. Prefer inline execution. Combine related work into single steps where possible. Minimize token cost.");
+        }
+        PlanBias::Safety => {
+            msg.push_str("\n\n## Strategy: SAFETY\nOptimize for reliability. Add verify_after on every implementation step. Break complex steps into smaller, independently verifiable units. Prefer subagent execution for isolation. Add a final integration test step.");
         }
     }
 

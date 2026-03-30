@@ -89,6 +89,13 @@ pub enum DashboardEventKind {
     },
 
     // ── Plan ─────────────────────────────────────────────────
+    /// Competitive planning: multiple candidates explored and scored.
+    PlanExploration {
+        candidates: Vec<crate::telemetry::PlanCandidateSummary>,
+        winner_strategy: String,
+        winner_score: f64,
+    },
+
     /// A new execution plan was generated (or regenerated after replan).
     PlanGenerated {
         plan_id: Uuid,
@@ -344,6 +351,15 @@ impl DashboardEventKind {
                 total_steps: *total_steps,
                 total_tokens: *total_tokens,
             },
+            OrchestrationEvent::PlanExploration {
+                candidates,
+                winner_strategy,
+                winner_score,
+            } => DashboardEventKind::PlanExploration {
+                candidates: candidates.clone(),
+                winner_strategy: winner_strategy.clone(),
+                winner_score: *winner_score,
+            },
             OrchestrationEvent::IndexProgress {
                 files_done,
                 symbols_so_far,
@@ -598,6 +614,9 @@ mod tests {
             OrchestrationEvent::BudgetWarning { resource: "r".into(), utilization: 0.0 },
             OrchestrationEvent::Stopped {
                 reason: StopReason::TaskComplete, total_steps: 0, total_tokens: 0,
+            },
+            OrchestrationEvent::PlanExploration {
+                candidates: vec![], winner_strategy: "speed".into(), winner_score: 0.8,
             },
             OrchestrationEvent::IndexProgress { files_done: 0, symbols_so_far: 0 },
         ];

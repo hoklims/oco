@@ -187,6 +187,165 @@ impl LlmPlanner {
     }
 }
 
+/// A scored plan candidate from competitive planning.
+#[derive(Debug, Clone)]
+pub struct PlanCandidate {
+    /// The generated plan.
+    pub plan: ExecutionPlan,
+    /// Planning strategy used ("balanced", "speed", "safety").
+    pub strategy: String,
+    /// Score (higher = better). Deterministic, no LLM call.
+    pub score: f64,
+    /// Tokens used for generation.
+    pub tokens_used: u64,
+    /// Whether this candidate was selected as winner.
+    pub winner: bool,
+}
+
+impl LlmPlanner {
+    /// Generate 2 competing plan candidates in parallel and return the best.
+    ///
+    /// Runs two LLM calls concurrently with different strategy biases
+    /// (Speed vs Safety), scores them deterministically, and selects the winner.
+    /// Returns all candidates (for visualization) and the winning plan.
+    pub async fn plan_competitive(
+        &self,
+        request: &str,
+        context: &PlanningContext,
+    ) -> Result<(ExecutionPlan, Vec<PlanCandidate>), PlannerError> {
+        let sys = prompt::system_prompt(context);
+        let max_tokens = context.planning_token_budget();
+
+        let user_speed = prompt::user_message_with_bias(request, context, prompt::PlanBias::Speed);
+        let user_safety = prompt::user_message_with_bias(request, context, prompt::PlanBias::Safety);
+
+        debug!("launching 2 competitive plan candidates (speed vs safety)");
+
+        // Run both in parallel
+        let (result_speed, result_safety) = tokio::join!(
+            self.generate_one(&sys, &user_speed, max_tokens, context),
+            self.generate_one(&sys, &user_safety, max_tokens, context),
+        );
+
+        let mut candidates: Vec<PlanCandidate> = Vec::new();
+
+        if let Ok((plan, tokens)) = result_speed {
+            let score = score_plan(&plan, context);
+            candidates.push(PlanCandidate {
+                plan,
+                strategy: "speed".into(),
+                score,
+                tokens_used: tokens,
+                winner: false,
+            });
+        }
+
+        if let Ok((plan, tokens)) = result_safety {
+            let score = score_plan(&plan, context);
+            candidates.push(PlanCandidate {
+                plan,
+                strategy: "safety".into(),
+                score,
+                tokens_used: tokens,
+                winner: false,
+            });
+        }
+
+        if candidates.is_empty() {
+            // Both failed — fall back to single plan
+            return Err(PlannerError::LlmError(
+                "all competitive plan candidates failed".into(),
+            ));
+        }
+
+        // Select winner (highest score)
+        let winner_idx = candidates
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.score.partial_cmp(&b.score).unwrap())
+            .map(|(i, _)| i)
+            .unwrap();
+
+        candidates[winner_idx].winner = true;
+        let winning_plan = candidates[winner_idx].plan.clone();
+
+        debug!(
+            winner = candidates[winner_idx].strategy,
+            score = candidates[winner_idx].score,
+            candidates = candidates.len(),
+            "competitive planning complete"
+        );
+
+        Ok((winning_plan, candidates))
+    }
+
+    /// Generate a single plan (internal helper for competitive planning).
+    async fn generate_one(
+        &self,
+        sys: &str,
+        user: &str,
+        max_tokens: u32,
+        context: &PlanningContext,
+    ) -> Result<(ExecutionPlan, u64), PlannerError> {
+        let (response, tokens_used) = self.llm_call.call(sys, user, max_tokens).await?;
+
+        let steps = match Self::parse_steps(&response) {
+            Ok(s) => s,
+            Err(first_err) => {
+                let correction = format!(
+                    "Your previous response could not be parsed.\nError: {first_err}\n\n\
+                     Output ONLY a valid JSON array of steps."
+                );
+                let (retry_response, _) = self.llm_call.call(sys, &correction, max_tokens).await?;
+                Self::parse_steps(&retry_response)?
+            }
+        };
+
+        let model = "llm".to_string();
+        let mut plan = ExecutionPlan::new(steps, PlanStrategy::Generated { model, tokens_used });
+        plan.validate().map_err(|e| {
+            PlannerError::ValidationError(format!("invalid DAG: {e}"))
+        })?;
+        plan.check_step_limit(context.task_complexity)
+            .map_err(|e| PlannerError::ValidationError(format!("step limit: {e}")))?;
+        plan.team = Self::generate_team(&plan, context);
+
+        Ok((plan, tokens_used))
+    }
+}
+
+/// Score a plan deterministically (no LLM call).
+/// Higher = better. Considers: step count, verify coverage, parallelism, estimated cost.
+fn score_plan(plan: &ExecutionPlan, context: &PlanningContext) -> f64 {
+    let step_count = plan.steps.len() as f64;
+    let verify_count = plan.steps.iter().filter(|s| s.verify_after).count() as f64;
+    let parallel_groups = plan.parallel_groups().len() as f64;
+    let critical_path = plan.critical_path_length() as f64;
+    let total_tokens: u64 = plan.steps.iter().map(|s| s.estimated_tokens as u64).sum();
+    let budget = context.budget.max_total_tokens as f64;
+
+    // Verify coverage ratio (0-1): higher = more verification = safer
+    let verify_ratio = if step_count > 0.0 { verify_count / step_count } else { 0.0 };
+
+    // Parallelism ratio: fewer groups relative to steps = more parallelism
+    let parallel_ratio = if step_count > 1.0 { 1.0 - (parallel_groups / step_count) } else { 0.0 };
+
+    // Cost efficiency: lower token estimate relative to budget = better
+    let cost_ratio = 1.0 - (total_tokens as f64 / budget).min(1.0);
+
+    // Depth efficiency: shallower critical path = faster
+    let depth_ratio = 1.0 - (critical_path / step_count.max(1.0));
+
+    // Weighted score
+    let score = verify_ratio * 0.35       // safety matters most
+        + cost_ratio * 0.25              // token efficiency
+        + parallel_ratio * 0.20          // parallelism
+        + depth_ratio * 0.15             // shallow plans execute faster
+        + (1.0 / step_count.max(1.0)) * 0.05;  // slight preference for simplicity
+
+    score.clamp(0.0, 1.0)
+}
+
 #[async_trait]
 impl Planner for LlmPlanner {
     async fn plan(

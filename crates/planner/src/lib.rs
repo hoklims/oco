@@ -18,7 +18,8 @@ pub mod risk_analysis;
 pub use context::PlanningContext;
 pub use direct::DirectPlanner;
 pub use error::PlannerError;
-pub use llm_planner::LlmPlanner;
+pub use llm_planner::{LlmCallFn, LlmPlanner, PlanCandidate};
+pub use prompt::PlanBias;
 pub use risk_analysis::{FailurePreview, Risk, analyze_risks};
 
 use async_trait::async_trait;

@@ -1,66 +1,94 @@
 @import "tailwindcss";
 
 @theme {
-  --font-mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
-  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
 
-  /* XCOM-inspired dark tactical palette */
-  --color-surface: #0a0c10;
-  --color-surface-2: #0f1218;
-  --color-surface-3: #161b24;
-  --color-border: #1e2634;
-  --color-border-bright: #2a3546;
-  --color-text: #8892a4;
-  --color-text-dim: #505a6e;
-  --color-text-bright: #d0d6e0;
-  --color-text-white: #eef0f4;
-  --color-accent: #3b82f6;
-  --color-accent-dim: rgba(59, 130, 246, 0.12);
-  --color-success: #22c55e;
-  --color-success-dim: rgba(34, 197, 94, 0.12);
-  --color-error: #ef4444;
-  --color-error-dim: rgba(239, 68, 68, 0.12);
-  --color-warning: #eab308;
-  --color-warning-dim: rgba(234, 179, 8, 0.12);
-  --color-running: #6366f1;
-  --color-running-dim: rgba(99, 102, 241, 0.12);
-  --color-pending: #374151;
+  --color-bg: #08090c;
+  --color-surface: #0d0f14;
+  --color-surface-2: #12151c;
+  --color-surface-3: #181c26;
+  --color-surface-hover: #1e2330;
+  --color-border: #1c2030;
+  --color-border-2: #262c3c;
+
+  --color-text-1: #e8ecf4;
+  --color-text-2: #9aa0b4;
+  --color-text-3: #5c6378;
+
+  --color-blue: #4b8df8;
+  --color-blue-dim: rgba(75, 141, 248, 0.10);
+  --color-green: #34d399;
+  --color-green-dim: rgba(52, 211, 153, 0.08);
+  --color-red: #f87171;
+  --color-red-dim: rgba(248, 113, 113, 0.08);
+  --color-amber: #fbbf24;
+  --color-amber-dim: rgba(251, 191, 36, 0.08);
+  --color-purple: #a78bfa;
+  --color-cyan: #22d3ee;
+  --color-cyan-dim: rgba(34, 211, 238, 0.08);
 }
 
 html {
-  background: var(--color-surface);
-  color: var(--color-text);
+  background: var(--color-bg);
+  color: var(--color-text-2);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
 }
 
-body { margin: 0; }
+body { margin: 0; overflow: hidden; }
 
-/* Tactical scanline overlay */
-.scanlines {
-  background-image: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0, 0, 0, 0.03) 2px,
-    rgba(0, 0, 0, 0.03) 4px
-  );
+/* Pip indicators — larger for readability */
+.pip { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.pip-idle { background: var(--color-text-3); opacity: 0.5; }
+.pip-active { background: var(--color-cyan); box-shadow: 0 0 8px var(--color-cyan); animation: breathe 2s ease-in-out infinite; }
+.pip-done { background: var(--color-green); box-shadow: 0 0 4px rgba(52, 211, 153, 0.3); }
+.pip-fail { background: var(--color-red); box-shadow: 0 0 6px rgba(248, 113, 113, 0.4); }
+.pip-warn { background: var(--color-amber); box-shadow: 0 0 4px rgba(251, 191, 36, 0.3); }
+
+@keyframes breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
 }
 
-/* Status pip indicator */
-.pip {
-  width: 6px;
-  height: 6px;
-  border-radius: 1px;
+/* Progress rail */
+.rail { height: 4px; background: var(--color-surface-3); border-radius: 2px; overflow: hidden; }
+.rail-fill { height: 100%; border-radius: 2px; transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1); }
+
+/* Node glow for active state */
+@keyframes node-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0); }
+  50% { box-shadow: 0 0 20px 2px rgba(34, 211, 238, 0.15); }
+}
+.node-active { animation: node-glow 2.5s ease-in-out infinite; }
+
+/* Connector pulse — vertical */
+@keyframes flow-down {
+  0% { background-position: 0 0; }
+  100% { background-position: 0 20px; }
+}
+.connector-flowing {
+  background: repeating-linear-gradient(180deg, var(--color-cyan) 0, var(--color-cyan) 4px, transparent 4px, transparent 8px);
+  background-size: 2px 8px;
+  animation: flow-down 0.6s linear infinite;
 }
 
-.pip-success { background: var(--color-success); box-shadow: 0 0 4px var(--color-success); }
-.pip-error { background: var(--color-error); box-shadow: 0 0 4px var(--color-error); }
-.pip-running { background: var(--color-running); box-shadow: 0 0 4px var(--color-running); animation: pulse 1.5s ease-in-out infinite; }
-.pip-pending { background: var(--color-pending); }
-.pip-warning { background: var(--color-warning); box-shadow: 0 0 4px var(--color-warning); }
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+/* Connector flow — horizontal, liquid-like */
+@keyframes flow-right {
+  0% { background-position: 0 0; }
+  100% { background-position: 20px 0; }
 }
+.connector-flow-h {
+  background: repeating-linear-gradient(90deg, var(--color-cyan) 0, var(--color-cyan) 5px, transparent 5px, transparent 10px);
+  background-size: 10px 3px;
+  animation: flow-right 0.5s linear infinite;
+  box-shadow: 0 0 6px rgba(34, 211, 238, 0.2);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+
+.selected { background: var(--color-blue-dim); border-color: var(--color-blue) !important; }
