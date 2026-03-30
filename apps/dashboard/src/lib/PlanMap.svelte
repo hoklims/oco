@@ -73,9 +73,10 @@
   // ── Layout constants ───────────────────────────────────────
   const NODE_W = 190
   const NODE_H = 76
+  const NODE_H_WITH_SUBS = 160  // subagent nodes: reserve space for ~3 sub-steps
   const GATE_SIZE = 32
   const RANKSEP = 100
-  const NODESEP = 56
+  const NODESEP = 60
   const GROUP_PAD = 40
 
   // ── Sub-activity labels per step name pattern ──────────────
@@ -189,7 +190,9 @@
 
     for (const n of nodes) {
       const isGate = n.type === 'verifyGate'
-      g.setNode(n.id, { width: isGate ? GATE_SIZE : NODE_W, height: isGate ? GATE_SIZE : NODE_H })
+      const isSubagent = (n.data?.execution_mode as string) === 'subagent'
+      const h = isGate ? GATE_SIZE : isSubagent ? NODE_H_WITH_SUBS : NODE_H
+      g.setNode(n.id, { width: isGate ? GATE_SIZE : NODE_W, height: h })
     }
     for (const e of edges) g.setEdge(e.source, e.target)
     dagre.layout(g)
@@ -197,8 +200,9 @@
     for (const n of nodes) {
       const pos = g.node(n.id)
       const isGate = n.type === 'verifyGate'
+      const isSubagent = (n.data?.execution_mode as string) === 'subagent'
       const w = isGate ? GATE_SIZE : NODE_W
-      const h = isGate ? GATE_SIZE : NODE_H
+      const h = isGate ? GATE_SIZE : isSubagent ? NODE_H_WITH_SUBS : NODE_H
       n.position = { x: pos.x - w / 2, y: pos.y - h / 2 }
     }
     return { nodes, edges }
