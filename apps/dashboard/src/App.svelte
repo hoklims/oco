@@ -128,11 +128,15 @@
 
       case 'plan_exploration':
         if (phase !== 'demo') phase = 'planning'
-        explorationPhase = 'generating'
-        setTimeout(() => { explorationPhase = 'comparing' }, 500)
-        setTimeout(() => { explorationPhase = 'scoring' }, 2000)
-        setTimeout(() => { explorationPhase = 'selecting' }, 3500)
-        setTimeout(() => { explorationPhase = 'done' }, 5000)
+        // In demo mode, handleEvent drives exploration phases.
+        // In live mode, the EventPlayer drives them via onExploration callback.
+        if (phase === 'demo' || !liveSessionId) {
+          explorationPhase = 'generating'
+          setTimeout(() => { explorationPhase = 'comparing' }, 500)
+          setTimeout(() => { explorationPhase = 'scoring' }, 2000)
+          setTimeout(() => { explorationPhase = 'selecting' }, 3500)
+          setTimeout(() => { explorationPhase = 'done' }, 5000)
+        }
         break
 
       case 'flat_step_completed': {
