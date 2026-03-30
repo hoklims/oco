@@ -3,6 +3,7 @@
   import { onMount } from 'svelte'
   import type { DashboardEvent, BudgetSnapshot, StepRow } from './lib/types'
   import { connectSSE, type SSEClient, type SSEStatus } from './lib/sse'
+  import { createEventPlayer, type EventPlayer } from './lib/event-player'
   import { playDemo, type Thought } from './lib/demo'
   import Timeline from './lib/Timeline.svelte'
   import PlanMap from './lib/PlanMap.svelte'
@@ -56,6 +57,7 @@
   // ── Lifecycle management ────────────────────────────────────
   let cancelDemo: (() => void) | null = null
   let sseClient: SSEClient | null = null
+  let eventPlayer: EventPlayer | null = null
 
   function resetState() {
     events = []; steps = []; budget = null; thoughts = []; explorationPhase = 'idle'
@@ -76,12 +78,22 @@
 
   function startLive(sessionId: string) {
     cancelDemo?.(); cancelDemo = null
+    eventPlayer?.stop()
     resetState()
     liveSessionId = sessionId
     phase = 'connecting'
+
+    // Create the EventPlayer — it choreographs event playback with proper timing
+    eventPlayer = createEventPlayer({
+      onEvent: handleEvent,
+      onExploration: (p) => { explorationPhase = p },
+      onThought: (t) => { thoughts = [...thoughts, t] },
+    })
+
     const baseUrl = `/api/v1/dashboard/sessions/${sessionId}/stream`
     sseClient = connectSSE(baseUrl)
-    sseClient.onEvent(handleEvent)
+    // SSE events go into the player buffer, NOT directly to handleEvent
+    sseClient.onEvent((event) => eventPlayer?.push(event))
     sseClient.onStatus((status) => {
       sseStatus = status
       if (status === 'connected' && phase === 'connecting') {
@@ -98,7 +110,7 @@
     } else {
       startDemo()
     }
-    return () => { sseClient?.close(); cancelDemo?.() }
+    return () => { sseClient?.close(); cancelDemo?.(); eventPlayer?.stop() }
   })
 
   // ── Event handler ───────────────────────────────────────────
