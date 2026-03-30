@@ -11,6 +11,7 @@
   let durationMs = $derived(data.duration_ms as number | null)
   let tokensUsed = $derived(data.tokens_used as number | null)
   let teammateColor = $derived((data.teammateColor as string | null) ?? null)
+  let subSteps = $derived((data.subSteps as Array<{ id: string; name: string; status: string }> | null) ?? null)
 
   // ── Role colors ────────────────────────────────────────────
   const roleColor: Record<string, { bg: string; border: string; text: string; glow: string }> = {
@@ -31,39 +32,31 @@
     planner: 'PLAN', tester: 'TEST',
   }
 
-  // ── Execution mode — stripe + pill ─────────────────────────
-  // inline  = no stripe (default, clean)
-  // subagent = amber stripe + "FORK" pill
-  // teammate = purple stripe + "TEAM" pill
   const MODE_COLORS = {
     subagent: { stripe: '#fbbf24', pill: '#fbbf24', pillBg: 'rgba(251,191,36,0.12)', label: 'FORK' },
     teammate: { stripe: '#a78bfa', pill: '#a78bfa', pillBg: 'rgba(167,139,250,0.12)', label: 'TEAM' },
   } as Record<string, { stripe: string; pill: string; pillBg: string; label: string }>
 
   let modeStyle = $derived(MODE_COLORS[executionMode] ?? null)
-
-  // Left accent stripe: 3px solid color for non-inline modes
-  // Teammates use their unique assigned color instead of generic purple
-  let stripeColor = $derived(
-    teammateColor ? teammateColor : modeStyle?.stripe ?? null
-  )
+  let stripeColor = $derived(teammateColor ? teammateColor : modeStyle?.stripe ?? null)
   let stripeStyle = $derived(stripeColor ? `border-left: 3px solid ${stripeColor};` : '')
 
-  // ── Status styles ──────────────────────────────────────────
   let statusBorder = $derived(
     status === 'running' ? rc.text
     : status === 'passed' ? '#34d399'
     : status === 'failed' ? '#f87171'
     : rc.border)
-
   let statusBg = $derived(
     status === 'running' ? rc.bg
     : status === 'passed' ? 'rgba(52,211,153,0.04)'
     : status === 'failed' ? 'rgba(248,113,113,0.04)'
     : rc.bg)
-
   let statusGlow = $derived(status === 'running' ? `0 0 16px ${rc.glow}` : 'none')
   let statusIcon = $derived(status === 'passed' ? '✓' : status === 'failed' ? '✗' : '')
+
+  // Sub-step progress helpers
+  let subDone = $derived(subSteps?.filter(s => s.status === 'passed').length ?? 0)
+  let subTotal = $derived(subSteps?.length ?? 0)
 </script>
 
 <div
@@ -74,7 +67,7 @@
     border-radius: 10px;
     padding: 10px 14px;
     min-width: 150px;
-    max-width: 210px;
+    max-width: 240px;
     box-shadow: {statusGlow};
     {stripeStyle}
     transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
@@ -115,15 +108,35 @@
       {/if}
     {/if}
   </div>
+
+  <!-- Sub-step progress (inline, no separate nodes) -->
+  {#if subSteps && subSteps.length > 0}
+    <div class="sub-divider"></div>
+    <div class="sub-strip">
+      {#each subSteps as sub (sub.id)}
+        <div class="sub-item" class:sub-running={sub.status === 'running'} class:sub-done={sub.status === 'passed'} class:sub-fail={sub.status === 'failed'}>
+          <span class="sub-dot"
+            style="background: {sub.status === 'running' ? '#fbbf24' : sub.status === 'passed' ? '#34d399' : sub.status === 'failed' ? '#f87171' : '#3c4152'};
+              {sub.status === 'running' ? 'box-shadow: 0 0 4px #fbbf2480;' : ''}"
+          ></span>
+          <span class="sub-label">{sub.name}</span>
+          {#if sub.status === 'passed'}
+            <span class="sub-check">✓</span>
+          {:else if sub.status === 'failed'}
+            <span class="sub-fail-icon">✗</span>
+          {/if}
+        </div>
+      {/each}
+      <div class="sub-counter">{subDone}/{subTotal}</div>
+    </div>
+  {/if}
 </div>
 
 <style>
   .dag-node {
     font-family: var(--font-sans, system-ui);
   }
-  .dag-node-pending {
-    opacity: 0.4;
-  }
+  .dag-node-pending { opacity: 0.4; }
   .dag-node-running {
     animation: dag-glow 2.5s ease-in-out infinite;
   }
@@ -132,21 +145,9 @@
     50% { filter: brightness(1.15); }
   }
 
-  .dag-header {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 5px;
-  }
-  .dag-role {
-    font-size: 10px;
-    font-family: ui-monospace, monospace;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-  }
-  .dag-pip {
-    width: 6px; height: 6px; border-radius: 2px; margin-left: auto;
-  }
+  .dag-header { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+  .dag-role { font-size: 10px; font-family: ui-monospace, monospace; font-weight: 600; letter-spacing: 0.08em; }
+  .dag-pip { width: 6px; height: 6px; border-radius: 2px; margin-left: auto; }
   .dag-pip-running {
     background: #22d3ee;
     box-shadow: 0 0 6px rgba(34, 211, 238, 0.6);
@@ -156,40 +157,60 @@
     0%, 100% { opacity: 1; transform: scale(1); }
     50% { opacity: 0.5; transform: scale(0.7); }
   }
-  .dag-status-icon {
-    font-size: 12px; font-weight: 700; margin-left: auto; line-height: 1;
-  }
-  .dag-verify {
-    font-size: 9px; font-weight: 700; font-family: ui-monospace, monospace;
-    padding: 1px 4px; border-radius: 3px; line-height: 1;
-  }
+  .dag-status-icon { font-size: 12px; font-weight: 700; margin-left: auto; line-height: 1; }
+  .dag-verify { font-size: 9px; font-weight: 700; font-family: ui-monospace, monospace; padding: 1px 4px; border-radius: 3px; line-height: 1; }
   .dag-verify-pass { background: rgba(52,211,153,0.15); color: #34d399; }
   .dag-verify-fail { background: rgba(248,113,113,0.15); color: #f87171; }
+  .dag-name { font-size: 13px; color: #e8ecf4; font-weight: 500; line-height: 1.3; }
+  .dag-footer { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-height: 18px; }
+  .dag-mode-pill { font-size: 9px; font-family: ui-monospace, monospace; font-weight: 700; letter-spacing: 0.1em; padding: 2px 6px; border-radius: 4px; line-height: 1; }
+  .dag-stat { font-size: 11px; font-family: ui-monospace, monospace; color: #5c6378; }
 
-  .dag-name {
-    font-size: 13px; color: #e8ecf4; font-weight: 500; line-height: 1.3;
+  /* Sub-step progress strip */
+  .sub-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #fbbf2420, transparent);
+    margin: 7px -4px 5px;
   }
-
-  .dag-footer {
+  .sub-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    position: relative;
+  }
+  .sub-item {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-top: 6px;
-    min-height: 18px;
-  }
-  .dag-mode-pill {
-    font-size: 9px;
+    gap: 5px;
     font-family: ui-monospace, monospace;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    padding: 2px 6px;
-    border-radius: 4px;
-    line-height: 1;
-  }
-  .dag-stat {
-    font-size: 11px;
-    font-family: ui-monospace, monospace;
+    font-size: 10px;
     color: #5c6378;
+    transition: all 0.3s;
+  }
+  .sub-item.sub-running { color: #fbbf24; }
+  .sub-item.sub-done { color: #34d399; }
+  .sub-item.sub-fail { color: #f87171; }
+  .sub-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    transition: all 0.3s;
+  }
+  .sub-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 140px;
+  }
+  .sub-check { font-size: 9px; color: #34d399; margin-left: auto; font-weight: 700; }
+  .sub-fail-icon { font-size: 9px; color: #f87171; margin-left: auto; font-weight: 700; }
+  .sub-counter {
+    font-family: ui-monospace, monospace;
+    font-size: 9px;
+    color: #5c637860;
+    text-align: right;
+    margin-top: 1px;
   }
 
   :global(.dag-node .svelte-flow__handle) {

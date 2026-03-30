@@ -14,7 +14,6 @@
   import type { Thought } from './demo'
   import DagNode from './DagNode.svelte'
   import VerifyGate from './VerifyGate.svelte'
-  import SubActivity from './SubActivity.svelte'
   import TeamGroup from './TeamGroup.svelte'
   import PulseEdge from './PulseEdge.svelte'
   import ThoughtBubble from './ThoughtBubble.svelte'
@@ -40,7 +39,7 @@
     subPlanState?: Map<string, SubPlanEntry>
   } = $props()
 
-  const nodeTypes = { dagNode: DagNode, verifyGate: VerifyGate, subActivity: SubActivity, teamGroup: TeamGroup }
+  const nodeTypes = { dagNode: DagNode, verifyGate: VerifyGate, teamGroup: TeamGroup }
   const edgeTypes = { pulse: PulseEdge }
 
   // ── Dependency map ─────────────────────────────────────────
@@ -75,15 +74,9 @@
   const NODE_W = 190
   const NODE_H = 76
   const GATE_SIZE = 32
-  const SUB_W = 140
-  const SUB_H = 40
-  const SUB_GAP = 48
-  const SUB_OFFSET_X = 30        // offset from parent RIGHT edge (no longer from x)
   const RANKSEP = 100
   const NODESEP = 56
   const GROUP_PAD = 40
-  // Dagre width for subagent nodes: reserve space for sub-activities to the right
-  const SUBAGENT_DAGRE_W = NODE_W + SUB_OFFSET_X + SUB_W + 30
 
   // ── Sub-activity labels per step name pattern ──────────────
   function subLabelsFor(stepName: string): string[] {
@@ -124,9 +117,21 @@
       const d = deps.get(step.id)
       const mode = d?.execution_mode ?? step.execution_mode
       const tmColor = teammateColorMap.get(step.id) ?? null
+      // Resolve sub-steps: event-driven first, synthetic fallback
+      let nodeSubSteps: Array<{ id: string; name: string; status: string }> | null = null
+      const eventSub = subPlanState.get(step.id)
+      if (eventSub && !eventSub.completed) {
+        nodeSubSteps = eventSub.subSteps
+      } else {
+        const synth = syntheticStates.get(step.id)
+        if (synth) {
+          const labels = subLabelsFor(step.name)
+          nodeSubSteps = synth.map((st, i) => ({ id: `synth-${i}`, name: labels[i] ?? `Task ${i + 1}`, status: st }))
+        }
+      }
       nodes.push({
         id: step.id, type: 'dagNode', position: { x: 0, y: 0 },
-        data: { name: step.name, role: step.role, status: step.status, execution_mode: mode, verify_passed: step.verify_passed, duration_ms: step.duration_ms, tokens_used: step.tokens_used, teammateColor: tmColor },
+        data: { name: step.name, role: step.role, status: step.status, execution_mode: mode, verify_passed: step.verify_passed, duration_ms: step.duration_ms, tokens_used: step.tokens_used, teammateColor: tmColor, subSteps: nodeSubSteps },
         sourcePosition: Position.Right, targetPosition: Position.Left,
       })
       if (d?.verify_after) {
@@ -182,15 +187,9 @@
     g.setDefaultEdgeLabel(() => ({}))
     g.setGraph({ rankdir: 'LR', ranksep: RANKSEP, nodesep: NODESEP })
 
-    // Track which nodes are subagent (need wider Dagre allocation)
-    const subagentIds = new Set<string>()
     for (const n of nodes) {
       const isGate = n.type === 'verifyGate'
-      const isSubagent = (n.data?.execution_mode as string) === 'subagent'
-      if (isSubagent) subagentIds.add(n.id)
-      const w = isGate ? GATE_SIZE : isSubagent ? SUBAGENT_DAGRE_W : NODE_W
-      const h = isGate ? GATE_SIZE : NODE_H
-      g.setNode(n.id, { width: w, height: h })
+      g.setNode(n.id, { width: isGate ? GATE_SIZE : NODE_W, height: isGate ? GATE_SIZE : NODE_H })
     }
     for (const e of edges) g.setEdge(e.source, e.target)
     dagre.layout(g)
@@ -198,11 +197,9 @@
     for (const n of nodes) {
       const pos = g.node(n.id)
       const isGate = n.type === 'verifyGate'
-      const isSubagent = subagentIds.has(n.id)
-      // Subagent nodes: position at LEFT of Dagre allocation (sub-activities go right)
-      const dagreW = isGate ? GATE_SIZE : isSubagent ? SUBAGENT_DAGRE_W : NODE_W
+      const w = isGate ? GATE_SIZE : NODE_W
       const h = isGate ? GATE_SIZE : NODE_H
-      n.position = { x: pos.x - dagreW / 2, y: pos.y - h / 2 }
+      n.position = { x: pos.x - w / 2, y: pos.y - h / 2 }
     }
     return { nodes, edges }
   }
@@ -366,60 +363,7 @@
       }
     }
 
-    // Sub-activity nodes — event-driven first, then synthetic fallback
-    const processedParents = new Set<string>()
-
-    // 1. Event-driven sub-plans (from subPlanState prop)
-    for (const [stepId, entry] of subPlanState) {
-      if (entry.completed) continue // collapsed
-      const parentNode = mainGraph.nodes.find(n => n.id === stepId)
-      if (!parentNode) continue
-      processedParents.add(stepId)
-
-      for (let i = 0; i < entry.subSteps.length; i++) {
-        const sub = entry.subSteps[i]
-        const subId = `sub-${stepId}-${i}`
-        const yOffset = (i - (entry.subSteps.length - 1) / 2) * SUB_GAP
-        // Position to the right of the parent node (using NODE_W + offset)
-        const subX = parentNode.position.x + NODE_W + SUB_OFFSET_X
-        extraNodes.push({
-          id: subId, type: 'subActivity',
-          position: { x: subX, y: parentNode.position.y + (NODE_H / 2) - (SUB_H / 2) + yOffset },
-          data: { label: sub.name, subStatus: sub.status, agentIndex: i },
-          sourcePosition: Position.Right, targetPosition: Position.Left,
-        })
-        extraEdges.push({
-          id: `e-sub-${stepId}-${i}`, source: stepId, target: subId,
-          animated: sub.status === 'running',
-          style: `stroke: #fbbf2420; stroke-width: 1; stroke-dasharray: 4,3; transition: all 0.4s;`,
-        })
-      }
-    }
-
-    // 2. Synthetic sub-activities (fallback for steps not covered by events)
-    for (const [stepId, states] of syntheticStates) {
-      if (processedParents.has(stepId)) continue // already handled by events
-      const parentNode = mainGraph.nodes.find(n => n.id === stepId)
-      if (!parentNode) continue
-      const labels = subLabelsFor(steps.find(s => s.id === stepId)?.name ?? '')
-
-      for (let i = 0; i < states.length; i++) {
-        const subId = `sub-${stepId}-${i}`
-        const yOffset = (i - (states.length - 1) / 2) * SUB_GAP
-        const subX = parentNode.position.x + NODE_W + SUB_OFFSET_X
-        extraNodes.push({
-          id: subId, type: 'subActivity',
-          position: { x: subX, y: parentNode.position.y + (NODE_H / 2) - (SUB_H / 2) + yOffset },
-          data: { label: labels[i] ?? `Task ${i + 1}`, subStatus: states[i], agentIndex: i },
-          sourcePosition: Position.Right, targetPosition: Position.Left,
-        })
-        extraEdges.push({
-          id: `e-sub-${stepId}-${i}`, source: stepId, target: subId,
-          animated: states[i] === 'running',
-          style: `stroke: #fbbf2420; stroke-width: 1; stroke-dasharray: 4,3; transition: all 0.4s;`,
-        })
-      }
-    }
+    // Sub-steps are now rendered INSIDE DagNode (no separate SubActivity nodes)
 
     return {
       nodes: [...extraNodes, ...mainGraph.nodes],
