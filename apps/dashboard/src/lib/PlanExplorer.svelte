@@ -274,30 +274,22 @@
       else if (phase === 'scoring') showScoring()
       else if (phase === 'selecting') selectWinner()
       else if (phase === 'done') {
-        // Smooth exit — wait for CSS animation before removing from DOM
+        // Smooth exit — hold overlay visible during CSS fade-out
+        exitHold = true
         startExit()
-        timers.push(setTimeout(cleanup, 1200))
+        timers.push(setTimeout(() => { exitHold = false; cleanup() }, 1200))
       }
       else if (phase === 'idle') cleanup()
     }, 80)
     return () => { clearInterval(iv); cleanup() }
   })
 
-  let visible = $derived(phase !== 'idle' && !(phase === 'done' && !exiting))
-  // Keep visible during exit animation, hide after it completes
-  let showOverlay = $state(false)
-  $effect(() => {
-    if (phase !== 'idle' && phase !== 'done') {
-      showOverlay = true
-    } else if (phase === 'done') {
-      // Start exit, then hide after animation
-      showOverlay = true
-      const t = setTimeout(() => { showOverlay = false }, 1200)
-      return () => clearTimeout(t)
-    } else {
-      showOverlay = false
-    }
-  })
+  // Visible when any active phase, plus stays visible during exit animation
+  let exitHold = $state(false)
+  let showOverlay = $derived(
+    phase === 'generating' || phase === 'comparing' ||
+    phase === 'scoring' || phase === 'selecting' || exitHold
+  )
 </script>
 
 {#if showOverlay}
