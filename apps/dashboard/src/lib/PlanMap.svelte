@@ -73,8 +73,10 @@
   // ── Layout constants ───────────────────────────────────────
   const NODE_W = 190
   const NODE_H = 76
-  const NODE_H_WITH_SUBS = 160  // subagent nodes: reserve space for ~3 sub-steps
   const GATE_SIZE = 32
+  // Dynamic height for nodes with sub-steps: base + divider/counter + per-line
+  const SUB_STRIP_BASE = 30  // divider + counter + margins
+  const SUB_LINE_H = 20     // each sub-step row
   const RANKSEP = 100
   const NODESEP = 60
   const GROUP_PAD = 40
@@ -188,10 +190,14 @@
     g.setDefaultEdgeLabel(() => ({}))
     g.setGraph({ rankdir: 'LR', ranksep: RANKSEP, nodesep: NODESEP })
 
+    // Compute per-node height based on actual sub-step count
+    const nodeHeights = new Map<string, number>()
     for (const n of nodes) {
       const isGate = n.type === 'verifyGate'
-      const isSubagent = (n.data?.execution_mode as string) === 'subagent'
-      const h = isGate ? GATE_SIZE : isSubagent ? NODE_H_WITH_SUBS : NODE_H
+      const subs = n.data?.subSteps as Array<unknown> | null
+      const subCount = subs?.length ?? 0
+      const h = isGate ? GATE_SIZE : subCount > 0 ? NODE_H + SUB_STRIP_BASE + subCount * SUB_LINE_H : NODE_H
+      nodeHeights.set(n.id, h)
       g.setNode(n.id, { width: isGate ? GATE_SIZE : NODE_W, height: h })
     }
     for (const e of edges) g.setEdge(e.source, e.target)
@@ -199,10 +205,8 @@
 
     for (const n of nodes) {
       const pos = g.node(n.id)
-      const isGate = n.type === 'verifyGate'
-      const isSubagent = (n.data?.execution_mode as string) === 'subagent'
-      const w = isGate ? GATE_SIZE : NODE_W
-      const h = isGate ? GATE_SIZE : isSubagent ? NODE_H_WITH_SUBS : NODE_H
+      const w = n.type === 'verifyGate' ? GATE_SIZE : NODE_W
+      const h = nodeHeights.get(n.id) ?? NODE_H
       n.position = { x: pos.x - w / 2, y: pos.y - h / 2 }
     }
     return { nodes, edges }
