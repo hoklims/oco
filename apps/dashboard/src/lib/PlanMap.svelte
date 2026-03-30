@@ -72,14 +72,30 @@
 
   // ── Layout constants ───────────────────────────────────────
   const NODE_W = 190
-  const NODE_H = 76
+  const NODE_H_BASE = 76
   const GATE_SIZE = 32
-  // Dynamic height for nodes with sub-steps: base + divider/counter + per-line
-  const SUB_STRIP_BASE = 30  // divider + counter + margins
-  const SUB_LINE_H = 20     // each sub-step row
   const RANKSEP = 100
   const NODESEP = 60
   const GROUP_PAD = 40
+
+  // ── Adaptive node height ──────────────────────────────────
+  // Single source of truth: computes expected pixel height from node data.
+  // Used by Dagre layout, TeamGroup bounds, and fitView.
+  const SUB_STRIP_OVERHEAD = 30  // divider + counter + margins
+  const SUB_LINE_H = 20         // each sub-step row
+  const STATS_ROW_H = 20        // duration + tokens row (shown on completed nodes)
+
+  function nodeHeight(data: Record<string, unknown>): number {
+    let h = NODE_H_BASE
+    // Sub-steps expand the node
+    const subs = data?.subSteps as Array<unknown> | null
+    if (subs && subs.length > 0) h += SUB_STRIP_OVERHEAD + subs.length * SUB_LINE_H
+    // Stats row appears on completed nodes with duration
+    if (data?.duration_ms != null) h += STATS_ROW_H
+    return h
+  }
+
+  function gateHeight(): number { return GATE_SIZE }
 
   // ── Sub-activity labels per step name pattern ──────────────
   function subLabelsFor(stepName: string): string[] {
@@ -190,13 +206,11 @@
     g.setDefaultEdgeLabel(() => ({}))
     g.setGraph({ rankdir: 'LR', ranksep: RANKSEP, nodesep: NODESEP })
 
-    // Compute per-node height based on actual sub-step count
+    // Adaptive layout: each node's Dagre height matches its actual content
     const nodeHeights = new Map<string, number>()
     for (const n of nodes) {
       const isGate = n.type === 'verifyGate'
-      const subs = n.data?.subSteps as Array<unknown> | null
-      const subCount = subs?.length ?? 0
-      const h = isGate ? GATE_SIZE : subCount > 0 ? NODE_H + SUB_STRIP_BASE + subCount * SUB_LINE_H : NODE_H
+      const h = isGate ? gateHeight() : nodeHeight(n.data as Record<string, unknown>)
       nodeHeights.set(n.id, h)
       g.setNode(n.id, { width: isGate ? GATE_SIZE : NODE_W, height: h })
     }
@@ -206,7 +220,7 @@
     for (const n of nodes) {
       const pos = g.node(n.id)
       const w = n.type === 'verifyGate' ? GATE_SIZE : NODE_W
-      const h = nodeHeights.get(n.id) ?? NODE_H
+      const h = nodeHeights.get(n.id) ?? NODE_H_BASE
       n.position = { x: pos.x - w / 2, y: pos.y - h / 2 }
     }
     return { nodes, edges }
@@ -300,11 +314,15 @@
       toColor: teammateColorMap.get(m.toStepId) ?? '#22d3ee',
     }))
 
+    // Adaptive bounds: use actual node height (accounts for sub-steps, stats, etc.)
     const minX = Math.min(...teammateNodes.map(n => n.position.x)) - GROUP_PAD
     const minY = Math.min(...teammateNodes.map(n => n.position.y)) - GROUP_PAD - 24
     const maxX = Math.max(...teammateNodes.map(n => n.position.x + NODE_W)) + GROUP_PAD
     const feedHeight = feedMessages.length > 0 ? Math.min(feedMessages.length, 3) * 24 + 28 : 0
-    const maxY = Math.max(...teammateNodes.map(n => n.position.y + NODE_H)) + GROUP_PAD + feedHeight
+    const maxY = Math.max(...teammateNodes.map(n => {
+      const h = nodeHeight(n.data as Record<string, unknown>)
+      return n.position.y + h
+    })) + GROUP_PAD + feedHeight
 
     return {
       id: 'team-group',
@@ -454,6 +472,10 @@
   let activeStepId = $derived(steps.find(s => s.status === 'running')?.id ?? null)
   let hasSubagents = $derived(stepSummaries.some(s => s.execution_mode === 'subagent'))
   let hasTeammates = $derived(stepSummaries.some(s => s.execution_mode === 'teammate'))
+
+  // Adaptive fitView: more padding for small graphs, less for dense ones
+  let fitPadding = $derived(steps.length <= 3 ? 0.25 : steps.length <= 6 ? 0.15 : 0.08)
+  let fitMaxZoom = $derived(steps.length <= 3 ? 1.0 : steps.length <= 8 ? 0.9 : 0.75)
 </script>
 
 <div class="w-full h-full relative">
@@ -471,7 +493,7 @@
       {nodeTypes}
       {edgeTypes}
       fitView
-      fitViewOptions={{ padding: 0.15, minZoom: 0.25, maxZoom: 1.2 }}
+      fitViewOptions={{ padding: fitPadding, minZoom: 0.2, maxZoom: fitMaxZoom }}
       panOnDrag={true}
       zoomOnScroll={true}
       zoomOnPinch={true}
