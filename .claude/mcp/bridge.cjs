@@ -32,9 +32,13 @@ const serverManager = {
 
     this._ready = new Promise((resolve, reject) => {
       const args = ["serve", "--port", "0"];
+      // Resolve dashboard dist path relative to this bridge file.
+      const dashboardDir = process.env.OCO_DASHBOARD_DIR ||
+        path.resolve(__dirname, "../../apps/dashboard/dist");
       const proc = spawn(OCO_BIN, args, {
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
+        env: { ...process.env, OCO_DASHBOARD_DIR: dashboardDir },
       });
 
       this._proc = proc;
