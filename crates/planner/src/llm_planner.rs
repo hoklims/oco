@@ -81,61 +81,7 @@ impl LlmPlanner {
             ));
         }
 
-        // First pass: create steps with temporary IDs, build name→id map.
-        // Deduplicate names (LLM may produce duplicates): append suffix.
-        let mut steps: Vec<PlanStep> = Vec::with_capacity(raw_steps.len());
-        let mut name_to_id: std::collections::HashMap<String, Uuid> =
-            std::collections::HashMap::new();
-        let mut name_counts: std::collections::HashMap<String, u32> =
-            std::collections::HashMap::new();
-
-        for raw in &raw_steps {
-            let count = name_counts.entry(raw.name.clone()).or_insert(0);
-            let unique_name = if *count == 0 {
-                raw.name.clone()
-            } else {
-                format!("{}-{}", raw.name, count)
-            };
-            *count += 1;
-
-            let step = PlanStep::new(&unique_name, &raw.description);
-            name_to_id.insert(unique_name, step.id);
-            // Also map original name to first occurrence for dep resolution
-            name_to_id.entry(raw.name.clone()).or_insert(step.id);
-            steps.push(step);
-        }
-
-        // Build an id-by-index lookup (avoids borrow conflicts in second pass)
-        let id_by_index: Vec<Uuid> = steps.iter().map(|s| s.id).collect();
-
-        // Second pass: fill in details and resolve dependency names to UUIDs
-        for (i, raw) in raw_steps.iter().enumerate() {
-            // Resolve dependencies before mutably borrowing steps[i]
-            let mut deps = Vec::new();
-            for dep in &raw.depends_on {
-                if let Some(id) = name_to_id.get(dep) {
-                    deps.push(*id);
-                } else if let Ok(idx) = dep.parse::<usize>()
-                    && let Some(&id) = id_by_index.get(idx)
-                {
-                    deps.push(id);
-                }
-                // Silently skip unresolvable deps (LLM may hallucinate)
-            }
-
-            let step = &mut steps[i];
-            step.agent_role = raw.agent_role.clone().unwrap_or_default();
-            step.execution = raw
-                .execution
-                .as_ref()
-                .map(parse_execution)
-                .unwrap_or(StepExecution::Inline);
-            step.depends_on = deps;
-            step.verify_after = raw.verify_after.unwrap_or(false);
-            step.estimated_tokens = raw.estimated_tokens.unwrap_or(2000);
-        }
-
-        Ok(steps)
+        build_steps_from_raw(&raw_steps)
     }
 
     /// Generate a TeamConfig if there are parallelizable steps.
@@ -217,7 +163,8 @@ impl LlmPlanner {
         let max_tokens = context.planning_token_budget();
 
         let user_speed = prompt::user_message_with_bias(request, context, prompt::PlanBias::Speed);
-        let user_safety = prompt::user_message_with_bias(request, context, prompt::PlanBias::Safety);
+        let user_safety =
+            prompt::user_message_with_bias(request, context, prompt::PlanBias::Safety);
 
         debug!("launching 2 competitive plan candidates (speed vs safety)");
 
@@ -303,9 +250,8 @@ impl LlmPlanner {
 
         let model = "llm".to_string();
         let mut plan = ExecutionPlan::new(steps, PlanStrategy::Generated { model, tokens_used });
-        plan.validate().map_err(|e| {
-            PlannerError::ValidationError(format!("invalid DAG: {e}"))
-        })?;
+        plan.validate()
+            .map_err(|e| PlannerError::ValidationError(format!("invalid DAG: {e}")))?;
         plan.check_step_limit(context.task_complexity)
             .map_err(|e| PlannerError::ValidationError(format!("step limit: {e}")))?;
         plan.team = Self::generate_team(&plan, context);
@@ -325,10 +271,18 @@ fn score_plan(plan: &ExecutionPlan, context: &PlanningContext) -> f64 {
     let budget = context.budget.max_total_tokens as f64;
 
     // Verify coverage ratio (0-1): higher = more verification = safer
-    let verify_ratio = if step_count > 0.0 { verify_count / step_count } else { 0.0 };
+    let verify_ratio = if step_count > 0.0 {
+        verify_count / step_count
+    } else {
+        0.0
+    };
 
     // Parallelism ratio: fewer groups relative to steps = more parallelism
-    let parallel_ratio = if step_count > 1.0 { 1.0 - (parallel_groups / step_count) } else { 0.0 };
+    let parallel_ratio = if step_count > 1.0 {
+        1.0 - (parallel_groups / step_count)
+    } else {
+        0.0
+    };
 
     // Cost efficiency: lower token estimate relative to budget = better
     let cost_ratio = 1.0 - (total_tokens as f64 / budget).min(1.0);
@@ -341,7 +295,7 @@ fn score_plan(plan: &ExecutionPlan, context: &PlanningContext) -> f64 {
         + cost_ratio * 0.25              // token efficiency
         + parallel_ratio * 0.20          // parallelism
         + depth_ratio * 0.15             // shallow plans execute faster
-        + (1.0 / step_count.max(1.0)) * 0.05;  // slight preference for simplicity
+        + (1.0 / step_count.max(1.0)) * 0.05; // slight preference for simplicity
 
     score.clamp(0.0, 1.0)
 }
@@ -501,6 +455,80 @@ struct RawStep {
     verify_after: Option<bool>,
     #[serde(default)]
     estimated_tokens: Option<u32>,
+    /// Optional nested sub-plan steps for Subagent/Teammate (ADR-008).
+    #[serde(default)]
+    sub_plan: Option<Vec<RawStep>>,
+}
+
+/// Convert raw LLM steps into PlanSteps, resolving dependencies and sub-plans recursively.
+fn build_steps_from_raw(raw_steps: &[RawStep]) -> Result<Vec<PlanStep>, PlannerError> {
+    // First pass: create steps with temporary IDs, build name→id map.
+    // Deduplicate names (LLM may produce duplicates): append suffix.
+    let mut steps: Vec<PlanStep> = Vec::with_capacity(raw_steps.len());
+    let mut name_to_id: std::collections::HashMap<String, Uuid> = std::collections::HashMap::new();
+    let mut name_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+    for raw in raw_steps {
+        let count = name_counts.entry(raw.name.clone()).or_insert(0);
+        let unique_name = if *count == 0 {
+            raw.name.clone()
+        } else {
+            format!("{}-{}", raw.name, count)
+        };
+        *count += 1;
+
+        let step = PlanStep::new(&unique_name, &raw.description);
+        name_to_id.insert(unique_name, step.id);
+        // Also map original name to first occurrence for dep resolution
+        name_to_id.entry(raw.name.clone()).or_insert(step.id);
+        steps.push(step);
+    }
+
+    // Build an id-by-index lookup (avoids borrow conflicts in second pass)
+    let id_by_index: Vec<Uuid> = steps.iter().map(|s| s.id).collect();
+
+    // Second pass: fill in details, resolve dependency names to UUIDs, parse sub-plans
+    for (i, raw) in raw_steps.iter().enumerate() {
+        // Resolve dependencies before mutably borrowing steps[i]
+        let mut deps = Vec::new();
+        for dep in &raw.depends_on {
+            if let Some(id) = name_to_id.get(dep) {
+                deps.push(*id);
+            } else if let Ok(idx) = dep.parse::<usize>()
+                && let Some(&id) = id_by_index.get(idx)
+            {
+                deps.push(id);
+            }
+            // Silently skip unresolvable deps (LLM may hallucinate)
+        }
+
+        // Parse sub-plan if present (ADR-008: recursive for Subagent/Teammate steps)
+        let sub_plan = if let Some(ref sub_raw) = raw.sub_plan
+            && !sub_raw.is_empty()
+        {
+            let sub_steps = build_steps_from_raw(sub_raw)?;
+            Some(Box::new(ExecutionPlan::new(
+                sub_steps,
+                PlanStrategy::Direct,
+            )))
+        } else {
+            None
+        };
+
+        let step = &mut steps[i];
+        step.agent_role = raw.agent_role.clone().unwrap_or_default();
+        step.execution = raw
+            .execution
+            .as_ref()
+            .map(parse_execution)
+            .unwrap_or(StepExecution::Inline);
+        step.depends_on = deps;
+        step.verify_after = raw.verify_after.unwrap_or(false);
+        step.estimated_tokens = raw.estimated_tokens.unwrap_or(2000);
+        step.sub_plan = sub_plan;
+    }
+
+    Ok(steps)
 }
 
 /// Extract JSON from a response that may be wrapped in markdown code blocks (fix #22).
@@ -1183,5 +1211,114 @@ mod tests {
 
         let team = LlmPlanner::generate_team(&plan, &ctx).unwrap();
         assert_eq!(team.communication, TeamCommunication::HubSpoke);
+    }
+
+    // -- Sub-plan parsing (ADR-008) --
+
+    #[tokio::test]
+    async fn parse_step_with_sub_plan() {
+        let response = serde_json::json!([
+            {
+                "name": "delegate-analysis",
+                "description": "Spawn subagent for analysis",
+                "execution": {"mode": "subagent", "model": "haiku"},
+                "depends_on": [],
+                "sub_plan": [
+                    {"name": "scan-files", "description": "Scan relevant files", "depends_on": [], "estimated_tokens": 500},
+                    {"name": "summarize", "description": "Produce summary", "depends_on": ["scan-files"], "estimated_tokens": 300}
+                ]
+            },
+            {
+                "name": "implement",
+                "description": "Write code based on analysis",
+                "depends_on": ["delegate-analysis"],
+                "verify_after": true
+            }
+        ]);
+
+        let planner = LlmPlanner::stub(response.to_string());
+        let plan = planner
+            .plan("analyze and fix", &medium_ctx())
+            .await
+            .unwrap();
+
+        assert_eq!(plan.steps.len(), 2);
+        assert!(plan.validate().is_ok());
+
+        // First step should have a sub-plan
+        let delegator = &plan.steps[0];
+        assert!(delegator.sub_plan.is_some());
+        let sub = delegator.sub_plan.as_ref().unwrap();
+        assert_eq!(sub.steps.len(), 2);
+        assert_eq!(sub.steps[0].name, "scan-files");
+        assert_eq!(sub.steps[1].name, "summarize");
+        assert_eq!(sub.steps[1].depends_on.len(), 1); // depends on scan-files
+
+        // Second step should have no sub-plan
+        assert!(plan.steps[1].sub_plan.is_none());
+    }
+
+    #[tokio::test]
+    async fn sub_plan_deps_resolve_within_sub_scope() {
+        let response = serde_json::json!([
+            {
+                "name": "parent",
+                "description": "Parent step",
+                "execution": {"mode": "subagent"},
+                "depends_on": [],
+                "sub_plan": [
+                    {"name": "sub-a", "description": "First sub", "depends_on": []},
+                    {"name": "sub-b", "description": "Second sub", "depends_on": ["sub-a"]}
+                ]
+            }
+        ]);
+
+        let planner = LlmPlanner::stub(response.to_string());
+        let plan = planner.plan("test", &medium_ctx()).await.unwrap();
+
+        let sub = plan.steps[0].sub_plan.as_ref().unwrap();
+        // sub-b should depend on sub-a's UUID
+        assert_eq!(sub.steps[1].depends_on.len(), 1);
+        assert_eq!(sub.steps[1].depends_on[0], sub.steps[0].id);
+        assert!(sub.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn sub_plan_on_teammate_step() {
+        let response = serde_json::json!([
+            {
+                "name": "team-worker",
+                "description": "Teammate with sub-plan",
+                "execution": {"mode": "teammate", "team_name": "alpha"},
+                "depends_on": [],
+                "sub_plan": [
+                    {"name": "task-1", "description": "Do first thing", "depends_on": []}
+                ]
+            }
+        ]);
+
+        let planner = LlmPlanner::stub(response.to_string());
+        let plan = planner.plan("test", &medium_ctx()).await.unwrap();
+
+        assert!(plan.steps[0].sub_plan.is_some());
+        assert!(plan.validate().is_ok());
+    }
+
+    #[test]
+    fn build_steps_with_empty_sub_plan_ignored() {
+        let raw = vec![RawStep {
+            name: "test".into(),
+            description: "desc".into(),
+            agent_role: None,
+            execution: Some(serde_json::json!({"mode": "subagent"})),
+            depends_on: vec![],
+            verify_after: None,
+            estimated_tokens: None,
+            sub_plan: Some(vec![]), // empty sub_plan should be ignored
+        }];
+
+        let steps = build_steps_from_raw(&raw).unwrap();
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].sub_plan.is_none());
     }
 }

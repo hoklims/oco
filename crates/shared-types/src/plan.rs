@@ -52,6 +52,11 @@ pub struct PlanStep {
     /// Step contract defining required inputs/outputs and transition guards (#61).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract: Option<crate::lease::StepContract>,
+    /// Optional nested execution plan for Subagent/Teammate steps (ADR-008).
+    /// The sub-plan is executed recursively by GraphRunner.
+    /// Max nesting depth: 2 (enforced at validation time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_plan: Option<Box<ExecutionPlan>>,
 }
 
 impl PlanStep {
@@ -69,6 +74,7 @@ impl PlanStep {
             estimated_tokens: 0,
             output: None,
             contract: None,
+            sub_plan: None,
         }
     }
 
@@ -104,6 +110,13 @@ impl PlanStep {
 
     pub fn with_contract(mut self, contract: crate::lease::StepContract) -> Self {
         self.contract = Some(contract);
+        self
+    }
+
+    /// Attach a nested sub-plan to this step (ADR-008).
+    /// Only valid for Subagent or Teammate execution modes.
+    pub fn with_sub_plan(mut self, plan: ExecutionPlan) -> Self {
+        self.sub_plan = Some(Box::new(plan));
         self
     }
 
@@ -415,10 +428,31 @@ impl ExecutionPlan {
             .unwrap_or(0)
     }
 
-    /// Total estimated token cost across all steps.
+    /// Total estimated token cost across all steps (including sub-plans).
     /// Returns `u64` to avoid silent overflow when many steps have large estimates.
     pub fn estimated_total_tokens(&self) -> u64 {
-        self.steps.iter().map(|s| s.estimated_tokens as u64).sum()
+        self.steps
+            .iter()
+            .map(|s| {
+                let own = s.estimated_tokens as u64;
+                let sub = s
+                    .sub_plan
+                    .as_ref()
+                    .map(|p| p.estimated_total_tokens())
+                    .unwrap_or(0);
+                own + sub
+            })
+            .sum()
+    }
+
+    /// Maximum nesting depth of sub-plans (0 = flat plan, 1 = one level of sub-plans, etc.).
+    pub fn max_depth(&self) -> u32 {
+        self.steps
+            .iter()
+            .filter_map(|s| s.sub_plan.as_ref())
+            .map(|p| 1 + p.max_depth())
+            .max()
+            .unwrap_or(0)
     }
 
     /// Maximum allowed steps for a given complexity tier.
@@ -477,6 +511,29 @@ impl ExecutionPlan {
         // Check for cycles via topological sort (Kahn's algorithm)
         if self.has_cycle() {
             return Err(PlanValidationError::CycleDetected);
+        }
+
+        // Validate sub-plans: structural validity FIRST (catches cycles before
+        // max_depth recurses into them — prevents stack overflow on malformed plans).
+        for step in &self.steps {
+            if let Some(ref sub) = step.sub_plan {
+                if step.execution == StepExecution::Inline {
+                    return Err(PlanValidationError::SubPlanOnInlineStep {
+                        step_id: step.id,
+                        step_name: step.name.clone(),
+                    });
+                }
+                sub.validate()?;
+            }
+        }
+
+        // Validate sub-plan depth (max 2 levels per ADR-008)
+        // Safe to recurse now — sub-plans are cycle-free after validate() above.
+        if self.max_depth() > 2 {
+            return Err(PlanValidationError::SubPlanTooDeep {
+                depth: self.max_depth(),
+                max: 2,
+            });
         }
 
         Ok(())
@@ -720,6 +777,10 @@ pub enum PlanValidationError {
         max: usize,
         complexity: String,
     },
+    #[error("sub-plan nesting depth {depth} exceeds max {max}")]
+    SubPlanTooDeep { depth: u32, max: u32 },
+    #[error("step {step_id} ({step_name}) has sub_plan but uses Inline execution")]
+    SubPlanOnInlineStep { step_id: Uuid, step_name: String },
 }
 
 /// Non-fatal warnings from semantic validation.
@@ -1215,5 +1276,141 @@ mod tests {
             });
         let display = plan.to_string();
         assert!(display.contains("team=alpha"));
+    }
+
+    // -- Sub-plan (ADR-008) --
+
+    #[test]
+    fn sub_plan_on_subagent_step() {
+        let sub_step = step("sub-task");
+        let sub_plan = ExecutionPlan::new(vec![sub_step], PlanStrategy::Direct);
+        let parent = step("delegator")
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(sub_plan);
+
+        assert!(parent.sub_plan.is_some());
+        assert_eq!(parent.sub_plan.as_ref().unwrap().steps.len(), 1);
+    }
+
+    #[test]
+    fn sub_plan_on_teammate_step() {
+        let sub_step = step("team-sub-task");
+        let sub_plan = ExecutionPlan::new(vec![sub_step], PlanStrategy::Direct);
+        let parent = step("team-worker")
+            .with_execution(StepExecution::Teammate {
+                team_name: "alpha".into(),
+            })
+            .with_sub_plan(sub_plan);
+
+        let plan = ExecutionPlan::new(vec![parent], PlanStrategy::Direct);
+        assert!(plan.validate().is_ok());
+    }
+
+    #[test]
+    fn sub_plan_on_inline_step_rejected() {
+        let sub_step = step("inner");
+        let sub_plan = ExecutionPlan::new(vec![sub_step], PlanStrategy::Direct);
+        let parent = step("inline-with-sub")
+            .with_execution(StepExecution::Inline)
+            .with_sub_plan(sub_plan);
+
+        let plan = ExecutionPlan::new(vec![parent], PlanStrategy::Direct);
+        let err = plan.validate().unwrap_err();
+        assert!(matches!(
+            err,
+            PlanValidationError::SubPlanOnInlineStep { .. }
+        ));
+    }
+
+    #[test]
+    fn max_depth_flat_plan() {
+        let plan = ExecutionPlan::new(vec![step("a"), step("b")], PlanStrategy::Direct);
+        assert_eq!(plan.max_depth(), 0);
+    }
+
+    #[test]
+    fn max_depth_one_level() {
+        let sub = ExecutionPlan::new(vec![step("sub")], PlanStrategy::Direct);
+        let parent = step("parent")
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(sub);
+        let plan = ExecutionPlan::new(vec![parent], PlanStrategy::Direct);
+        assert_eq!(plan.max_depth(), 1);
+        assert!(plan.validate().is_ok());
+    }
+
+    #[test]
+    fn max_depth_two_levels() {
+        let inner = ExecutionPlan::new(vec![step("inner")], PlanStrategy::Direct);
+        let mid_step = step("mid")
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(inner);
+        let mid_plan = ExecutionPlan::new(vec![mid_step], PlanStrategy::Direct);
+        let outer_step = step("outer")
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(mid_plan);
+        let plan = ExecutionPlan::new(vec![outer_step], PlanStrategy::Direct);
+        assert_eq!(plan.max_depth(), 2);
+        assert!(plan.validate().is_ok());
+    }
+
+    #[test]
+    fn max_depth_three_levels_rejected() {
+        let level3 = ExecutionPlan::new(vec![step("l3")], PlanStrategy::Direct);
+        let l2_step = step("l2")
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(level3);
+        let level2 = ExecutionPlan::new(vec![l2_step], PlanStrategy::Direct);
+        let l1_step = step("l1")
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(level2);
+        let level1 = ExecutionPlan::new(vec![l1_step], PlanStrategy::Direct);
+        let root_step = step("root")
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(level1);
+        let plan = ExecutionPlan::new(vec![root_step], PlanStrategy::Direct);
+        assert_eq!(plan.max_depth(), 3);
+        let err = plan.validate().unwrap_err();
+        assert!(matches!(err, PlanValidationError::SubPlanTooDeep { .. }));
+    }
+
+    #[test]
+    fn estimated_tokens_includes_sub_plans() {
+        let sub = ExecutionPlan::new(
+            vec![
+                step("sub-a").with_estimated_tokens(500),
+                step("sub-b").with_estimated_tokens(300),
+            ],
+            PlanStrategy::Direct,
+        );
+        let parent = step("parent")
+            .with_estimated_tokens(1000)
+            .with_execution(StepExecution::Subagent { model: None })
+            .with_sub_plan(sub);
+        let plan = ExecutionPlan::new(
+            vec![parent, step("other").with_estimated_tokens(200)],
+            PlanStrategy::Direct,
+        );
+        // parent(1000) + sub-a(500) + sub-b(300) + other(200) = 2000
+        assert_eq!(plan.estimated_total_tokens(), 2000);
+    }
+
+    #[test]
+    fn sub_plan_serde_round_trip() {
+        let sub = ExecutionPlan::new(vec![step("sub-task")], PlanStrategy::Direct);
+        let parent = step("delegator")
+            .with_execution(StepExecution::Subagent {
+                model: Some("sonnet".into()),
+            })
+            .with_sub_plan(sub);
+        let plan = ExecutionPlan::new(vec![parent], PlanStrategy::Direct);
+
+        let json = serde_json::to_string(&plan).unwrap();
+        let deserialized: ExecutionPlan = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.steps.len(), 1);
+        assert!(deserialized.steps[0].sub_plan.is_some());
+        let sub = deserialized.steps[0].sub_plan.as_ref().unwrap();
+        assert_eq!(sub.steps.len(), 1);
+        assert_eq!(sub.steps[0].name, "sub-task");
     }
 }

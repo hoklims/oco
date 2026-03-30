@@ -284,7 +284,7 @@ async function install() {
 
   console.log('\n  Runtime layer');
   if (ocoAvailable) {
-    check(true, `oco binary found${ocoVersion ? ` (v${ocoVersion})` : ''}`);
+    checkBinaryShadow(check);
   } else {
     check(false, 'oco binary not found');
   }
@@ -561,6 +561,7 @@ function doctor() {
     'hooks/stop.mjs', 'hooks/user-prompt-submit.cjs',
   ];
   const expectedSkills = [
+    'skills/oco/SKILL.md',
     'skills/oco-inspect-repo-area/SKILL.md', 'skills/oco-investigate-bug/SKILL.md',
     'skills/oco-safe-refactor/SKILL.md', 'skills/oco-trace-stack/SKILL.md',
     'skills/oco-verify-fix/SKILL.md',
@@ -614,10 +615,12 @@ function doctor() {
   console.log('\n  Runtime layer');
   const ocoAvailable = commandExists('oco');
   if (ocoAvailable) {
+    const doctorCheck = (passed, msg) => passed ? ok(msg) : warn(msg);
+    checkBinaryShadow(doctorCheck);
     const ocoVersion = getOcoVersion();
     const ocoUsable = checkOcoUsable();
     if (ocoUsable) {
-      ok(`oco binary found${ocoVersion ? ` (v${ocoVersion})` : ''} — functional`);
+      ok(`oco binary functional`);
     } else {
       warn(`oco binary found${ocoVersion ? ` (v${ocoVersion})` : ''} but returned an error`);
       console.log('      Run: oco --help  to diagnose');
@@ -1014,4 +1017,62 @@ function commandExists(cmd) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Find all `oco` binaries in PATH and return their paths + versions.
+ * Detects shadow conflicts (old binary taking priority over new one).
+ */
+function findAllOcoBinaries() {
+  const results = [];
+  try {
+    const cmd = process.platform === 'win32' ? 'where oco 2>NUL' : 'which -a oco 2>/dev/null';
+    const out = execSync(cmd, { encoding: 'utf8', timeout: 3000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const paths = out.split(/\r?\n/).filter(Boolean);
+    for (const p of paths) {
+      let version = null;
+      try {
+        const res = spawnSync(p, ['--version'], { encoding: 'utf8', timeout: 3000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        const match = (res.stdout || '').trim().match(/\b(\d+\.\d+\.\d+)/);
+        version = match ? match[1] : null;
+      } catch { /* ignore */ }
+      results.push({ path: p, version });
+    }
+  } catch { /* no oco found at all */ }
+  return results;
+}
+
+/**
+ * Check for binary shadow issues and print warnings.
+ * Returns the active (first in PATH) binary info.
+ */
+function checkBinaryShadow(check) {
+  const bins = findAllOcoBinaries();
+  if (bins.length === 0) return null;
+
+  const active = bins[0];
+  if (bins.length > 1) {
+    // Multiple binaries — check for version mismatch
+    const newest = bins.reduce((a, b) => {
+      if (!a.version) return b;
+      if (!b.version) return a;
+      return a.version > b.version ? a : b;
+    });
+    if (newest.version && active.version && newest.version !== active.version) {
+      check(false, `oco binary shadow detected — v${active.version} active, v${newest.version} available`);
+      console.log(`      Active:  ${active.path} (v${active.version})`);
+      console.log(`      Shadowed: ${newest.path} (v${newest.version})`);
+      console.log(`      Fix: remove old binary or reorder PATH`);
+      if (process.platform === 'win32') {
+        console.log(`      Hint: del "${active.path}" (or move to end of PATH)`);
+      } else {
+        console.log(`      Hint: rm "${active.path}" (or reorder PATH in ~/.bashrc)`);
+      }
+      return active;
+    }
+  }
+
+  // No shadow issue
+  check(true, `oco binary found (v${active.version || '?'}) — ${active.path}`);
+  return active;
 }

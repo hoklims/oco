@@ -43,7 +43,7 @@ export function connectSSE(baseUrl: string, afterSeq?: number): SSEClient {
 
     // Listen to all named event types.
     const eventTypes = [
-      'run_started', 'run_stopped', 'plan_generated',
+      'run_started', 'run_stopped', 'plan_exploration', 'plan_generated',
       'step_started', 'step_completed', 'flat_step_completed',
       'progress', 'verify_gate_result', 'replan_triggered',
       'budget_warning', 'budget_snapshot', 'index_progress',

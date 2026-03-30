@@ -171,10 +171,7 @@ fn command_exists(cmd: &str) -> bool {
 
 #[test]
 fn tier_selector_real_changeset_standard() {
-    let files = vec![
-        "src/main.rs".to_string(),
-        "src/utils/helper.rs".to_string(),
-    ];
+    let files = vec!["src/main.rs".to_string(), "src/utils/helper.rs".to_string()];
     let tier = TierSelector::select(&files);
     assert_eq!(tier, VerificationTier::Standard);
     assert_eq!(tier.strategies().len(), 2); // Build + RunTests
@@ -265,10 +262,7 @@ async fn tiered_stops_on_first_failure() {
     );
 
     let failures = result.all_failures();
-    assert!(
-        !failures.is_empty(),
-        "should report at least one failure"
-    );
+    assert!(!failures.is_empty(), "should report at least one failure");
 }
 
 #[tokio::test]
@@ -285,10 +279,7 @@ async fn tiered_thorough_real_rust_project_passes() {
     // Thorough = Build + TypeCheck + Lint + RunTests
     // Note: Lint (clippy) may not be installed, so we check that at least
     // Build passed and the tier was correctly dispatched.
-    assert!(
-        !result.results.is_empty(),
-        "should run at least Build"
-    );
+    assert!(!result.results.is_empty(), "should run at least Build");
 
     // First strategy (Build) should always pass
     let (first_strategy, first_output) = &result.results[0];
@@ -345,10 +336,7 @@ async fn tiered_standard_broken_node_project_fails() {
     assert!(!result.all_passed(), "broken Node project should fail");
 
     let failures = result.all_failures();
-    assert!(
-        !failures.is_empty(),
-        "should report test failures"
-    );
+    assert!(!failures.is_empty(), "should report test failures");
 }
 
 // ---------------------------------------------------------------------------

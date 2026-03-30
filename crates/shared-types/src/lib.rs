@@ -6,12 +6,12 @@
 
 pub mod action;
 pub mod affordance;
-pub mod dashboard;
 pub mod agent;
 pub mod budget;
 pub mod capability;
 pub mod context;
 pub mod counterfactual;
+pub mod dashboard;
 pub mod elicitation;
 pub mod lease;
 pub mod memory;
@@ -28,12 +28,12 @@ pub mod verification;
 
 pub use action::*;
 pub use affordance::*;
-pub use dashboard::*;
 pub use agent::*;
 pub use budget::*;
 pub use capability::*;
 pub use context::*;
 pub use counterfactual::*;
+pub use dashboard::*;
 pub use elicitation::*;
 pub use lease::*;
 pub use memory::*;

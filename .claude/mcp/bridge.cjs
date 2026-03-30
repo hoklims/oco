@@ -9,13 +9,132 @@
  * Backend: calls local `oco` CLI binary
  */
 
-const { spawn } = require("child_process");
+const { spawn, exec } = require("child_process");
 const fs = require("fs");
+const http = require("http");
 const path = require("path");
 const readline = require("readline");
 
 const OCO_BIN = process.env.OCO_BIN || "oco";
 const WORKSPACE = process.env.OCO_WORKSPACE || process.cwd();
+
+// --- Background Server Manager (singleton) ---
+
+const serverManager = {
+  _proc: null,
+  _port: null,
+  _ready: null,
+
+  /** Lazily start `oco serve --port 0` and return the bound port. */
+  async ensureRunning() {
+    if (this._port) return this._port;
+    if (this._ready) return this._ready;
+
+    this._ready = new Promise((resolve, reject) => {
+      const args = ["serve", "--port", "0"];
+      // Resolve dashboard dist path relative to this bridge file.
+      const dashboardDir = process.env.OCO_DASHBOARD_DIR ||
+        path.resolve(__dirname, "../../apps/dashboard/dist");
+      const proc = spawn(OCO_BIN, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: false,
+        env: { ...process.env, OCO_DASHBOARD_DIR: dashboardDir },
+      });
+
+      this._proc = proc;
+      let resolved = false;
+
+      const tryParsePort = (data) => {
+        const line = data.toString();
+        const match = line.match(/listening on http:\/\/[^:]+:(\d+)/);
+        if (match && !resolved) {
+          resolved = true;
+          this._port = parseInt(match[1], 10);
+          resolve(this._port);
+        }
+      };
+
+      // Parse both stdout and stderr for "listening on http://HOST:PORT"
+      proc.stdout.on("data", tryParsePort);
+      proc.stderr.on("data", tryParsePort);
+
+      proc.on("error", (err) => {
+        if (!resolved) {
+          resolved = true;
+          this._ready = null;
+          reject(err);
+        }
+      });
+
+      proc.on("exit", () => {
+        this._proc = null;
+        this._port = null;
+        this._ready = null;
+      });
+
+      // Timeout: if server doesn't start in 15s, give up
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          this._ready = null;
+          proc.kill();
+          reject(new Error("oco serve did not start within 15s"));
+        }
+      }, 15000);
+    });
+
+    return this._ready;
+  },
+
+  /** Stop the background server. */
+  stop() {
+    if (this._proc) {
+      this._proc.kill();
+      this._proc = null;
+      this._port = null;
+      this._ready = null;
+    }
+  },
+};
+
+// Clean up on exit
+process.on("exit", () => serverManager.stop());
+process.on("SIGTERM", () => { serverManager.stop(); process.exit(0); });
+process.on("SIGINT", () => { serverManager.stop(); process.exit(0); });
+
+// --- HTTP helpers for server API ---
+
+function httpRequest(method, port, path, body) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: "127.0.0.1",
+      port,
+      path,
+      method,
+      headers: { "Content-Type": "application/json" },
+    };
+    const req = http.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode, body: data }); }
+      });
+    });
+    req.on("error", reject);
+    if (body) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+function openBrowser(url) {
+  const platform = process.platform;
+  const cmd = platform === "win32" ? "start" :
+              platform === "darwin" ? "open" : "xdg-open";
+  // On Windows, 'start' needs empty title for URLs with special chars
+  const args = platform === "win32" ? ['""', url] : [url];
+  exec(`${cmd} ${args.join(" ")}`, () => {});
+}
 
 // --- MCP Protocol Handler ---
 
@@ -209,6 +328,51 @@ const TOOLS = [
       required: ["task"],
     },
   },
+  {
+    name: "oco.open_dashboard",
+    description:
+      "Open the live dashboard in the browser. Starts the OCO server if needed, " +
+      "creates a session, and opens the dashboard URL. Returns immediately (non-blocking). " +
+      "Call this at the START of any /oco workflow so the user sees progress live.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: {
+          type: "string",
+          description: "Task description (shown in dashboard header)",
+        },
+        workspace: {
+          type: "string",
+          description: "Workspace root path (defaults to cwd)",
+        },
+      },
+      required: ["task"],
+    },
+  },
+  {
+    name: "oco.emit_events",
+    description:
+      "Push dashboard events to the live dashboard. Accepts an array of DashboardEventKind objects " +
+      "(same JSON schema as SSE payloads). Call after each phase completes with ALL the events for that phase. " +
+      "Event types: run_started, plan_generated (with steps[]), step_started, step_completed (with duration_ms, success), " +
+      "progress (with completed/total/budget), verify_gate_result, run_stopped, flat_step_completed. " +
+      "See the demo data for the exact field shapes. Events are appended to the SSE stream in order.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: {
+          type: "string",
+          description: "Session ID from oco.open_dashboard",
+        },
+        events: {
+          type: "array",
+          items: { type: "object" },
+          description: "Array of DashboardEventKind JSON objects to inject in order",
+        },
+      },
+      required: ["session_id", "events"],
+    },
+  },
 ];
 
 // --- Tool Handlers ---
@@ -226,6 +390,10 @@ async function handleToolCall(id, toolName, args) {
         return await collectFindings(id, args);
       case "oco.begin_task":
         return await beginTask(id, args);
+      case "oco.open_dashboard":
+        return await openDashboard(id, args);
+      case "oco.emit_events":
+        return await emitEvents(id, args);
       case "oco.working_memory":
         return await workingMemory(id, args);
       default:
@@ -530,13 +698,188 @@ async function workingMemory(id, args) {
   });
 }
 
+async function openDashboard(id, args) {
+  const workspace = args.workspace || WORKSPACE;
+
+  let port;
+  try {
+    port = await serverManager.ensureRunning();
+  } catch (e) {
+    return respondStructured(id, {
+      summary: "Could not start OCO server for dashboard",
+      evidence: [{ error: e.message }],
+      risks: ["Dashboard unavailable — oco binary may not be installed"],
+      next_step: "Proceed without dashboard",
+      confidence: 0.0,
+    });
+  }
+
+  // Create a tracking-only session (no OrchestrationLoop — just broadcast channel).
+  let sessionId;
+  try {
+    const res = await httpRequest("POST", port, "/api/v1/dashboard/sessions", {
+      task: args.task || "OCO session",
+    });
+    if (res.status !== 201 || !res.body?.id) {
+      throw new Error(res.body?.error || "session creation failed");
+    }
+    sessionId = res.body.id;
+  } catch (e) {
+    return respondStructured(id, {
+      summary: "Server running but session creation failed",
+      evidence: [{ error: e.message, port }],
+      risks: ["Dashboard opened without live session"],
+      next_step: "Proceed without dashboard tracking",
+      confidence: 0.2,
+    });
+  }
+
+  // Open dashboard in browser
+  const dashboardUrl = `http://127.0.0.1:${port}/dashboard?live=${sessionId}`;
+  openBrowser(dashboardUrl);
+
+  return respondStructured(id, {
+    summary: `Dashboard opened at ${dashboardUrl}`,
+    evidence: [{
+      session_id: sessionId,
+      port,
+      dashboard_url: dashboardUrl,
+    }],
+    risks: [],
+    next_step: "Use oco.emit_phase to push lifecycle updates to the dashboard",
+    confidence: 1.0,
+  });
+}
+
+async function emitEvents(id, args) {
+  const { session_id, events } = args;
+
+  if (!session_id) {
+    return error(id, -32602, "session_id is required");
+  }
+  if (!events || !Array.isArray(events) || events.length === 0) {
+    return error(id, -32602, "events array is required and must not be empty");
+  }
+
+  let port;
+  try {
+    port = await serverManager.ensureRunning();
+  } catch {
+    return respondStructured(id, {
+      summary: `${events.length} events noted (dashboard offline)`,
+      evidence: [], risks: [], next_step: "Continue", confidence: 1.0,
+    });
+  }
+
+  // Simple batch POST: send each event in order to the injection endpoint.
+  const url = `/api/v1/dashboard/sessions/${session_id}/events`;
+  let sent = 0;
+  for (const event of events) {
+    try {
+      await httpRequest("POST", port, url, event);
+      sent++;
+    } catch {
+      // Best-effort — skip failed events
+    }
+  }
+
+  return respondStructured(id, {
+    summary: `${sent}/${events.length} events sent to dashboard`,
+    evidence: [{ sent, total: events.length }],
+    risks: sent < events.length ? [`${events.length - sent} events failed to send`] : [],
+    next_step: "Continue",
+    confidence: 1.0,
+  });
+}
+
 async function beginTask(id, args) {
   const workspace = args.workspace || WORKSPACE;
   const mode = args.mode || "delegated";
   const maxSteps = args.max_steps || 8;
   const verifyRequired = args.verify_required !== false;
 
-  // Delegate to OCO runtime via `oco run` with structured output
+  // --- Try live dashboard flow via oco serve ---
+  let port;
+  try {
+    port = await serverManager.ensureRunning();
+  } catch {
+    // Server failed to start — fall back to CLI-based execution
+    return beginTaskCli(id, args);
+  }
+
+  // Create session via HTTP API
+  let sessionId;
+  try {
+    const res = await httpRequest("POST", port, "/api/v1/sessions", {
+      user_request: args.task,
+      workspace_root: workspace,
+    });
+    if (res.status !== 201 || !res.body?.id) {
+      throw new Error(res.body?.error || "session creation failed");
+    }
+    sessionId = res.body.id;
+  } catch {
+    return beginTaskCli(id, args);
+  }
+
+  // Open dashboard in browser with live session
+  const dashboardUrl = `http://127.0.0.1:${port}/dashboard?live=${sessionId}`;
+  openBrowser(dashboardUrl);
+
+  // Poll session until completion (check every 2s, max 120s)
+  const maxPolls = 60;
+  let sessionInfo = null;
+  for (let i = 0; i < maxPolls; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      const res = await httpRequest("GET", port, `/api/v1/sessions/${sessionId}`, null);
+      sessionInfo = res.body;
+      if (sessionInfo?.status && sessionInfo.status !== "Active") break;
+    } catch {
+      // Retry on transient errors
+    }
+  }
+
+  // Fetch trace for detailed results
+  let traceEntries = [];
+  try {
+    const res = await httpRequest("GET", port, `/api/v1/sessions/${sessionId}/trace`, null);
+    if (Array.isArray(res.body)) traceEntries = res.body;
+  } catch { /* ok, trace is optional */ }
+
+  const totalTokens = sessionInfo?.tokens_used || 0;
+  const totalSteps = sessionInfo?.steps || 0;
+  const status = sessionInfo?.status || "Unknown";
+  const isCompleted = status === "Completed";
+  const isFailed = status === "Failed";
+
+  return respondStructured(id, {
+    summary: `Task ${isCompleted ? "completed" : isFailed ? "failed" : status}: ${totalSteps} step(s), ${totalTokens} tokens`,
+    evidence: [
+      { session: { id: sessionId, status, complexity: sessionInfo?.complexity } },
+      ...(traceEntries.length > 0 ? [{ trace: traceEntries }] : []),
+      { dashboard_url: dashboardUrl },
+    ],
+    risks: [
+      ...(isFailed ? ["Session failed — check trace for details"] : []),
+      ...(verifyRequired && !isCompleted ? ["Task did not complete successfully"] : []),
+    ],
+    next_step: isCompleted
+      ? "Task completed — review dashboard for full trace"
+      : isFailed
+        ? "Investigate failure via dashboard trace view"
+        : "Session still running — check dashboard",
+    confidence: isCompleted ? 0.9 : isFailed ? 0.3 : 0.5,
+  });
+}
+
+/** Fallback: run task via CLI when server is unavailable. */
+async function beginTaskCli(id, args) {
+  const workspace = args.workspace || WORKSPACE;
+  const mode = args.mode || "delegated";
+  const maxSteps = args.max_steps || 8;
+  const verifyRequired = args.verify_required !== false;
+
   const ocoArgs = [
     "run",
     args.task,
@@ -545,7 +888,6 @@ async function beginTask(id, args) {
     "--quiet",
   ];
 
-  // Add budget constraints
   if (maxSteps) {
     ocoArgs.push("--max-steps", String(maxSteps));
   }
@@ -553,7 +895,6 @@ async function beginTask(id, args) {
   const result = await runOco(ocoArgs);
 
   if (result.error) {
-    // OCO binary unavailable — return a task packet for manual execution
     return respondStructured(id, {
       summary: "oco runtime not installed — returning task plan for manual execution",
       evidence: [{
@@ -575,7 +916,6 @@ async function beginTask(id, args) {
     });
   }
 
-  // Parse JSONL output from `oco run`
   const events = result.stdout
     .split("\n")
     .filter(Boolean)
@@ -588,7 +928,6 @@ async function beginTask(id, args) {
   const verifyResults = events.filter((e) => e.event === "verify_gate_result");
   const budgetWarnings = events.filter((e) => e.event === "budget_warning");
 
-  // Extract final response from step outputs
   const outputs = stepEvents
     .filter((e) => e.success)
     .map((e) => e.output || e.step_name)
@@ -603,7 +942,6 @@ async function beginTask(id, args) {
   const hasFailures = failures.length > 0;
   const verified = verifyResults.some((v) => v.overall_passed);
 
-  // Build trace summary
   const trace = stepEvents.map((e) => ({
     step: e.step_name,
     success: e.success,

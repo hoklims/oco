@@ -102,7 +102,12 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
     // Layer 4 — Application edge
     g.insert(
         "oco-mcp-server",
-        vec!["oco-shared-types", "oco-orchestrator-core"],
+        vec![
+            "oco-shared-types",
+            "oco-orchestrator-core",
+            "oco-retrieval",
+            "oco-code-intel",
+        ],
     );
     g.insert(
         "oco-dev-cli",

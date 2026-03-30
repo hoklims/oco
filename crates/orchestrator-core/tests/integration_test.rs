@@ -3,16 +3,16 @@
 //! These tests exercise the full orchestration stack end-to-end using
 //! temporary workspaces and the stub LLM provider.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
+use oco_orchestrator_core::RetryingLlmProvider;
 use oco_orchestrator_core::config::OrchestratorConfig;
 use oco_orchestrator_core::llm::{
     AnthropicConfig, AnthropicProvider, LlmProvider, StubLlmProvider,
 };
 use oco_orchestrator_core::loop_runner::OrchestrationLoop;
 use oco_orchestrator_core::runtime::OrchestratorRuntime;
-use oco_orchestrator_core::RetryingLlmProvider;
 use oco_shared_types::{
     Budget, ContextPriority, Observation, ObservationKind, ObservationSource, OrchestratorAction,
     StopReason,
@@ -565,11 +565,7 @@ const ANTHROPIC_OK_BODY: &str = r#"{
     "usage": {"input_tokens": 25, "output_tokens": 10}
 }"#;
 
-async fn handle_mock_connection(
-    stream: tokio::net::TcpStream,
-    call_count: u32,
-    fail_until: u32,
-) {
+async fn handle_mock_connection(stream: tokio::net::TcpStream, call_count: u32, fail_until: u32) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let mut stream = stream;

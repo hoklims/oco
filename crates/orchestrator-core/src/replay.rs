@@ -11,10 +11,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use oco_shared_types::SessionId;
 use oco_shared_types::dashboard::{DashboardEvent, EventStream};
 use oco_shared_types::telemetry::OrchestrationEvent;
-use oco_shared_types::SessionId;
-use tokio::sync::{broadcast, watch, Mutex};
+use tokio::sync::{Mutex, broadcast, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -165,11 +165,8 @@ impl ReplaySession {
         let stream = EventStream::new(session_id, run_id);
 
         // Pre-wrap all events.
-        let dashboard_events: Vec<DashboardEvent> = trace
-            .events
-            .iter()
-            .map(|e| stream.wrap(e))
-            .collect();
+        let dashboard_events: Vec<DashboardEvent> =
+            trace.events.iter().map(|e| stream.wrap(e)).collect();
 
         let (tx, _rx) = broadcast::channel(256);
         let (state_tx, state_rx) = watch::channel(PlaybackState::Playing);
@@ -476,12 +473,7 @@ mod tests {
 
         let mut received = Vec::new();
         loop {
-            match tokio::time::timeout(
-                tokio::time::Duration::from_secs(5),
-                rx.recv(),
-            )
-            .await
-            {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(5), rx.recv()).await {
                 Ok(Ok(event)) => received.push(event),
                 Ok(Err(broadcast::error::RecvError::Closed)) => break,
                 Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,

@@ -33,5 +33,5 @@ pub use error::CodeIntelError;
 pub use indexer::SymbolIndexer;
 pub use languages::{language_from_extension, language_from_path};
 pub use parser::{CodeParser, FallbackParser, ParsedFile};
-pub use symbols::{ImportInfo, SymbolInfo, SymbolKind};
+pub use symbols::{CallEdge, CallEdgeKind, ImportInfo, SymbolInfo, SymbolKind};
 pub use ts_parser::TreeSitterParser;

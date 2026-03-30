@@ -4,7 +4,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 use crate::error::CodeIntelError;
-use crate::symbols::{ImportInfo, SymbolInfo, SymbolKind};
+use crate::symbols::{CallEdge, ImportInfo, SymbolInfo, SymbolKind};
 
 /// A parsed source file with extracted symbols and imports.
 #[derive(Debug, Clone)]
@@ -17,6 +17,8 @@ pub struct ParsedFile {
     pub symbols: Vec<SymbolInfo>,
     /// Import statements extracted from the file.
     pub imports: Vec<ImportInfo>,
+    /// Call edges extracted from the file (caller → callee).
+    pub calls: Vec<CallEdge>,
     /// Total line count.
     pub line_count: u32,
 }
@@ -612,6 +614,7 @@ impl CodeParser for FallbackParser {
             language: language.to_string(),
             symbols,
             imports,
+            calls: Vec::new(), // Fallback parser does not extract call edges
             line_count,
         })
     }

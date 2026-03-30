@@ -36,6 +36,17 @@ Use `oco.trace_error` if available (parses frames, maps to codebase, identifies 
 oco.trace_error({ stacktrace: "<paste stacktrace>", workspace: "." })
 ```
 
+**Enrich with call graph** — trace the call chain around the error site:
+- **If `oco_routes` MCP tool is available**:
+  ```
+  oco_routes({ symbol: "<failing_function>", direction: "both", max_depth: 3 })
+  ```
+  This reveals the full call path to the error (callers = how we got here, callees = what failed downstream).
+- **If yoyo MCP is available**:
+  ```
+  yoyo.routes({ symbol: "<failing_function>" })
+  ```
+
 Otherwise, manually inspect the files referenced in the stack trace using Read, starting from the deepest application frame (skip library/framework frames).
 
 ## Step 3: Inspect Likely Root Cause Regions
