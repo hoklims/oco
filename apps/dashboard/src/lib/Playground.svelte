@@ -141,17 +141,19 @@
         break
       }
       case 'teammate_message': {
+        const ts = Date.now() + Math.random()
         const msg = {
           fromStepId: kind.from_step_id as string,
           toStepId: kind.to_step_id as string,
           fromName: kind.from_name as string,
           toName: kind.to_name as string,
           summary: kind.summary as string,
+          _ts: ts,
         }
         teammateMessages = [...teammateMessages, msg]
         // Auto-clear after 3s so the flash disappears
         messageTimers.push(setTimeout(() => {
-          teammateMessages = teammateMessages.filter(m => m !== msg)
+          teammateMessages = teammateMessages.filter(m => (m as typeof msg)._ts !== ts)
         }, 3000))
         break
       }
@@ -252,8 +254,10 @@
       onExploration: (p) => { explorationPhase = p },
       onThought: (t) => { thoughts = [...thoughts, t] },
       onTeammateMessage: (msg) => {
-        teammateMessages = [...teammateMessages, msg]
-        messageTimers.push(setTimeout(() => { teammateMessages = teammateMessages.filter(m => m !== msg) }, 3000))
+        const ts = Date.now() + Math.random()
+        const tagged = { ...msg, _ts: ts }
+        teammateMessages = [...teammateMessages, tagged]
+        messageTimers.push(setTimeout(() => { teammateMessages = teammateMessages.filter(m => (m as typeof tagged)._ts !== ts) }, 3000))
       },
       onSubPlan: (update) => {
         const pid = update.parentStepId
@@ -304,14 +308,16 @@
     if (teamSteps.length < 2) return
     const from = teamSteps[0]
     const to = teamSteps[1]
+    const ts = Date.now() + Math.random()
     const msg = {
       fromStepId: from.id, toStepId: to.id,
       fromName: from.name.split(' ').slice(0, 2).join(' '),
       toName: to.name.split(' ').slice(0, 2).join(' '),
       summary: `Sync on shared interface (manual #${teammateMessages.length + 1})`,
+      _ts: ts,
     }
     teammateMessages = [...teammateMessages, msg]
-    messageTimers.push(setTimeout(() => { teammateMessages = teammateMessages.filter(m => m !== msg) }, 3000))
+    messageTimers.push(setTimeout(() => { teammateMessages = teammateMessages.filter(m => (m as typeof msg)._ts !== ts) }, 3000))
   }
 
   function triggerSubPlan(stepId: string) {

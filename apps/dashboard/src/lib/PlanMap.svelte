@@ -291,8 +291,38 @@
     const extraEdges: Edge[] = []
 
     // Team group node
-    const groupNode = buildTeamGroupNode(mainGraph.nodes, getDepsMap())
+    const depsMap = getDepsMap()
+    const groupNode = buildTeamGroupNode(mainGraph.nodes, depsMap)
     if (groupNode) extraNodes.push(groupNode)
+
+    // Virtual communication edges between all teammate pairs
+    // These don't exist as DAG dependencies — they're visual-only pulse edges
+    const teammateStepIds: string[] = []
+    for (const [id, info] of depsMap) { if (info.execution_mode === 'teammate') teammateStepIds.push(id) }
+    for (let a = 0; a < teammateStepIds.length; a++) {
+      for (let b = a + 1; b < teammateStepIds.length; b++) {
+        const idA = teammateStepIds[a], idB = teammateStepIds[b]
+        // Skip if a real DAG edge already exists between these two
+        const hasRealEdge = mainGraph.edges.some(e =>
+          (e.source === idA && e.target === idB) || (e.source === idB && e.target === idA))
+        if (hasRealEdge) continue
+
+        const stepA = steps.find(s => s.id === idA)
+        const stepB = steps.find(s => s.id === idB)
+        const bothRunning = stepA?.status === 'running' && stepB?.status === 'running'
+        const flash = teammateMessages.find(m =>
+          (m.fromStepId === idA && m.toStepId === idB) || (m.fromStepId === idB && m.toStepId === idA))
+
+        extraEdges.push({
+          id: `e-comm-${idA}-${idB}`,
+          source: idA,
+          target: idB,
+          type: 'pulse',
+          animated: false,
+          data: { isActive: bothRunning, flashMessage: flash?.summary ?? '' },
+        })
+      }
+    }
 
     // Sub-activity nodes — event-driven first, then synthetic fallback
     const processedParents = new Set<string>()

@@ -101,8 +101,10 @@
       onExploration: (p) => { explorationPhase = p },
       onThought: (t) => { thoughts = [...thoughts, t] },
       onTeammateMessage: (msg) => {
-        teammateMessages = [...teammateMessages, msg]
-        msgTimers.push(setTimeout(() => { teammateMessages = teammateMessages.filter(m => m !== msg) }, 3000))
+        const ts = Date.now() + Math.random()
+        const tagged = { ...msg, _ts: ts }
+        teammateMessages = [...teammateMessages, tagged]
+        msgTimers.push(setTimeout(() => { teammateMessages = teammateMessages.filter(m => (m as typeof tagged)._ts !== ts) }, 3000))
       },
       onSubPlan: (update) => {
         const pid = update.parentStepId
