@@ -53,12 +53,9 @@
 
   <!-- Center content -->
   <div class="center-stack">
-    <!-- Phase 0-1: Orbital ring -->
+    <!-- Phase 0-1: Radial pulse — just light breathing, no shapes -->
     {#if progress < 2}
-      <div class="orbital" class:orbital-contract={progress === 1}>
-        <div class="orbital-ring"></div>
-        <div class="orbital-dot"></div>
-      </div>
+      <div class="pulse-light" class:pulse-focus={progress === 1}></div>
     {/if}
 
     <!-- Phase 2-3: Badge reveal -->
@@ -138,51 +135,24 @@
     z-index: 2;
   }
 
-  /* ── Orbital ring ────────────────────────────── */
-  .orbital {
-    position: relative;
-    width: 100px;
-    height: 100px;
-    transition: all 1s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  .orbital-contract {
-    width: 72px;
-    height: 72px;
-  }
-
-  .orbital-ring {
-    position: absolute;
-    inset: 0;
+  /* ── Radial pulse — pure light, no geometry ── */
+  .pulse-light {
+    width: 120px;
+    height: 120px;
     border-radius: 50%;
-    border: 1.5px solid #22d3ee20;
-    animation: ringPulse 3s ease-in-out infinite, ringSpin 6s linear infinite;
+    background: radial-gradient(circle, #22d3ee12 0%, transparent 70%);
+    animation: lightBreath 3s ease-in-out infinite;
+    transition: all 1.2s cubic-bezier(0.4, 0, 0.2, 1);
   }
-  @keyframes ringPulse {
+  .pulse-focus {
+    width: 80px;
+    height: 80px;
+    background: radial-gradient(circle, #22d3ee20 0%, transparent 70%);
+    animation: lightBreath 2s ease-in-out infinite;
+  }
+  @keyframes lightBreath {
     0%, 100% { opacity: 0.4; transform: scale(1); }
-    50% { opacity: 0.8; transform: scale(1.06); }
-  }
-  @keyframes ringSpin {
-    to { transform: rotate(360deg); }
-  }
-
-  .orbital-dot {
-    position: absolute;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #22d3ee;
-    box-shadow: 0 0 12px #22d3ee80, 0 0 24px #22d3ee40;
-    top: -3px;
-    left: 50%;
-    margin-left: -3px;
-    animation: dotOrbit 3s linear infinite;
-    transform-origin: 3px calc(50px + 3px); /* orbit around center */
-  }
-  .orbital-contract .orbital-dot {
-    transform-origin: 3px calc(36px + 3px);
-  }
-  @keyframes dotOrbit {
-    to { transform: rotate(360deg); }
+    50% { opacity: 1; transform: scale(1.15); }
   }
 
   /* ── Badge ───────────────────────────────────── */
