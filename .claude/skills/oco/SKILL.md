@@ -18,21 +18,32 @@ triggers:
 
 # OCO: Orchestrated Coding Workflow
 
-You are entering OCO's orchestrated mode — a structured workflow that leverages all available
-code intelligence tools to handle the user's request with maximum precision.
+You are entering OCO's orchestrated mode — a structured workflow with **live dashboard tracking**.
 
-## Step 1: Boot & Discover Capabilities
+## Step 1: Open Dashboard (MANDATORY FIRST STEP)
 
-Before any action, gather context about the workspace and available tools.
+**Before anything else**, open the live dashboard so the user sees progress from the start:
+
+```
+oco.open_dashboard({ task: "<user's request>", workspace: "<cwd>" })
+```
+
+This returns a `session_id`. **Save it** — you will use it to push phase updates throughout.
+
+Then immediately push the first phase:
+```
+oco.emit_phase({ session_id: "<id>", phase: "run_started", detail: "<user's request>" })
+```
+
+## Step 2: Boot & Discover
+
+Gather context about the workspace:
 
 **If yoyo MCP tools are available** (`boot`, `index`):
 ```
 yoyo.boot() — discover workspace structure
 yoyo.index() — ensure AST index is fresh
 ```
-
-**If OCO MCP tools are available** (`oco.search_codebase`, `oco.verify_patch`, etc.):
-- Note them as available for downstream steps
 
 **Always**:
 - Detect project type from manifests (Cargo.toml, package.json, pyproject.toml, go.mod)
@@ -44,112 +55,92 @@ Produce a one-line context summary:
 [workspace: <name> | lang: <lang> | tools: yoyo+oco / oco-only / basic]
 ```
 
-## Step 2: Classify Intent & Route
+## Step 3: Classify & Route
 
-Analyze the user's request and route to the optimal workflow:
-
-| Intent Signal | Route To | Description |
-|---------------|----------|-------------|
-| explore, understand, "how does X work", architecture | `/oco-inspect-repo-area` | Structured codebase exploration |
-| bug, broken, regression, "doesn't work" (no stacktrace) | `/oco-investigate-bug` | Evidence-first bug investigation |
-| stacktrace, panic, exception, crash, error + line number | `/oco-trace-stack` | Stack trace root cause analysis |
-| refactor, rename, move, extract, split, restructure | `/oco-safe-refactor` | Impact-gated staged refactoring |
-| verify, test, check, validate, "does it build" | `/oco-verify-fix` | Full verification suite |
-| **new feature, implement, add, create** | **Plan + Implement** (see Step 3) | Feature implementation workflow |
-| **complex / multi-step / unclear** | **Decompose** (see Step 3) | Break down then route sub-tasks |
-
-**If the intent maps to an existing `/oco-*` skill**, invoke that skill with the user's request.
-Do NOT re-implement what those skills already do — delegate to them.
-
-## Step 3: Plan + Implement (for feature work & complex tasks)
-
-For tasks that don't map to a single sub-skill:
-
-### 3a. Assess Scope
-
-Use impact analysis tools to understand the change surface:
-
-**If yoyo is available**:
+Push the classifying phase:
 ```
-yoyo.judge_change({ description: "<what will change>" })  — ownership, invariants, risk
-yoyo.impact({ symbol: "<target>" })                       — dependency graph
-yoyo.routes({ symbol: "<target>" })                       — call chain
+oco.emit_phase({ session_id: "<id>", phase: "classifying", detail: "<detected complexity>" })
 ```
 
-**If OCO call graph is available** (`oco.routes`, `oco.impact`):
-```
-oco.routes({ symbol: "<target>", workspace: "." })
-oco.impact({ symbol: "<target>", workspace: "." })
-```
+Analyze the user's request and route:
 
-**Otherwise**: Use Grep/Glob to find all usages and map dependencies manually.
+| Intent Signal | Route To |
+|---------------|----------|
+| explore, understand, architecture | `/oco-inspect-repo-area` |
+| bug, broken, regression (no stacktrace) | `/oco-investigate-bug` |
+| stacktrace, panic, exception, crash | `/oco-trace-stack` |
+| refactor, rename, move, extract, split | `/oco-safe-refactor` |
+| verify, test, check, validate | `/oco-verify-fix` |
+| **new feature, implement, add, create** | **Plan + Implement** (Step 4) |
+| **complex / multi-step** | **Decompose** (Step 4) |
 
-### 3b. Decompose
+**If routing to a sub-skill**, still push phase updates via `oco.emit_phase`.
+
+## Step 4: Plan + Implement
+
+### 4a. Plan
+```
+oco.emit_phase({ session_id: "<id>", phase: "planning", detail: "<N files to create/modify>" })
+```
 
 Break the task into ordered sub-tasks:
-1. **Understand** — read the relevant code (use `/oco-inspect-repo-area` pattern)
-2. **Plan** — list the files to change and in what order
-3. **Implement** — make changes, smallest unit first
-4. **Verify** — after EACH implementation step, run the verification sequence
+1. List files to create/modify and in what order
+2. Identify dependencies between steps
+3. Estimate scope
 
-### 3c. Implement with Guard Rails
+### 4b. Execute
 
-For each code change:
-1. Read the target file before editing
-2. **If yoyo `change` is available**: use it for AST-safe writes with compiler rollback
-3. **Otherwise**: use Edit tool, then immediately verify
-4. After all changes: run `/oco-verify-fix` workflow
+```
+oco.emit_phase({ session_id: "<id>", phase: "executing", detail: "Step 1: <description>" })
+```
 
-## Step 4: Enrich with Code Intelligence (throughout)
+For each step:
+1. Read target files before editing
+2. Make changes using Edit/Write tools
+3. Update the dashboard detail as you progress:
+   ```
+   oco.emit_phase({ session_id: "<id>", phase: "executing", detail: "Step N: <current step>" })
+   ```
 
-Use these tools proactively during any workflow step:
+### 4c. Verify
 
-**Search & Navigation**:
-- `yoyo.search({ query })` or `oco.search_codebase({ query })` — symbol-aware search
-- `yoyo.inspect({ symbol })` — deep symbol introspection (signature, scope, relations)
-- `yoyo.map({ query })` — find files by intent
-- `yoyo.ask({ question })` — natural language code queries ("who calls foo?")
+```
+oco.emit_phase({ session_id: "<id>", phase: "verifying" })
+```
 
-**Impact & Dependencies**:
-- `yoyo.impact({ symbol })` or `oco.impact({ symbol })` — what depends on this?
-- `yoyo.routes({ symbol })` or `oco.routes({ symbol })` — call chain traversal
-- `yoyo.health()` — dead code, symbol coverage, module health
+Run the verification sequence:
+- **Delegate to `/oco-verify-fix`** if available
+- Otherwise: build → types → lint → tests manually
+- If verification fails, fix and re-verify (max 3 attempts)
 
-**Change Assessment**:
-- `yoyo.judge_change({ description })` — pre-change risk assessment
-- `oco.collect_findings({ workspace })` — synthesize evidence from investigation
+## Step 5: Complete
 
-**Fallback**: If neither yoyo nor OCO MCP tools are available, use Grep + Glob + Read directly.
-The workflow structure remains the same — only the tool calls differ.
+On success:
+```
+oco.emit_phase({ session_id: "<id>", phase: "complete" })
+```
 
-## Step 5: Mandatory Verification
+On failure:
+```
+oco.emit_phase({ session_id: "<id>", phase: "failed", detail: "<error description>" })
+```
 
-After ANY code modification, run the verification sequence:
-
-1. **Delegate to `/oco-verify-fix`** — it handles project detection and runs build → types → lint → tests
-2. If verification fails, fix and re-verify (max 3 attempts per issue)
-3. After 2 failed attempts on the same issue, switch to `/oco-investigate-bug` workflow
-
-## Step 6: Synthesize & Report
-
-After completing the workflow, produce a compact summary:
-
+Produce a compact summary:
 ```
 ## Result
 - **Task**: <what was requested>
 - **Actions taken**: <numbered list>
-- **Files changed**: <list with brief description>
+- **Files changed**: <list>
 - **Verification**: PASS / FAIL / PARTIAL
-- **Risks / follow-ups**: <any remaining concerns>
+- **Dashboard**: <url from open_dashboard>
 ```
 
 ## Rules
 
-- **Always boot before acting** — never skip Step 1
-- **Route to sub-skills** — don't reinvent `/oco-investigate-bug` or `/oco-safe-refactor`
+- **Always open dashboard first** — Step 1 is non-negotiable
+- **Push phases at every transition** — the dashboard must stay in sync
+- **Route to sub-skills** when intent matches — don't reinvent them
 - **Verify after every code change** — non-negotiable
-- **Evidence before fixes** — never guess, always read the code first
-- **Delegate large scopes** — >5 files to `@codebase-investigator`, >10 files review to `@refactor-reviewer`
-- **Use the best tool available** — prefer yoyo/OCO MCP tools over raw Grep/Glob when available
-- **Compact context** — summarize before acting, don't dump raw output
-- **Max 3 retries** — after 3 failures on the same step, escalate to user
+- **Evidence before fixes** — read the code first
+- **Max 3 retries** — after 3 failures, escalate to user
+- **The `session_id` from Step 1 must be passed to every `emit_phase` call**

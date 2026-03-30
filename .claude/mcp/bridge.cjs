@@ -324,6 +324,53 @@ const TOOLS = [
       required: ["task"],
     },
   },
+  {
+    name: "oco.open_dashboard",
+    description:
+      "Open the live dashboard in the browser. Starts the OCO server if needed, " +
+      "creates a session, and opens the dashboard URL. Returns immediately (non-blocking). " +
+      "Call this at the START of any /oco workflow so the user sees progress live.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: {
+          type: "string",
+          description: "Task description (shown in dashboard header)",
+        },
+        workspace: {
+          type: "string",
+          description: "Workspace root path (defaults to cwd)",
+        },
+      },
+      required: ["task"],
+    },
+  },
+  {
+    name: "oco.emit_phase",
+    description:
+      "Push a lifecycle phase event to the live dashboard. " +
+      "Call at each transition: classifying, planning, executing, verifying, complete, failed. " +
+      "Requires a session_id from a prior oco.open_dashboard call.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: {
+          type: "string",
+          description: "Session ID from oco.open_dashboard",
+        },
+        phase: {
+          type: "string",
+          enum: ["run_started", "classifying", "planning", "executing", "verifying", "complete", "failed"],
+          description: "Lifecycle phase",
+        },
+        detail: {
+          type: "string",
+          description: "Optional detail (e.g. complexity, step name, error message)",
+        },
+      },
+      required: ["session_id", "phase"],
+    },
+  },
 ];
 
 // --- Tool Handlers ---
@@ -341,6 +388,10 @@ async function handleToolCall(id, toolName, args) {
         return await collectFindings(id, args);
       case "oco.begin_task":
         return await beginTask(id, args);
+      case "oco.open_dashboard":
+        return await openDashboard(id, args);
+      case "oco.emit_phase":
+        return await emitPhase(id, args);
       case "oco.working_memory":
         return await workingMemory(id, args);
       default:
@@ -642,6 +693,134 @@ async function workingMemory(id, args) {
     risks: [],
     next_step: "Continue investigation with updated working memory",
     confidence: 0.9,
+  });
+}
+
+async function openDashboard(id, args) {
+  const workspace = args.workspace || WORKSPACE;
+
+  let port;
+  try {
+    port = await serverManager.ensureRunning();
+  } catch (e) {
+    return respondStructured(id, {
+      summary: "Could not start OCO server for dashboard",
+      evidence: [{ error: e.message }],
+      risks: ["Dashboard unavailable — oco binary may not be installed"],
+      next_step: "Proceed without dashboard",
+      confidence: 0.0,
+    });
+  }
+
+  // Create a session for tracking
+  let sessionId;
+  try {
+    const res = await httpRequest("POST", port, "/api/v1/sessions", {
+      user_request: args.task || "OCO session",
+      workspace_root: workspace,
+    });
+    if (res.status !== 201 || !res.body?.id) {
+      throw new Error(res.body?.error || "session creation failed");
+    }
+    sessionId = res.body.id;
+  } catch (e) {
+    return respondStructured(id, {
+      summary: "Server running but session creation failed",
+      evidence: [{ error: e.message, port }],
+      risks: ["Dashboard opened without live session"],
+      next_step: "Proceed without dashboard tracking",
+      confidence: 0.2,
+    });
+  }
+
+  // Open dashboard in browser
+  const dashboardUrl = `http://127.0.0.1:${port}/dashboard?live=${sessionId}`;
+  openBrowser(dashboardUrl);
+
+  return respondStructured(id, {
+    summary: `Dashboard opened at ${dashboardUrl}`,
+    evidence: [{
+      session_id: sessionId,
+      port,
+      dashboard_url: dashboardUrl,
+    }],
+    risks: [],
+    next_step: "Use oco.emit_phase to push lifecycle updates to the dashboard",
+    confidence: 1.0,
+  });
+}
+
+async function emitPhase(id, args) {
+  const { session_id, phase, detail } = args;
+
+  if (!session_id) {
+    return error(id, -32602, "session_id is required");
+  }
+
+  let port;
+  try {
+    port = await serverManager.ensureRunning();
+  } catch {
+    // Server not running — silently succeed (dashboard is optional)
+    return respondStructured(id, {
+      summary: `Phase ${phase} noted (dashboard offline)`,
+      evidence: [],
+      risks: [],
+      next_step: "Continue",
+      confidence: 1.0,
+    });
+  }
+
+  // Map phase to event type
+  const eventPayload = { type: phase };
+  switch (phase) {
+    case "run_started":
+      eventPayload.type = "run_started";
+      eventPayload.request_summary = detail || "";
+      eventPayload.provider = "claude-code";
+      eventPayload.model = "opus";
+      break;
+    case "classifying":
+      eventPayload.type = "classifying";
+      eventPayload.reason = detail || "Analyzing task complexity";
+      break;
+    case "planning":
+      eventPayload.type = "planning";
+      eventPayload.reason = detail || "Generating execution plan";
+      break;
+    case "executing":
+      eventPayload.type = "executing";
+      eventPayload.reason = detail || "Implementing changes";
+      break;
+    case "verifying":
+      eventPayload.type = "verifying";
+      eventPayload.reason = detail || "Running verification";
+      break;
+    case "complete":
+      eventPayload.type = "run_stopped";
+      eventPayload.reason = "task_complete";
+      eventPayload.total_steps = 0;
+      eventPayload.total_tokens = 0;
+      break;
+    case "failed":
+      eventPayload.type = "run_stopped";
+      eventPayload.reason = "error";
+      eventPayload.message = detail || "Task failed";
+      break;
+  }
+
+  try {
+    await httpRequest("POST", port, `/api/v1/dashboard/sessions/${session_id}/events`, eventPayload);
+  } catch {
+    // Non-blocking — dashboard updates are best-effort
+  }
+
+  return respondStructured(id, {
+    summary: `Phase: ${phase}`,
+    evidence: [{ phase, detail }],
+    risks: [],
+    next_step: "Continue",
+    confidence: 1.0,
   });
 }
 

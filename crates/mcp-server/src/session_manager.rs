@@ -482,6 +482,36 @@ impl SessionManager {
         Some((events, rx))
     }
 
+    /// Inject an externally-created dashboard event into a session's live broadcast.
+    /// Used by the MCP bridge to push phase updates from Claude Code into the dashboard.
+    pub async fn inject_dashboard_event(
+        &self,
+        id: &str,
+        kind: oco_shared_types::dashboard::DashboardEventKind,
+    ) -> anyhow::Result<()> {
+        let session = self
+            .sessions
+            .get(id)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
+
+        let mut guard = session.lock().await;
+
+        // Assign a sequence number to the event.
+        let seq = guard.dashboard_events.len() as u64 + 1;
+        let event = DashboardEvent::new(
+            seq,
+            SessionId(uuid::Uuid::parse_str(id).unwrap_or_default()),
+            uuid::Uuid::nil(),
+            0,
+            kind,
+        );
+
+        guard.dashboard_events.push(event.clone());
+        let _ = guard.dashboard_tx.send(event);
+        Ok(())
+    }
+
     // -- helpers ------------------------------------------------------------
 
     fn build_info(&self, id: &str, guard: &SessionState) -> SessionInfo {
