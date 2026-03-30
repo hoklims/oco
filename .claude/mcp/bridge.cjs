@@ -353,7 +353,9 @@ const TOOLS = [
     name: "oco.emit_phase",
     description:
       "Push a lifecycle phase event to the live dashboard. " +
-      "Call at each transition: classifying, planning, executing, verifying, complete, failed. " +
+      "Call at each transition: run_started, classifying, planning, executing, verifying, complete, failed. " +
+      "For 'planning': pass steps[] array to populate PlanMap. " +
+      "For 'executing': pass step_id to highlight active step. " +
       "Requires a session_id from a prior oco.open_dashboard call.",
     inputSchema: {
       type: "object",
@@ -370,6 +372,28 @@ const TOOLS = [
         detail: {
           type: "string",
           description: "Optional detail (e.g. complexity, step name, error message)",
+        },
+        steps: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              description: { type: "string" },
+              role: { type: "string", default: "implementer" },
+            },
+            required: ["name", "description"],
+          },
+          description: "Plan steps (only for phase='planning'). Populates the PlanMap visualization.",
+        },
+        step_id: {
+          type: "string",
+          description: "Step ID to mark as started/completed (for phase='executing'/'verifying')",
+        },
+        success: {
+          type: "boolean",
+          description: "Step outcome (for step completion events)",
+          default: true,
         },
       },
       required: ["session_id", "phase"],
@@ -753,8 +777,15 @@ async function openDashboard(id, args) {
   });
 }
 
+// Track step IDs per session for auto-generated UUIDs
+const sessionSteps = new Map(); // session_id → { steps: [{id, name}], activeStepId }
+
+function randomUUID() {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 async function emitPhase(id, args) {
-  const { session_id, phase, detail } = args;
+  const { session_id, phase, detail, steps, step_id, success } = args;
 
   if (!session_id) {
     return error(id, -32602, "session_id is required");
@@ -764,63 +795,180 @@ async function emitPhase(id, args) {
   try {
     port = await serverManager.ensureRunning();
   } catch {
-    // Server not running — silently succeed (dashboard is optional)
     return respondStructured(id, {
       summary: `Phase ${phase} noted (dashboard offline)`,
-      evidence: [],
-      risks: [],
-      next_step: "Continue",
-      confidence: 1.0,
+      evidence: [], risks: [], next_step: "Continue", confidence: 1.0,
     });
   }
 
-  // Map phase to event type
-  const eventPayload = { type: phase };
+  const eventsUrl = `/api/v1/dashboard/sessions/${session_id}/events`;
+  const emit = (payload) => httpRequest("POST", port, eventsUrl, payload).catch(() => {});
+
   switch (phase) {
     case "run_started":
-      eventPayload.type = "run_started";
-      eventPayload.request_summary = detail || "";
-      eventPayload.provider = "claude-code";
-      eventPayload.model = "opus";
+      await emit({
+        type: "run_started",
+        provider: "claude-code",
+        model: "opus",
+        request_summary: detail || "",
+      });
       break;
-    case "classifying":
-      eventPayload.type = "classifying";
-      eventPayload.reason = detail || "Analyzing task complexity";
-      break;
-    case "planning":
-      eventPayload.type = "planning";
-      eventPayload.reason = detail || "Generating execution plan";
-      break;
-    case "executing":
-      eventPayload.type = "executing";
-      eventPayload.reason = detail || "Implementing changes";
-      break;
-    case "verifying":
-      eventPayload.type = "verifying";
-      eventPayload.reason = detail || "Running verification";
-      break;
-    case "complete":
-      eventPayload.type = "run_stopped";
-      eventPayload.reason = "task_complete";
-      eventPayload.total_steps = 0;
-      eventPayload.total_tokens = 0;
-      break;
-    case "failed":
-      eventPayload.type = "run_stopped";
-      eventPayload.reason = "error";
-      eventPayload.message = detail || "Task failed";
-      break;
-  }
 
-  try {
-    await httpRequest("POST", port, `/api/v1/dashboard/sessions/${session_id}/events`, eventPayload);
-  } catch {
-    // Non-blocking — dashboard updates are best-effort
+    case "classifying":
+      // Send as flat_step_completed so the stepper updates
+      await emit({
+        type: "flat_step_completed",
+        step: 0,
+        action_type: "classifying",
+        reason: detail || "Analyzing task complexity",
+        duration_ms: 0,
+        budget_snapshot: { tokens_used: 0, tokens_remaining: 0, tool_calls_used: 0, tool_calls_remaining: 0, retrievals_used: 0, verify_cycles_used: 0, elapsed_secs: 0 },
+      });
+      break;
+
+    case "planning": {
+      // Send classifying→planning stepper event
+      await emit({
+        type: "flat_step_completed",
+        step: 0,
+        action_type: "planning",
+        reason: detail || "Generating execution plan",
+        duration_ms: 0,
+        budget_snapshot: { tokens_used: 0, tokens_remaining: 0, tool_calls_used: 0, tool_calls_remaining: 0, retrievals_used: 0, verify_cycles_used: 0, elapsed_secs: 0 },
+      });
+
+      // If steps provided, send a plan_generated event → populates PlanMap
+      if (steps && steps.length > 0) {
+        const planSteps = steps.map((s, i) => ({
+          id: s.id || randomUUID(),
+          name: s.name,
+          description: s.description || s.name,
+          role: s.role || "implementer",
+          execution_mode: "inline",
+          depends_on: i > 0 ? [steps[i - 1].id || "prev"] : [],
+          verify_after: i === steps.length - 1,
+          estimated_tokens: 5000,
+          preferred_model: null,
+        }));
+        // Store step IDs for later tracking
+        sessionSteps.set(session_id, { steps: planSteps, activeStepId: null });
+
+        await emit({
+          type: "plan_generated",
+          plan_id: randomUUID(),
+          step_count: planSteps.length,
+          parallel_group_count: 1,
+          critical_path_length: planSteps.length,
+          estimated_total_tokens: planSteps.length * 5000,
+          strategy: "Orchestrated",
+          team: null,
+          steps: planSteps,
+        });
+      }
+      break;
+    }
+
+    case "executing": {
+      const session = sessionSteps.get(session_id);
+      const targetStepId = step_id || (session?.steps?.[0]?.id);
+
+      // If we had an active step, complete it first
+      if (session?.activeStepId && session.activeStepId !== targetStepId) {
+        const prevStep = session.steps.find(s => s.id === session.activeStepId);
+        await emit({
+          type: "step_completed",
+          step_id: session.activeStepId,
+          step_name: prevStep?.name || "step",
+          success: true,
+          duration_ms: 0,
+          tokens_used: 0,
+          detail_ref: null,
+        });
+      }
+
+      // Start the new step
+      if (targetStepId) {
+        const step = session?.steps?.find(s => s.id === targetStepId);
+        await emit({
+          type: "step_started",
+          step_id: targetStepId,
+          step_name: step?.name || detail || "executing",
+          role: step?.role || "implementer",
+          execution_mode: "inline",
+        });
+        if (session) session.activeStepId = targetStepId;
+      }
+
+      // Also send progress
+      if (session?.steps) {
+        const completedCount = session.steps.filter(s => s._completed).length;
+        await emit({
+          type: "progress",
+          completed: completedCount,
+          total: session.steps.length,
+          active_steps: targetStepId ? [{ step_id: targetStepId, step_name: detail || "executing" }] : [],
+          budget: { tokens_used: 0, tokens_remaining: 0, tool_calls_used: 0, tool_calls_remaining: 0, retrievals_used: 0, verify_cycles_used: 0, elapsed_secs: 0 },
+        });
+      }
+      break;
+    }
+
+    case "verifying": {
+      const session = sessionSteps.get(session_id);
+      // Complete any active step
+      if (session?.activeStepId) {
+        const prevStep = session.steps.find(s => s.id === session.activeStepId);
+        if (prevStep) prevStep._completed = true;
+        await emit({
+          type: "step_completed",
+          step_id: session.activeStepId,
+          step_name: prevStep?.name || "step",
+          success: true,
+          duration_ms: 0,
+          tokens_used: 0,
+          detail_ref: null,
+        });
+        session.activeStepId = null;
+      }
+      // Send stepper event
+      await emit({
+        type: "flat_step_completed",
+        step: 0,
+        action_type: "verifying",
+        reason: detail || "Running verification",
+        duration_ms: 0,
+        budget_snapshot: { tokens_used: 0, tokens_remaining: 0, tool_calls_used: 0, tool_calls_remaining: 0, retrievals_used: 0, verify_cycles_used: 0, elapsed_secs: 0 },
+      });
+      break;
+    }
+
+    case "complete": {
+      const session = sessionSteps.get(session_id);
+      const totalSteps = session?.steps?.length || 0;
+      await emit({
+        type: "run_stopped",
+        reason: "task_complete",
+        total_steps: totalSteps,
+        total_tokens: 0,
+      });
+      sessionSteps.delete(session_id);
+      break;
+    }
+
+    case "failed":
+      await emit({
+        type: "run_stopped",
+        reason: { type: "error", message: detail || "Task failed" },
+        total_steps: 0,
+        total_tokens: 0,
+      });
+      sessionSteps.delete(session_id);
+      break;
   }
 
   return respondStructured(id, {
     summary: `Phase: ${phase}`,
-    evidence: [{ phase, detail }],
+    evidence: [{ phase, detail, step_count: steps?.length }],
     risks: [],
     next_step: "Continue",
     confidence: 1.0,

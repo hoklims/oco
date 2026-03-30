@@ -379,25 +379,18 @@ async fn delete_replay(
 
 // ── Live session event injection ─────────────────────────────
 
-/// External event payload — used by the MCP bridge to push phase updates.
-#[derive(Debug, Deserialize)]
-pub struct InjectEventRequest {
-    /// Dashboard event kind type (e.g. "run_started", "progress", "run_stopped").
-    #[serde(rename = "type")]
-    pub event_type: String,
-    /// Arbitrary payload fields merged into the event kind.
-    #[serde(flatten)]
-    pub payload: serde_json::Value,
-}
-
 /// `POST /api/v1/dashboard/sessions/{session_id}/events` — inject an external event.
 ///
-/// Used by the MCP bridge to push lifecycle phases (classifying, planning, etc.)
-/// into the live dashboard stream without going through the Rust orchestrator.
+/// Accepts any valid `DashboardEventKind` JSON (same schema as SSE payloads).
+/// The `type` field selects the variant: `run_started`, `plan_generated`,
+/// `step_started`, `step_completed`, `progress`, `run_stopped`, etc.
+///
+/// Used by the MCP bridge to push rich lifecycle events from Claude Code
+/// into the live dashboard stream.
 async fn inject_session_event(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-    Json(req): Json<InjectEventRequest>,
+    Json(kind): Json<DashboardEventKind>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
     let resolved_id = state
         .session_manager
@@ -409,109 +402,6 @@ async fn inject_session_event(
                 Json(serde_json::json!({ "error": "session not found" })),
             )
         })?;
-
-    // Build the DashboardEventKind from the request type.
-    let kind = match req.event_type.as_str() {
-        "run_started" => DashboardEventKind::RunStarted {
-            provider: req
-                .payload
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .unwrap_or("claude-code")
-                .to_string(),
-            model: req
-                .payload
-                .get("model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("opus")
-                .to_string(),
-            request_summary: req
-                .payload
-                .get("request_summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-        },
-        "run_stopped" => {
-            let reason_str = req
-                .payload
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("task_complete");
-            let reason = match reason_str {
-                "task_complete" => oco_shared_types::StopReason::TaskComplete,
-                "error" => oco_shared_types::StopReason::Error {
-                    message: req
-                        .payload
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                },
-                _ => oco_shared_types::StopReason::TaskComplete,
-            };
-            DashboardEventKind::RunStopped {
-                reason,
-                total_steps: req
-                    .payload
-                    .get("total_steps")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32,
-                total_tokens: req
-                    .payload
-                    .get("total_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-            }
-        }
-        "progress" => DashboardEventKind::Progress {
-            completed: req
-                .payload
-                .get("completed")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize,
-            total: req
-                .payload
-                .get("total")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize,
-            active_steps: vec![],
-            budget: oco_shared_types::telemetry::BudgetSnapshot {
-                tokens_used: req
-                    .payload
-                    .get("tokens_used")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-                tokens_remaining: 0,
-                tool_calls_used: 0,
-                tool_calls_remaining: 0,
-                retrievals_used: 0,
-                verify_cycles_used: 0,
-                elapsed_secs: 0,
-            },
-        },
-        // Generic: wrap as a flat_step_completed with the phase info.
-        _ => DashboardEventKind::FlatStepCompleted {
-            step: 0,
-            action_type: req.event_type.clone(),
-            reason: req
-                .payload
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            duration_ms: 0,
-            budget_snapshot: oco_shared_types::telemetry::BudgetSnapshot {
-                tokens_used: 0,
-                tokens_remaining: 0,
-                tool_calls_used: 0,
-                tool_calls_remaining: 0,
-                retrievals_used: 0,
-                verify_cycles_used: 0,
-                elapsed_secs: 0,
-            },
-        },
-    };
 
     state
         .session_manager

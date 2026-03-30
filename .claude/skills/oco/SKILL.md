@@ -78,35 +78,52 @@ Analyze the user's request and route:
 
 ## Step 4: Plan + Implement
 
-### 4a. Plan
-```
-oco.emit_phase({ session_id: "<id>", phase: "planning", detail: "<N files to create/modify>" })
-```
+### 4a. Plan — MUST include steps array
 
-Break the task into ordered sub-tasks:
-1. List files to create/modify and in what order
-2. Identify dependencies between steps
-3. Estimate scope
-
-### 4b. Execute
+**CRITICAL**: Pass a `steps` array so the PlanMap visualization populates.
+Each step needs a `name` and `description`. The bridge generates UUIDs and wires them into `plan_generated`.
 
 ```
-oco.emit_phase({ session_id: "<id>", phase: "executing", detail: "Step 1: <description>" })
+oco.emit_phase({
+  session_id: "<id>",
+  phase: "planning",
+  detail: "7 steps — 30+ files to create",
+  steps: [
+    { name: "Root config", description: "package.json, turbo.json, tsconfig, .gitignore" },
+    { name: "Shared schemas", description: "packages/shared — Zod schemas + types" },
+    { name: "API backend", description: "apps/api — Fastify + JWT + Drizzle" },
+    { name: "Web frontend", description: "apps/web — Svelte 5 + TanStack Query" },
+    { name: "Docker Compose", description: "PostgreSQL dev environment" },
+    { name: "CI pipeline", description: "GitHub Actions — build, lint, test, e2e" },
+    { name: "E2E tests", description: "Playwright end-to-end tests" }
+  ]
+})
 ```
 
-For each step:
-1. Read target files before editing
-2. Make changes using Edit/Write tools
-3. Update the dashboard detail as you progress:
-   ```
-   oco.emit_phase({ session_id: "<id>", phase: "executing", detail: "Step N: <current step>" })
-   ```
+The dashboard will show each step as a node in the PlanMap.
+
+### 4b. Execute — MUST pass step_id for each step
+
+For each step, pass the `step_id` (from the steps array returned by planning) to highlight it in PlanMap:
+
+```
+oco.emit_phase({ session_id: "<id>", phase: "executing", step_id: "<step_id>", detail: "Creating root config files" })
+```
+
+Then do the actual work (Edit/Write tools). When moving to the next step, call emit_phase again with the new step_id — the previous step auto-completes.
+
+**Pattern for each step:**
+1. Call `oco.emit_phase({ phase: "executing", step_id: "<id>" })` — marks step as running in PlanMap
+2. Do the work (Edit/Write/Bash)
+3. Move to next step (previous auto-completes)
 
 ### 4c. Verify
 
 ```
 oco.emit_phase({ session_id: "<id>", phase: "verifying" })
 ```
+
+This auto-completes any running step and updates the stepper.
 
 Run the verification sequence:
 - **Delegate to `/oco-verify-fix`** if available
