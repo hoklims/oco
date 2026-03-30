@@ -93,6 +93,50 @@ pub fn handle_tools_list(id: serde_json::Value) -> JsonRpcResponse {
                 "required": ["query"]
             }),
         },
+        McpTool {
+            name: "oco_routes".into(),
+            description: "Trace the call chain (callers and callees) for a symbol. Returns transitive callers and callees up to a configurable depth.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "The function/method name to trace"
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["callers", "callees", "both"],
+                        "description": "Direction of traversal",
+                        "default": "both"
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum traversal depth",
+                        "default": 5
+                    }
+                },
+                "required": ["symbol"]
+            }),
+        },
+        McpTool {
+            name: "oco_impact".into(),
+            description: "Analyze the impact of changing a symbol. Returns all transitive callers (what breaks if this changes) and callees (what this depends on).".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "The function/method name to analyze impact for"
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum traversal depth",
+                        "default": 5
+                    }
+                },
+                "required": ["symbol"]
+            }),
+        },
     ];
 
     JsonRpcResponse::success(id, json!({ "tools": tools }))
@@ -198,6 +242,62 @@ pub fn handle_tool_call(
                     "evidence": [],
                     "risks": ["Workspace may not be indexed — run `oco index .` first"],
                     "next_step": format!("Run `oco search \"{query}\" --workspace .` via CLI, or use `oco serve` for HTTP search"),
+                    "confidence": 0.1
+                }),
+            )
+        }
+        "oco_routes" => {
+            let symbol = _arguments
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if symbol.is_empty() {
+                return structured_response(
+                    id,
+                    json!({
+                        "summary": "Empty symbol name",
+                        "evidence": [],
+                        "risks": ["No symbol provided"],
+                        "next_step": "Provide a function/method name to trace",
+                        "confidence": 0.0
+                    }),
+                );
+            }
+            structured_response(
+                id,
+                json!({
+                    "summary": format!("Route analysis for \"{symbol}\" requires indexed workspace"),
+                    "evidence": [],
+                    "risks": ["Workspace may not be indexed — run `oco index .` first"],
+                    "next_step": format!("Index the workspace first, then query routes for \"{symbol}\""),
+                    "confidence": 0.1
+                }),
+            )
+        }
+        "oco_impact" => {
+            let symbol = _arguments
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if symbol.is_empty() {
+                return structured_response(
+                    id,
+                    json!({
+                        "summary": "Empty symbol name",
+                        "evidence": [],
+                        "risks": ["No symbol provided"],
+                        "next_step": "Provide a function/method name to analyze impact for",
+                        "confidence": 0.0
+                    }),
+                );
+            }
+            structured_response(
+                id,
+                json!({
+                    "summary": format!("Impact analysis for \"{symbol}\" requires indexed workspace"),
+                    "evidence": [],
+                    "risks": ["Workspace may not be indexed — run `oco index .` first"],
+                    "next_step": format!("Index the workspace first, then run impact analysis for \"{symbol}\""),
                     "confidence": 0.1
                 }),
             )

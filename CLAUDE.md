@@ -4,7 +4,7 @@
 
 ```bash
 cargo build                              # Build all crates
-cargo test                               # Run full test suite (487+ tests)
+cargo test                               # Run full test suite (502+ tests)
 cargo run -p oco-dev-cli -- --help       # CLI help
 
 oco index ./path                         # Index a workspace
@@ -36,15 +36,15 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 | 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase** |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
-| 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer |
-| 5 | `retrieval` | SQLite FTS5 (Mutex\<Connection\> for Send+Sync), in-memory vector search, hybrid RRF ranking |
+| 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer, **call graph extraction** (CallEdge) |
+| 5 | `retrieval` | SQLite FTS5 (Mutex\<Connection\> for Send+Sync), in-memory vector search, hybrid RRF ranking, **call graph storage & BFS traversal** (CallGraphIndex) |
 | 6 | `tool-runtime` | Shell/file executors, observation normalizer |
 | 7 | `verifier` | Test/build/lint/typecheck runners with auto-detection |
 | 8 | `telemetry` | Tracing init, decision trace collector, event recording |
 | 9 | `context-engine` | Context assembly, dedup, compression, staleness decay, category budgets, **step-scoped filtering** |
 | 10 | **`planner`** | **Task decomposition: DirectPlanner (Trivial/Low) + LlmPlanner (Medium+) → ExecutionPlan DAG** |
 | 11 | `orchestrator-core` | State machine, action loop, **GraphRunner (DAG execution)**, **LlmRouter (multi-model + effort)**, **AgentTeamsExecutor**, LLM providers, runtime, eval runner, repo profiles |
-| 12 | `mcp-server` | Axum HTTP + MCP server, session management, **HTTP hook endpoints** (Claude Code v2.1.63+) |
+| 12 | `mcp-server` | Axum HTTP + MCP server, session management, **HTTP hook endpoints** (Claude Code v2.1.63+), **oco_routes/oco_impact tools** |
 | 13 | `dev-cli` | CLI binary (index, search, run, serve, eval, doctor, runs) — event-driven UI with Terminal/JSONL/Quiet renderers |
 | — | `architecture-tests` | Architecture fitness tests — enforces crate dependency DAG, layer violations, foundation isolation |
 
@@ -135,16 +135,16 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (487+)
-cargo test -p oco-shared-types           # 175 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol
+cargo test                               # All tests (502+)
+cargo test -p oco-shared-types           # 188 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol
 cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
-cargo test -p oco-code-intel             #  29 tests — parser, indexer, language detection
-cargo test -p oco-retrieval              #   9 tests — FTS5, vector, hybrid ranking
+cargo test -p oco-code-intel             #  36 tests — parser, indexer, language detection, call graph extraction
+cargo test -p oco-retrieval              #  17 tests — FTS5, vector, hybrid ranking, call graph storage & BFS traversal
 cargo test -p oco-telemetry              #  13 tests — event recording, JSONL export, hook telemetry
 cargo test -p oco-planner               #  48 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, edge cases
-cargo test -p oco-orchestrator-core      #  62 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation
-cargo test -p oco-mcp-server             #  14 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management
+cargo test -p oco-orchestrator-core      #  60 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation
+cargo test -p oco-mcp-server             #  37 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools
 cargo test -p oco-verifier               #  32 tests — test/build/lint/typecheck runners, auto-detection
 cargo test -p oco-architecture-tests     #   4 tests — dependency DAG, layer violations, foundation isolation, coverage
 ```
@@ -192,7 +192,7 @@ From GPT-5.4 review of orchestration v2 — all resolved:
 
 This repo includes a `.claude/` directory with project-specific tooling:
 
-- **Skills** — `/oco-inspect-repo-area`, `/oco-investigate-bug`, `/oco-safe-refactor`, `/oco-trace-stack`, `/oco-verify-fix`
+- **Skills** — `/oco` (meta-skill orchestrator), `/oco-inspect-repo-area`, `/oco-investigate-bug`, `/oco-safe-refactor`, `/oco-trace-stack`, `/oco-verify-fix`
 - **Agents** — `codebase-investigator`, `patch-verifier`, `refactor-reviewer`
 - **MCP bridge** — Exposes OCO tools (search, trace, verify, findings) as MCP resources
 - **Hooks** — Pre/post tool-use validation, session init, stop handlers

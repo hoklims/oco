@@ -57,9 +57,7 @@ impl McpServer {
 
     /// Bind, build the app, and return the listener + app without serving.
     /// The caller can inspect the bound address before starting.
-    pub async fn bind(
-        self,
-    ) -> Result<(tokio::net::TcpListener, axum::Router)> {
+    pub async fn bind(self) -> Result<(tokio::net::TcpListener, axum::Router)> {
         let addr = format!("{}:{}", self.config.bind_address, self.config.port);
 
         let session_manager = Arc::new(SessionManager::new(self.config.clone(), self.llm));

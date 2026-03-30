@@ -27,7 +27,7 @@ pub use error::OrchestratorError;
 pub use graph_runner::GraphRunner;
 pub use llm::RetryingLlmProvider;
 pub use llm_router::LlmRouter;
-pub use replay::{LoadedTrace, ReplayControls, ReplayRegistry, ReplaySession};
 pub use loop_runner::OrchestrationLoop;
+pub use replay::{LoadedTrace, ReplayControls, ReplayRegistry, ReplaySession};
 pub use runtime::OrchestratorRuntime;
 pub use state::OrchestrationState;

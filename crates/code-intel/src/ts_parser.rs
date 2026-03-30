@@ -9,7 +9,7 @@ use tree_sitter::{Language, Node, Parser, Tree};
 
 use crate::error::CodeIntelError;
 use crate::parser::{CodeParser, ParsedFile};
-use crate::symbols::{ImportInfo, SymbolInfo, SymbolKind};
+use crate::symbols::{CallEdge, CallEdgeKind, ImportInfo, SymbolInfo, SymbolKind};
 
 /// AST-based parser backed by tree-sitter grammars.
 ///
@@ -73,12 +73,14 @@ impl CodeParser for TreeSitterParser {
 
         let tree = self.parse_tree(source, lang)?;
         let (symbols, imports) = extractor(&tree, source);
+        let calls = extract_calls(&tree, source, &symbols);
 
         Ok(ParsedFile {
             path: String::new(),
             language: language.to_string(),
             symbols,
             imports,
+            calls,
             line_count: source.lines().count() as u32,
         })
     }
@@ -138,6 +140,149 @@ where
 fn first_line_signature(node: Node, source: &[u8]) -> Option<String> {
     let text = node_text(node, source);
     text.lines().next().map(|l| l.trim().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Call edge extraction (language-agnostic)
+// ---------------------------------------------------------------------------
+
+/// Extract call edges from a parsed tree by walking all `call_expression` nodes
+/// and correlating them with the enclosing function/method from `symbols`.
+///
+/// Works across all tree-sitter grammars because call nodes share common patterns:
+/// - Rust/Go/Java/Python: `call_expression` with `function` field
+/// - TypeScript/JavaScript: `call_expression` with `function` field
+/// - Method calls: `field_expression` / `member_expression` → method name
+fn extract_calls(tree: &Tree, source: &str, symbols: &[SymbolInfo]) -> Vec<CallEdge> {
+    let src = source.as_bytes();
+    let mut calls = Vec::new();
+
+    // Build a sorted list of function ranges for binary search of enclosing function
+    let mut func_ranges: Vec<(u32, u32, &str)> = symbols
+        .iter()
+        .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method))
+        .filter_map(|s| Some((s.line, s.end_line?, s.name.as_str())))
+        .collect();
+    func_ranges.sort_by_key(|&(start, _, _)| start);
+
+    walk_tree(tree.root_node(), &mut |node| {
+        let resolved = match node.kind() {
+            // Rust, Go, TS/JS: call_expression with `function` field
+            "call_expression" => node
+                .child_by_field_name("function")
+                .and_then(|func_node| resolve_callee(func_node, src)),
+            // Python: `call` node with `function` field
+            "call" => node
+                .child_by_field_name("function")
+                .and_then(|func_node| resolve_callee(func_node, src)),
+            // Java: method_invocation has `name` and optional `object` fields
+            "method_invocation" => node.child_by_field_name("name").map(|n| {
+                let has_object = node.child_by_field_name("object").is_some();
+                let kind = if has_object {
+                    CallEdgeKind::Member
+                } else {
+                    CallEdgeKind::Direct
+                };
+                (node_text(n, src).to_string(), kind)
+            }),
+            _ => None,
+        };
+
+        let Some((callee, kind)) = resolved else {
+            return;
+        };
+        if callee.is_empty() {
+            return;
+        }
+
+        let confidence = match kind {
+            CallEdgeKind::Direct => 1.0,
+            CallEdgeKind::Member => 0.9,
+            CallEdgeKind::Scoped => 0.85,
+            CallEdgeKind::DynamicGuess => 0.5,
+        };
+
+        let call_line = start_line(node);
+        let call_col = node.start_position().column as u32 + 1;
+
+        // Find the enclosing function by line range
+        let caller = find_enclosing_function(&func_ranges, call_line)
+            .unwrap_or("<module>")
+            .to_string();
+
+        calls.push(CallEdge {
+            caller,
+            callee,
+            line: call_line,
+            col: call_col,
+            kind,
+            confidence,
+        });
+    });
+
+    calls
+}
+
+/// Resolve the callee name and edge kind from a function node in a call expression.
+///
+/// Returns `(callee_name, CallEdgeKind)`:
+/// - Simple calls: `foo()` → ("foo", Direct)
+/// - Method calls: `obj.method()` → ("method", Member)
+/// - Scoped calls: `module::func()` → ("func", Scoped)
+/// - Fallback: full text → (text, DynamicGuess)
+fn resolve_callee(node: Node, source: &[u8]) -> Option<(String, CallEdgeKind)> {
+    match node.kind() {
+        // Direct identifier: foo()
+        "identifier" | "type_identifier" => {
+            Some((node_text(node, source).to_string(), CallEdgeKind::Direct))
+        }
+        // Rust: self.method() or obj.method() → field_expression
+        "field_expression" => node
+            .child_by_field_name("field")
+            .map(|n| (node_text(n, source).to_string(), CallEdgeKind::Member)),
+        // TS/JS/Python: obj.method() → member_expression
+        "member_expression" => node
+            .child_by_field_name("property")
+            .map(|n| (node_text(n, source).to_string(), CallEdgeKind::Member)),
+        // Python: attribute → obj.method
+        "attribute" => node
+            .child_by_field_name("attribute")
+            .map(|n| (node_text(n, source).to_string(), CallEdgeKind::Member)),
+        // Rust: path::func() → scoped_identifier
+        "scoped_identifier" => node
+            .child_by_field_name("name")
+            .map(|n| (node_text(n, source).to_string(), CallEdgeKind::Scoped)),
+        // Go: pkg.Func() → selector_expression
+        "selector_expression" => node
+            .child_by_field_name("field")
+            .map(|n| (node_text(n, source).to_string(), CallEdgeKind::Scoped)),
+        // Fallback: take the full text — low confidence
+        _ => {
+            let text = node_text(node, source).trim().to_string();
+            if text.len() <= 80 && !text.contains('\n') {
+                Some((text, CallEdgeKind::DynamicGuess))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Find the innermost enclosing function for a given line number using binary search.
+fn find_enclosing_function<'a>(func_ranges: &[(u32, u32, &'a str)], line: u32) -> Option<&'a str> {
+    // Find the best (innermost) match — last function whose start ≤ line and end ≥ line
+    let mut best: Option<&str> = None;
+    let mut best_start = 0;
+    for &(start, end, name) in func_ranges {
+        if start <= line && end >= line && start >= best_start {
+            best = Some(name);
+            best_start = start;
+        }
+        if start > line {
+            break; // sorted, no more candidates
+        }
+    }
+    best
 }
 
 // ---------------------------------------------------------------------------
@@ -1234,5 +1379,208 @@ public enum Color { RED, GREEN, BLUE }
         let sym = &result.symbols[0];
         assert_eq!(sym.line, 1);
         assert_eq!(sym.end_line, Some(6));
+    }
+
+    // -- Call graph extraction --
+
+    #[test]
+    fn rust_call_edges() {
+        let source = r#"
+fn helper() -> i32 {
+    42
+}
+
+pub fn main() {
+    let x = helper();
+    println!("value: {x}");
+}
+"#;
+        let result = ts_parser().parse(source, "rust").unwrap();
+        assert!(!result.calls.is_empty(), "should extract call edges");
+
+        let helper_call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "helper")
+            .expect("should find call to helper");
+        assert_eq!(helper_call.caller, "main");
+    }
+
+    #[test]
+    fn rust_method_call_edges() {
+        let source = r#"
+struct Server;
+
+impl Server {
+    fn start(&self) {
+        self.init();
+    }
+
+    fn init(&self) {}
+}
+
+fn run() {
+    let s = Server;
+    s.start();
+}
+"#;
+        let result = ts_parser().parse(source, "rust").unwrap();
+
+        let init_call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "init")
+            .expect("should find call to init");
+        assert_eq!(init_call.caller, "start");
+        assert_eq!(init_call.kind, CallEdgeKind::Member); // self.init()
+        assert!(init_call.confidence > 0.8);
+
+        let start_call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "start")
+            .expect("should find call to start");
+        assert_eq!(start_call.caller, "run");
+        assert_eq!(start_call.kind, CallEdgeKind::Member); // s.start()
+        assert!(start_call.confidence > 0.8);
+    }
+
+    #[test]
+    fn python_call_edges() {
+        let source = r#"
+def helper():
+    return 42
+
+def main():
+    x = helper()
+    print(x)
+"#;
+        let result = ts_parser().parse(source, "python").unwrap();
+
+        let helper_call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "helper")
+            .expect("should find call to helper");
+        assert_eq!(helper_call.caller, "main");
+    }
+
+    #[test]
+    fn typescript_call_edges() {
+        let source = r#"
+function greet(name: string): string {
+    return format(name);
+}
+
+function format(s: string): string {
+    return s.toUpperCase();
+}
+"#;
+        let result = ts_parser().parse(source, "typescript").unwrap();
+
+        let format_call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "format")
+            .expect("should find call to format");
+        assert_eq!(format_call.caller, "greet");
+    }
+
+    #[test]
+    fn go_call_edges() {
+        let source = r#"
+package main
+
+import "fmt"
+
+func helper() int {
+    return 42
+}
+
+func main() {
+    x := helper()
+    fmt.Println(x)
+}
+"#;
+        let result = ts_parser().parse(source, "go").unwrap();
+
+        let helper_call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "helper")
+            .expect("should find call to helper");
+        assert_eq!(helper_call.caller, "main");
+
+        // fmt.Println → callee should be "Println"
+        let println_call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "Println")
+            .expect("should find call to Println");
+        assert_eq!(println_call.caller, "main");
+    }
+
+    #[test]
+    fn calls_outside_function_are_module_level() {
+        let source = r#"
+fn setup() {}
+
+setup();
+
+fn main() {
+    setup();
+}
+"#;
+        let result = ts_parser().parse(source, "rust").unwrap();
+
+        let module_call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "setup" && c.caller == "<module>");
+        let fn_call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "setup" && c.caller == "main");
+
+        assert!(module_call.is_some(), "should have module-level call");
+        assert!(fn_call.is_some(), "should have call inside main");
+    }
+
+    #[test]
+    fn scoped_rust_call() {
+        let source = r#"
+fn main() {
+    let map = std::collections::HashMap::new();
+}
+"#;
+        let result = ts_parser().parse(source, "rust").unwrap();
+
+        let new_call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "new")
+            .expect("should find call to new via scoped path");
+        assert_eq!(new_call.caller, "main");
+        assert_eq!(new_call.kind, CallEdgeKind::Scoped); // std::collections::HashMap::new()
+        assert!((new_call.confidence - 0.85).abs() < 0.01);
+    }
+
+    #[test]
+    fn edge_kind_direct_for_simple_call() {
+        let source = r#"
+fn helper() -> i32 { 42 }
+
+fn main() {
+    helper();
+}
+"#;
+        let result = ts_parser().parse(source, "rust").unwrap();
+        let call = result
+            .calls
+            .iter()
+            .find(|c| c.callee == "helper")
+            .expect("should find direct call");
+        assert_eq!(call.kind, CallEdgeKind::Direct);
+        assert!((call.confidence - 1.0).abs() < 0.01);
     }
 }

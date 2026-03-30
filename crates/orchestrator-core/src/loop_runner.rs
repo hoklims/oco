@@ -95,9 +95,11 @@ impl oco_planner::LlmCallFn for LlmProviderCallFn {
             system_prompt: Some(system_prompt.to_string()),
             effort_override: None,
         };
-        let response = self.provider.complete(request).await.map_err(|e| {
-            oco_planner::PlannerError::LlmError(e.to_string())
-        })?;
+        let response = self
+            .provider
+            .complete(request)
+            .await
+            .map_err(|e| oco_planner::PlannerError::LlmError(e.to_string()))?;
         let tokens = (response.input_tokens + response.output_tokens) as u64;
         Ok((response.content, tokens))
     }
@@ -278,6 +280,14 @@ impl OrchestrationLoop {
             max_tool_calls = state.session.budget.max_tool_calls,
             "Starting orchestration with task-adapted budget"
         );
+
+        // Emit RunStarted so the dashboard can show the mission immediately.
+        self.emit_event(OrchestrationEvent::RunStarted {
+            provider: self.llm.provider_name().to_string(),
+            model: self.llm.model_name().to_string(),
+            request_summary: user_request.clone(),
+            complexity: format!("{:?}", state.task_complexity),
+        });
 
         // v2 routing: Medium+ tasks go through the plan engine.
         if matches!(
@@ -879,8 +889,18 @@ impl OrchestrationLoop {
                             .map(|c| oco_shared_types::telemetry::PlanCandidateSummary {
                                 strategy: c.strategy.clone(),
                                 step_count: c.plan.steps.len(),
-                                estimated_tokens: c.plan.steps.iter().map(|s| s.estimated_tokens as u64).sum(),
-                                verify_count: c.plan.steps.iter().filter(|s| s.verify_after).count(),
+                                estimated_tokens: c
+                                    .plan
+                                    .steps
+                                    .iter()
+                                    .map(|s| s.estimated_tokens as u64)
+                                    .sum(),
+                                verify_count: c
+                                    .plan
+                                    .steps
+                                    .iter()
+                                    .filter(|s| s.verify_after)
+                                    .count(),
                                 parallel_groups: c.plan.parallel_groups().len(),
                                 score: c.score,
                                 winner: c.winner,
@@ -918,14 +938,15 @@ impl OrchestrationLoop {
         });
 
         // Build a planner for replans (GraphRunner needs it)
-        let replan_planner: Arc<dyn oco_planner::Planner> = if DirectPlanner::should_handle(complexity) {
-            Arc::new(DirectPlanner)
-        } else {
-            let llm_call = Box::new(LlmProviderCallFn {
-                provider: self.llm.clone(),
-            });
-            Arc::new(LlmPlanner::new(llm_call))
-        };
+        let replan_planner: Arc<dyn oco_planner::Planner> =
+            if DirectPlanner::should_handle(complexity) {
+                Arc::new(DirectPlanner)
+            } else {
+                let llm_call = Box::new(LlmProviderCallFn {
+                    provider: self.llm.clone(),
+                });
+                Arc::new(LlmPlanner::new(llm_call))
+            };
 
         let event_tx = self.event_tx.clone();
         let budget = state.session.budget.max_total_tokens;

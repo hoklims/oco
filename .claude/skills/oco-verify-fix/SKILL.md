@@ -58,7 +58,31 @@ For each step, report:
 - Status: pass / fail / skip (not available)
 - Output summary (compact, not raw dump)
 
-## Step 4: Assess Results
+## Step 4: Assess Results and Impact Coverage
+
+### 4a. Check impact coverage (if call graph is available)
+
+For each modified function/method, check whether its callers are covered by tests:
+
+- **If `oco_impact` MCP tool is available**:
+  ```
+  oco_impact({ symbol: "<modified_function>", max_depth: 2 })
+  ```
+  Check: are the transitive callers exercised by the test suite?
+
+- **If `oco_routes` MCP tool is available**:
+  ```
+  oco_routes({ symbol: "<modified_function>", direction: "callers", max_depth: 2 })
+  ```
+
+- **If yoyo MCP is available**:
+  ```
+  yoyo.impact({ symbol: "<modified_function>" })
+  ```
+
+Flag any caller that is NOT covered by existing tests as a potential regression blind spot.
+
+### 4b. Produce verdict
 
 Produce a verification verdict:
 
@@ -68,6 +92,7 @@ VERDICT: PASS | FAIL | PARTIAL
 - Types: [pass/fail/skip]
 - Lint:  [pass/fail/skip]
 - Tests: [pass/fail/skip]
+- Impact coverage: [covered / gaps detected / skip (no call graph)]
 - Missing coverage: [description if applicable]
 ```
 

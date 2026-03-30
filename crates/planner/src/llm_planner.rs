@@ -217,7 +217,8 @@ impl LlmPlanner {
         let max_tokens = context.planning_token_budget();
 
         let user_speed = prompt::user_message_with_bias(request, context, prompt::PlanBias::Speed);
-        let user_safety = prompt::user_message_with_bias(request, context, prompt::PlanBias::Safety);
+        let user_safety =
+            prompt::user_message_with_bias(request, context, prompt::PlanBias::Safety);
 
         debug!("launching 2 competitive plan candidates (speed vs safety)");
 
@@ -303,9 +304,8 @@ impl LlmPlanner {
 
         let model = "llm".to_string();
         let mut plan = ExecutionPlan::new(steps, PlanStrategy::Generated { model, tokens_used });
-        plan.validate().map_err(|e| {
-            PlannerError::ValidationError(format!("invalid DAG: {e}"))
-        })?;
+        plan.validate()
+            .map_err(|e| PlannerError::ValidationError(format!("invalid DAG: {e}")))?;
         plan.check_step_limit(context.task_complexity)
             .map_err(|e| PlannerError::ValidationError(format!("step limit: {e}")))?;
         plan.team = Self::generate_team(&plan, context);
@@ -325,10 +325,18 @@ fn score_plan(plan: &ExecutionPlan, context: &PlanningContext) -> f64 {
     let budget = context.budget.max_total_tokens as f64;
 
     // Verify coverage ratio (0-1): higher = more verification = safer
-    let verify_ratio = if step_count > 0.0 { verify_count / step_count } else { 0.0 };
+    let verify_ratio = if step_count > 0.0 {
+        verify_count / step_count
+    } else {
+        0.0
+    };
 
     // Parallelism ratio: fewer groups relative to steps = more parallelism
-    let parallel_ratio = if step_count > 1.0 { 1.0 - (parallel_groups / step_count) } else { 0.0 };
+    let parallel_ratio = if step_count > 1.0 {
+        1.0 - (parallel_groups / step_count)
+    } else {
+        0.0
+    };
 
     // Cost efficiency: lower token estimate relative to budget = better
     let cost_ratio = 1.0 - (total_tokens as f64 / budget).min(1.0);
@@ -341,7 +349,7 @@ fn score_plan(plan: &ExecutionPlan, context: &PlanningContext) -> f64 {
         + cost_ratio * 0.25              // token efficiency
         + parallel_ratio * 0.20          // parallelism
         + depth_ratio * 0.15             // shallow plans execute faster
-        + (1.0 / step_count.max(1.0)) * 0.05;  // slight preference for simplicity
+        + (1.0 / step_count.max(1.0)) * 0.05; // slight preference for simplicity
 
     score.clamp(0.0, 1.0)
 }

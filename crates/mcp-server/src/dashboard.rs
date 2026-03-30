@@ -11,12 +11,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
-    Json,
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
-    Router,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -79,6 +78,9 @@ pub fn dashboard_router() -> Router<Arc<AppState>> {
     Router::new()
         // Run history (scans .oco/runs/ on disk)
         .route("/runs", get(list_runs))
+        // Live session streaming
+        .route("/sessions", get(list_live_sessions))
+        .route("/sessions/{session_id}/stream", get(live_session_stream))
         // Replay CRUD + control
         .route("/replays", post(create_replay).get(list_replays))
         .route("/replays/{replay_id}/stream", get(replay_stream))
@@ -126,9 +128,7 @@ fn default_limit() -> usize {
 // ── Handlers ─────────────────────────────────────────────────
 
 /// `GET /api/v1/dashboard/runs` — list recent runs from disk.
-async fn list_runs(
-    Query(query): Query<RunsQuery>,
-) -> Json<Vec<RunSummary>> {
+async fn list_runs(Query(query): Query<RunsQuery>) -> Json<Vec<RunSummary>> {
     // Try the provided workspace, then CWD.
     let workspace = std::path::Path::new(&query.workspace);
     let workspace = if workspace.join(".oco").exists() {
@@ -216,9 +216,7 @@ async fn create_replay(
 }
 
 /// `GET /api/v1/dashboard/replays` — list active replays.
-async fn list_replays(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<ReplayListItem>> {
+async fn list_replays(State(state): State<Arc<AppState>>) -> Json<Vec<ReplayListItem>> {
     let mut items = Vec::new();
     for id in state.replay_registry.list().await {
         if let Some(session) = state.replay_registry.get(&id).await {
@@ -376,6 +374,126 @@ async fn delete_replay(
     let id = parse_uuid(&replay_id)?;
     state.replay_registry.remove(&id).await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── Live session endpoints ───────────────────────────────────
+
+/// Serializable info about a live session.
+#[derive(Debug, Serialize)]
+pub struct LiveSessionItem {
+    pub session_id: String,
+    pub user_request: String,
+    pub status: String,
+    pub event_count: usize,
+}
+
+/// `GET /api/v1/dashboard/sessions` — list active sessions for the lobby.
+async fn list_live_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<LiveSessionItem>> {
+    let sessions = state.session_manager.list_sessions().await;
+    let items: Vec<LiveSessionItem> = sessions
+        .into_iter()
+        .map(|s| LiveSessionItem {
+            session_id: s.id,
+            user_request: s.user_request,
+            status: s.status,
+            event_count: 0, // Could be enriched later
+        })
+        .collect();
+    Json(items)
+}
+
+/// `GET /api/v1/dashboard/sessions/{session_id}/stream` — live SSE stream.
+///
+/// Same contract as the replay stream: cursor-based reconnect via
+/// `?after_seq=N`, heartbeat keepalive, `finished` event on completion.
+async fn live_session_stream(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Query(query): Query<StreamQuery>,
+    headers: axum::http::HeaderMap,
+) -> Result<
+    Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>,
+    (StatusCode, Json<serde_json::Value>),
+> {
+    // Resolve session ID (supports both OCO UUID and external session ID).
+    let resolved_id = state
+        .session_manager
+        .resolve_session_id(&session_id)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": format!("session not found: {session_id}") })),
+            )
+        })?;
+
+    let (catchup_events, mut rx) = state
+        .session_manager
+        .subscribe_dashboard(&resolved_id)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "session not found" })),
+            )
+        })?;
+
+    // Determine cursor: prefer query param, then Last-Event-ID header.
+    let after_seq = query.after_seq.or_else(|| {
+        headers
+            .get("last-event-id")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+    });
+
+    // Filter catch-up events by cursor.
+    let catchup: Vec<DashboardEvent> = if let Some(seq) = after_seq {
+        catchup_events.into_iter().filter(|e| e.seq > seq).collect()
+    } else {
+        catchup_events
+    };
+
+    let stream = async_stream::stream! {
+        // Phase 1: catch-up events.
+        for event in catchup {
+            let json = serde_json::to_string(&event).unwrap_or_default();
+            yield Ok(Event::default()
+                .event(event_type_name(&event.kind))
+                .id(event.seq.to_string())
+                .data(json));
+        }
+
+        // Phase 2: live broadcast events.
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let json = serde_json::to_string(&event).unwrap_or_default();
+                    yield Ok(Event::default()
+                        .event(event_type_name(&event.kind))
+                        .id(event.seq.to_string())
+                        .data(json));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    yield Ok(Event::default()
+                        .event("lagged")
+                        .data(format!("{{\"skipped\": {n}}}")));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    // Session finished — the mpsc sender was dropped.
+                    yield Ok(Event::default()
+                        .event("finished")
+                        .data("{}"));
+                    break;
+                }
+            }
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("heartbeat"),
+    ))
 }
 
 // ── Helpers ──────────────────────────────────────────────────

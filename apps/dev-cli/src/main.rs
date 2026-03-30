@@ -262,8 +262,12 @@ async fn cmd_serve(r: &mut dyn Renderer, host: String, port: u16) -> Result<()> 
     let has_dashboard = if let Some(dir) = std::env::var("OCO_DASHBOARD_DIR")
         .ok()
         .map(PathBuf::from)
-        .or_else(|| dashboard_candidates.iter().find(|d| d.join("index.html").exists()).cloned())
-    {
+        .or_else(|| {
+            dashboard_candidates
+                .iter()
+                .find(|d| d.join("index.html").exists())
+                .cloned()
+        }) {
         server = server.with_dashboard_dir(dir);
         true
     } else {

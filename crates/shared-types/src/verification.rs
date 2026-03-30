@@ -87,24 +87,59 @@ pub struct TierSelector;
 
 /// Security-sensitive path patterns (substrings).
 const SECURITY_PATTERNS: &[&str] = &[
-    "auth", "credential", "secret", "oauth", "jwt", "token", "crypto",
-    "password", "permission", "rbac", "acl", "session", "cookie",
-    "csrf", "cors", "sanitiz", "encrypt", "decrypt", "cert",
+    "auth",
+    "credential",
+    "secret",
+    "oauth",
+    "jwt",
+    "token",
+    "crypto",
+    "password",
+    "permission",
+    "rbac",
+    "acl",
+    "session",
+    "cookie",
+    "csrf",
+    "cors",
+    "sanitiz",
+    "encrypt",
+    "decrypt",
+    "cert",
 ];
 
 /// Architectural / config patterns that warrant thorough verification.
 /// All patterns must be lowercase (compared against lowercased path).
 const ARCHITECTURE_PATTERNS: &[&str] = &[
-    "schema", "migrat", "proto", "config", "manifest",
-    "cargo.toml", "package.json", "pyproject.toml", "go.mod",
-    "dockerfile", "docker-compose", "ci", ".github/workflows",
-    ".gitlab-ci", "makefile", "build.rs",
+    "schema",
+    "migrat",
+    "proto",
+    "config",
+    "manifest",
+    "cargo.toml",
+    "package.json",
+    "pyproject.toml",
+    "go.mod",
+    "dockerfile",
+    "docker-compose",
+    "ci",
+    ".github/workflows",
+    ".gitlab-ci",
+    "makefile",
+    "build.rs",
 ];
 
 /// Light-tier patterns — docs, comments, cosmetic.
 const LIGHT_PATTERNS: &[&str] = &[
-    ".md", ".txt", ".rst", "README", "LICENSE", "CHANGELOG",
-    "CONTRIBUTING", ".gitignore", ".editorconfig",
+    ".md",
+    ".txt",
+    ".rst",
+    "README",
+    "LICENSE",
+    "CHANGELOG",
+    "CONTRIBUTING",
+    ".gitignore",
+    ".editorconfig",
 ];
 
 impl TierSelector {

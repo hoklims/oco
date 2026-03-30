@@ -12,6 +12,7 @@ export interface DashboardEvent {
 export type DashboardEventKind =
   | { type: 'run_started'; provider: string; model: string; request_summary: string }
   | { type: 'run_stopped'; reason: StopReason; total_steps: number; total_tokens: number }
+  | { type: 'plan_exploration'; candidates: PlanCandidateSummary[]; winner_strategy: string; winner_score: number }
   | { type: 'plan_generated'; plan_id: string; step_count: number; parallel_group_count: number; critical_path_length: number; estimated_total_tokens: number; strategy: string; team: TeamSummary | null; steps: StepSummary[] }
   | { type: 'step_started'; step_id: string; step_name: string; role: string; execution_mode: string }
   | { type: 'step_completed'; step_id: string; step_name: string; success: boolean; duration_ms: number; tokens_used: number; detail_ref: string | null }
@@ -23,6 +24,15 @@ export type DashboardEventKind =
   | { type: 'budget_snapshot' } & BudgetSnapshot
   | { type: 'index_progress'; files_done: number; symbols_so_far: number }
   | { type: 'heartbeat' }
+
+export interface PlanCandidateSummary {
+  strategy: string
+  step_count: number
+  estimated_tokens: number
+  score: number
+  strengths: string[]
+  weaknesses: string[]
+}
 
 export interface BudgetSnapshot {
   tokens_used: number

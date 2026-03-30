@@ -15,9 +15,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::telemetry::{
-    BudgetSnapshot, CheckResult, StepSummary, TeamSummary,
-};
+use crate::telemetry::{BudgetSnapshot, CheckResult, StepSummary, TeamSummary};
 use crate::{SessionId, StopReason};
 
 /// Current schema version. Bump on breaking changes to payload variants.
@@ -169,10 +167,7 @@ pub enum DashboardEventKind {
 
     // ── Budget ───────────────────────────────────────────────
     /// Budget crossed a warning threshold.
-    BudgetWarning {
-        resource: String,
-        utilization: f64,
-    },
+    BudgetWarning { resource: String, utilization: f64 },
 
     /// Full budget snapshot (emitted periodically or on request).
     BudgetSnapshot(BudgetSnapshot),
@@ -224,6 +219,16 @@ impl DashboardEventKind {
     /// `OrchestrationEvent` for dashboard/UI purposes.
     pub fn from_orchestration_event(event: &OrchestrationEvent) -> Self {
         match event {
+            OrchestrationEvent::RunStarted {
+                provider,
+                model,
+                request_summary,
+                ..
+            } => DashboardEventKind::RunStarted {
+                provider: provider.clone(),
+                model: model.clone(),
+                request_summary: request_summary.clone(),
+            },
             OrchestrationEvent::StepCompleted {
                 step,
                 action,
@@ -565,7 +570,10 @@ mod tests {
             knowledge_confidence: 0.9,
             success: true,
         });
-        assert!(matches!(event.kind, DashboardEventKind::FlatStepCompleted { step: 1, .. }));
+        assert!(matches!(
+            event.kind,
+            DashboardEventKind::FlatStepCompleted { step: 1, .. }
+        ));
     }
 
     #[test]
@@ -574,51 +582,93 @@ mod tests {
 
         // Verify every variant converts without panic.
         let events = vec![
+            OrchestrationEvent::RunStarted {
+                provider: "stub".into(),
+                model: "stub-dev".into(),
+                request_summary: "test task".into(),
+                complexity: "Medium".into(),
+            },
             OrchestrationEvent::StepCompleted {
                 step: 0,
-                action: crate::OrchestratorAction::Stop { reason: StopReason::TaskComplete },
+                action: crate::OrchestratorAction::Stop {
+                    reason: StopReason::TaskComplete,
+                },
                 reason: "r".into(),
                 duration_ms: 0,
                 budget_snapshot: crate::telemetry::BudgetSnapshot {
-                    tokens_used: 0, tokens_remaining: 0, tool_calls_used: 0,
-                    tool_calls_remaining: 0, retrievals_used: 0, verify_cycles_used: 0,
+                    tokens_used: 0,
+                    tokens_remaining: 0,
+                    tool_calls_used: 0,
+                    tool_calls_remaining: 0,
+                    retrievals_used: 0,
+                    verify_cycles_used: 0,
                     elapsed_secs: 0,
                 },
                 knowledge_confidence: 0.0,
                 success: true,
             },
             OrchestrationEvent::PlanGenerated {
-                plan_id: Uuid::nil(), step_count: 0, parallel_group_count: 0,
-                critical_path_length: 0, estimated_total_tokens: 0,
-                strategy: "s".into(), team: None, steps: vec![],
+                plan_id: Uuid::nil(),
+                step_count: 0,
+                parallel_group_count: 0,
+                critical_path_length: 0,
+                estimated_total_tokens: 0,
+                strategy: "s".into(),
+                team: None,
+                steps: vec![],
             },
             OrchestrationEvent::PlanStepStarted {
-                step_id: Uuid::nil(), step_name: "s".into(),
-                role: "r".into(), execution_mode: "e".into(),
+                step_id: Uuid::nil(),
+                step_name: "s".into(),
+                role: "r".into(),
+                execution_mode: "e".into(),
             },
             OrchestrationEvent::PlanStepCompleted {
-                step_id: Uuid::nil(), step_name: "s".into(),
-                success: true, duration_ms: 0, tokens_used: 0,
+                step_id: Uuid::nil(),
+                step_name: "s".into(),
+                success: true,
+                duration_ms: 0,
+                tokens_used: 0,
             },
             OrchestrationEvent::PlanProgress {
-                completed: 0, total: 0, active_steps: vec![], budget_used_pct: 0.0,
+                completed: 0,
+                total: 0,
+                active_steps: vec![],
+                budget_used_pct: 0.0,
             },
             OrchestrationEvent::VerifyGateResult {
-                step_id: Uuid::nil(), step_name: "s".into(),
-                checks: vec![], overall_passed: true, replan_triggered: false,
+                step_id: Uuid::nil(),
+                step_name: "s".into(),
+                checks: vec![],
+                overall_passed: true,
+                replan_triggered: false,
             },
             OrchestrationEvent::ReplanTriggered {
-                failed_step_name: "s".into(), attempt: 1, max_attempts: 3,
-                steps_preserved: 0, steps_removed: 0, steps_added: 0,
+                failed_step_name: "s".into(),
+                attempt: 1,
+                max_attempts: 3,
+                steps_preserved: 0,
+                steps_removed: 0,
+                steps_added: 0,
             },
-            OrchestrationEvent::BudgetWarning { resource: "r".into(), utilization: 0.0 },
+            OrchestrationEvent::BudgetWarning {
+                resource: "r".into(),
+                utilization: 0.0,
+            },
             OrchestrationEvent::Stopped {
-                reason: StopReason::TaskComplete, total_steps: 0, total_tokens: 0,
+                reason: StopReason::TaskComplete,
+                total_steps: 0,
+                total_tokens: 0,
             },
             OrchestrationEvent::PlanExploration {
-                candidates: vec![], winner_strategy: "speed".into(), winner_score: 0.8,
+                candidates: vec![],
+                winner_strategy: "speed".into(),
+                winner_score: 0.8,
             },
-            OrchestrationEvent::IndexProgress { files_done: 0, symbols_so_far: 0 },
+            OrchestrationEvent::IndexProgress {
+                files_done: 0,
+                symbols_so_far: 0,
+            },
         ];
 
         for (i, e) in events.iter().enumerate() {

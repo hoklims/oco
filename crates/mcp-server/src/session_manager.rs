@@ -5,14 +5,15 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::Serialize;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, broadcast, watch};
 use tracing::{error, info};
 
 use oco_orchestrator_core::graph_runner::CancellationToken;
 use oco_orchestrator_core::llm::{LlmProvider, StubLlmProvider};
 use oco_orchestrator_core::state::OrchestrationState;
 use oco_orchestrator_core::{OrchestrationLoop, OrchestratorConfig};
-use oco_shared_types::{DecisionTrace, SessionStatus};
+use oco_shared_types::dashboard::{DashboardEvent, EventStream};
+use oco_shared_types::{DecisionTrace, SessionId, SessionStatus};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -62,6 +63,9 @@ pub struct HookEvent {
 /// Maximum hook events retained per session.
 const MAX_HOOK_EVENTS: usize = 1000;
 
+/// Broadcast channel capacity for live dashboard events.
+const LIVE_BROADCAST_CAPACITY: usize = 256;
+
 /// Internal state held per session.
 pub struct SessionState {
     pub orchestration_state: Option<OrchestrationState>,
@@ -77,6 +81,10 @@ pub struct SessionState {
     pub external_session_id: Option<String>,
     /// Hook events received during this session (bounded, append-only).
     pub hook_events: Vec<HookEvent>,
+    /// Broadcast channel for live dashboard events (SSE consumers subscribe here).
+    pub dashboard_tx: broadcast::Sender<DashboardEvent>,
+    /// Accumulated dashboard events for catch-up on late subscribers.
+    pub dashboard_events: Vec<DashboardEvent>,
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +148,8 @@ impl SessionManager {
 
         let cancel = CancellationToken::new();
 
+        let (dashboard_tx, _) = broadcast::channel(LIVE_BROADCAST_CAPACITY);
+
         let state = SessionState {
             orchestration_state: None,
             status: SessionStatus::Active,
@@ -151,6 +161,8 @@ impl SessionManager {
             cancel: cancel.clone(),
             external_session_id: external_session_id.map(|s| s.to_string()),
             hook_events: Vec::new(),
+            dashboard_tx: dashboard_tx.clone(),
+            dashboard_events: Vec::new(),
         };
 
         let state = Arc::new(Mutex::new(state));
@@ -164,6 +176,25 @@ impl SessionManager {
         let sid = session_id.clone();
         let cancel_for_thread = cancel;
         let ext_sid = external_session_id.map(|s| s.to_string());
+
+        // Create mpsc channel for the orchestration loop → bridge task.
+        let (event_tx, mut event_rx) =
+            tokio::sync::mpsc::unbounded_channel::<oco_shared_types::OrchestrationEvent>();
+
+        // Bridge task: receives OrchestrationEvent from mpsc, wraps as
+        // DashboardEvent, stores for catch-up, and broadcasts to SSE consumers.
+        let bridge_state = Arc::clone(&state);
+        let bridge_sid = SessionId(uuid::Uuid::parse_str(&session_id).expect("valid session UUID"));
+        tokio::spawn(async move {
+            let event_stream = EventStream::new(bridge_sid, uuid::Uuid::new_v4());
+            while let Some(orch_event) = event_rx.recv().await {
+                let dashboard_event = event_stream.wrap(&orch_event);
+                let mut guard = bridge_state.lock().await;
+                guard.dashboard_events.push(dashboard_event.clone());
+                // Broadcast — ignore error (no receivers is fine).
+                let _ = guard.dashboard_tx.send(dashboard_event);
+            }
+        });
 
         // `OrchestrationLoop` is !Send (rusqlite Connection).
         // Run it on a dedicated OS thread with its own current-thread runtime.
@@ -180,6 +211,7 @@ impl SessionManager {
                     info!(session_id = %sid, "Background orchestration starting");
 
                     let mut oloop = OrchestrationLoop::new(config, llm);
+                    oloop.with_event_channel(event_tx);
                     oloop.with_cancellation(cancel_for_thread);
                     if let Some(ref ext_id) = ext_sid {
                         oloop.with_external_session_id(ext_id);
@@ -437,6 +469,19 @@ impl SessionManager {
         }
     }
 
+    /// Subscribe to live dashboard events for a session.
+    /// Returns the accumulated events (for catch-up) and a broadcast receiver.
+    pub async fn subscribe_dashboard(
+        &self,
+        id: &str,
+    ) -> Option<(Vec<DashboardEvent>, broadcast::Receiver<DashboardEvent>)> {
+        let session = self.sessions.get(id).map(|e| e.value().clone())?;
+        let guard = session.lock().await;
+        let events = guard.dashboard_events.clone();
+        let rx = guard.dashboard_tx.subscribe();
+        Some((events, rx))
+    }
+
     // -- helpers ------------------------------------------------------------
 
     fn build_info(&self, id: &str, guard: &SessionState) -> SessionInfo {
@@ -479,6 +524,7 @@ impl SessionManager {
             tokens_used: 0,
         };
         let (status_tx, status_rx) = watch::channel(initial_update);
+        let (dashboard_tx, _) = broadcast::channel(LIVE_BROADCAST_CAPACITY);
         let state = SessionState {
             orchestration_state: None,
             status: SessionStatus::Active,
@@ -490,6 +536,8 @@ impl SessionManager {
             cancel: CancellationToken::new(),
             external_session_id: external_session_id.map(|s| s.to_string()),
             hook_events: Vec::new(),
+            dashboard_tx,
+            dashboard_events: Vec::new(),
         };
         self.sessions
             .insert(session_id.clone(), Arc::new(Mutex::new(state)));

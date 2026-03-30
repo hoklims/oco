@@ -195,6 +195,14 @@ pub struct PlanCandidateSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum OrchestrationEvent {
+    /// The orchestration run started.
+    RunStarted {
+        provider: String,
+        model: String,
+        request_summary: String,
+        complexity: String,
+    },
+
     /// A step was completed (action executed + trace recorded).
     StepCompleted {
         step: u32,

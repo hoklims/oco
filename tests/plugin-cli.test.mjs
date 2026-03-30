@@ -83,7 +83,7 @@ console.log('Install');
   assert(manifest.files.length >= 14, `manifest lists ${manifest.files.length} files (>= 14)`);
 
   // Post-install diagnostic
-  assert(r.stdout.includes('Post-install check'), 'install shows post-install diagnostic');
+  assert(r.stdout.includes('Plugin layer'), 'install shows post-install diagnostic');
   assert(r.stdout.includes('Mode:'), 'install shows mode');
 }
 
@@ -94,7 +94,7 @@ console.log('\nDoctor (healthy)');
   // exit code may be 0 or 1 depending on global install detection
   assert(r.exitCode === 0 || r.exitCode === 1, `doctor exits ${r.exitCode} (0 or 1)`);
   assert(r.stdout.includes('4/4 hooks'), 'doctor finds all hooks');
-  assert(r.stdout.includes('5/5 skills'), 'doctor finds all skills');
+  assert(r.stdout.includes('6/6 skills'), 'doctor finds all skills');
   assert(r.stdout.includes('3/3 agents'), 'doctor finds all agents');
   assert(r.stdout.includes('MCP bridge'), 'doctor checks bridge');
   assert(r.stdout.includes('Mode:'), 'doctor shows mode');

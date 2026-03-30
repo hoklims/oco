@@ -93,7 +93,11 @@ impl VerificationDispatcher {
         working_dir: &str,
     ) -> Result<TieredVerificationResult> {
         let strategies = tier.strategies();
-        info!(?tier, count = strategies.len(), "running tiered verification");
+        info!(
+            ?tier,
+            count = strategies.len(),
+            "running tiered verification"
+        );
 
         let mut results = Vec::with_capacity(strategies.len());
         for strategy in strategies {

@@ -888,7 +888,9 @@ impl LlmProvider for RetryingLlmProvider {
             }
         }
 
-        Err(last_err.unwrap_or_else(|| OrchestratorError::LlmError("retry loop exited unexpectedly".into())))
+        Err(last_err.unwrap_or_else(|| {
+            OrchestratorError::LlmError("retry loop exited unexpectedly".into())
+        }))
     }
 
     fn provider_name(&self) -> &str {
@@ -1026,13 +1028,20 @@ mod tests {
                 })
             }
         }
-        fn provider_name(&self) -> &str { "mock" }
-        fn model_name(&self) -> &str { "mock" }
+        fn provider_name(&self) -> &str {
+            "mock"
+        }
+        fn model_name(&self) -> &str {
+            "mock"
+        }
     }
 
     fn test_request() -> LlmRequest {
         LlmRequest {
-            messages: vec![LlmMessage { role: LlmRole::User, content: "hi".into() }],
+            messages: vec![LlmMessage {
+                role: LlmRole::User,
+                content: "hi".into(),
+            }],
             max_tokens: 10,
             temperature: 0.0,
             system_prompt: None,
@@ -1082,8 +1091,12 @@ mod tests {
             async fn complete(&self, _: LlmRequest) -> Result<LlmResponse, OrchestratorError> {
                 Err(OrchestratorError::LlmError("auth failed".into()))
             }
-            fn provider_name(&self) -> &str { "fail" }
-            fn model_name(&self) -> &str { "fail" }
+            fn provider_name(&self) -> &str {
+                "fail"
+            }
+            fn model_name(&self) -> &str {
+                "fail"
+            }
         }
 
         let provider = RetryingLlmProvider::new(Arc::new(AlwaysFail), 3).with_base_delay_ms(1);
@@ -1094,9 +1107,12 @@ mod tests {
     #[test]
     fn backoff_respects_retry_after() {
         let provider = RetryingLlmProvider::new(
-            Arc::new(StubLlmProvider { model: "test".into() }),
+            Arc::new(StubLlmProvider {
+                model: "test".into(),
+            }),
             3,
-        ).with_base_delay_ms(100);
+        )
+        .with_base_delay_ms(100);
 
         // With retry_after=5000ms and attempt=0, base=100ms, so retry_after wins.
         let delay = provider.backoff_ms(0, 5000);
@@ -1110,9 +1126,12 @@ mod tests {
     #[test]
     fn backoff_capped_at_60s() {
         let provider = RetryingLlmProvider::new(
-            Arc::new(StubLlmProvider { model: "test".into() }),
+            Arc::new(StubLlmProvider {
+                model: "test".into(),
+            }),
             10,
-        ).with_base_delay_ms(1000);
+        )
+        .with_base_delay_ms(1000);
 
         let delay = provider.backoff_ms(8, 0); // 1000 * 256 = 256000, capped
         assert!(delay <= 60_000);
@@ -1120,7 +1139,9 @@ mod tests {
 
     #[test]
     fn retrying_delegates_name() {
-        let inner = Arc::new(StubLlmProvider { model: "test-model".into() });
+        let inner = Arc::new(StubLlmProvider {
+            model: "test-model".into(),
+        });
         let provider = RetryingLlmProvider::new(inner, 3);
         assert_eq!(provider.provider_name(), "stub");
         assert_eq!(provider.model_name(), "test-model");

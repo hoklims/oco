@@ -33,20 +33,32 @@ Clearly state:
 
 Before making any changes:
 
-1. **Find all usages** of the target symbol/pattern:
-   - Use `oco.search_codebase` if available, otherwise Grep for symbol references
-   - Check imports, re-exports, type references, test references
-   - Check config files, documentation, comments
+1. **Run impact analysis** on the target symbol:
+   - **If `oco_impact` MCP tool is available** (preferred):
+     ```
+     oco_impact({ symbol: "<target>", max_depth: 5 })
+     ```
+     This returns all transitive callers (what breaks) and callees (what this depends on).
+   - **If `oco_routes` MCP tool is available** (alternative):
+     ```
+     oco_routes({ symbol: "<target>", direction: "both", max_depth: 5 })
+     ```
+   - **If yoyo MCP is available**:
+     ```
+     yoyo.impact({ symbol: "<target>" })
+     yoyo.judge_change({ description: "<refactoring description>" })
+     ```
+   - **Otherwise**: Use `oco.search_codebase` or Grep for symbol references manually.
 
-2. **Map the dependency graph**:
-   - What depends on the thing being refactored?
-   - What does it depend on?
+2. **Map the dependency graph** from the impact results:
+   - What depends on the thing being refactored? (callers — break risk)
+   - What does it depend on? (callees — interface constraints)
    - Are there external consumers (API, CLI, exports)?
 
 3. **Produce impact summary**:
-   - Files affected: [list]
-   - Symbols affected: [list]
-   - Risk level: low / medium / high
+   - Files affected: [list from impact analysis]
+   - Symbols affected: [callers + callees]
+   - Risk level: low / medium / high (based on caller count and depth)
    - Breaking changes: yes / no
 
 If impact is high (>10 files or breaking changes), delegate deep analysis to `@refactor-reviewer` subagent.
