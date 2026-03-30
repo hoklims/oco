@@ -9,6 +9,7 @@
   import PlanMap from './lib/PlanMap.svelte'
   import PlanExplorer from './lib/PlanExplorer.svelte'
   import DetailPanel from './lib/DetailPanel.svelte'
+  import ClassifyingScene from './lib/ClassifyingScene.svelte'
 
   // ── Lifecycle phases ────────────────────────────────────────
   type Phase = 'connecting' | 'waiting' | 'classifying' | 'planning' | 'executing' | 'verifying' | 'complete' | 'failed' | 'demo'
@@ -331,20 +332,7 @@
       {#if explorationPhase === 'done' || steps.length > 0}
         <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} />
       {:else if phase === 'classifying'}
-        <!-- Classification phase — visual feedback -->
-        <div class="h-full flex items-center justify-center">
-          <div class="text-center space-y-4">
-            <div class="w-16 h-16 mx-auto rounded-xl bg-surface-2 border border-cyan/20 flex items-center justify-center">
-              <div class="w-8 h-8 border-2 border-cyan/40 border-t-cyan rounded-full animate-spin"></div>
-            </div>
-            <div>
-              <p class="text-sm text-cyan font-mono">Analyzing task complexity...</p>
-              {#if missionRequest}
-                <p class="text-xs text-text-3 mt-1 max-w-md truncate">{missionRequest}</p>
-              {/if}
-            </div>
-          </div>
-        </div>
+        <ClassifyingScene mission={missionRequest} {complexity} />
       {:else if phase === 'planning' && explorationPhase === 'idle'}
         <!-- Planning without exploration — simple planning indicator -->
         <div class="h-full flex items-center justify-center">

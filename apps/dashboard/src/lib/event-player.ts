@@ -20,7 +20,7 @@ export type ExplorationPhase = 'idle' | 'generating' | 'comparing' | 'scoring' |
 
 /** Animation duration per event type (ms). */
 const CHOREOGRAPHY: Record<string, number> = {
-  run_started:         800,    // Header appears, mission text fades in
+  run_started:         6500,   // ClassifyingScene: scan (2.2s) + analyze (2s) + classify (1.6s) + fade (0.8s)
   plan_exploration:    0,      // DYNAMIC — calculated from candidate complexity
   plan_generated:      2000,   // PlanMap nodes stagger-reveal
   step_started:        600,    // Node glow activates
