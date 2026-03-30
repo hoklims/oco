@@ -21,7 +21,7 @@ export type ExplorationPhase = 'idle' | 'generating' | 'comparing' | 'scoring' |
 /** Animation duration per event type (ms). */
 const CHOREOGRAPHY: Record<string, number> = {
   run_started:         800,    // Header appears, mission text fades in
-  plan_exploration:    8500,   // Full PlanExplorer animation (branches, scoring, selection)
+  plan_exploration:    0,      // DYNAMIC — calculated from candidate complexity
   plan_generated:      2000,   // PlanMap nodes stagger-reveal
   step_started:        600,    // Node glow activates
   step_completed:      1000,   // Node completes, checkmark, edge draws
@@ -34,6 +34,48 @@ const CHOREOGRAPHY: Record<string, number> = {
   heartbeat:           0,      // Skip
   index_progress:      0,      // Skip
   budget_snapshot:     200,    // Quick budget update
+}
+
+/**
+ * Calculate dynamic exploration duration from plan_exploration event data.
+ *
+ * Formula: node_reveal + comparing_pause + scoring_pause + suspense + exit
+ *   - node_reveal: max(steps) * 700ms per batch (stagger)
+ *   - comparing: 2s to let user see both branches
+ *   - scoring: 2s for stats reveal + merge node pulse
+ *   - suspense: 1.5s amber pulse before winner reveal
+ *   - selection: 1.5s winner glow + loser fade
+ *   - exit: 1.2s smooth fade-out
+ *
+ * Simple plan (3+3 steps): ~10s
+ * Medium plan (5+3 steps): ~13s
+ * Complex plan (7+5 steps): ~16s
+ */
+function explorationDuration(kind: Record<string, unknown>): {
+  total: number
+  comparingAt: number
+  scoringAt: number
+  selectingAt: number
+  doneAt: number
+} {
+  const candidates = (kind.candidates as Array<Record<string, unknown>>) ?? []
+  const maxSteps = Math.max(...candidates.map(c => (c.step_count as number) ?? 3), 3)
+
+  // Phase durations
+  const revealDuration = (maxSteps + 2) * 700  // +2 for origin + merge nodes
+  const comparingPause = 2000
+  const scoringPause = 2000
+  const suspensePause = 1500
+  const selectionReveal = 1500
+  const exitDuration = 1200
+
+  const comparingAt = revealDuration
+  const scoringAt = comparingAt + comparingPause
+  const selectingAt = scoringAt + scoringPause + suspensePause
+  const doneAt = selectingAt + selectionReveal + exitDuration
+  const total = doneAt
+
+  return { total, comparingAt, scoringAt, selectingAt, doneAt }
 }
 
 /** Default duration for unknown event types. */
@@ -83,6 +125,7 @@ export function createEventPlayer(callbacks: EventPlayerCallbacks): EventPlayer 
   let playing = false
   let stopped = false
   let timeoutId: ReturnType<typeof setTimeout> | null = null
+  let dynamicDuration = 0 // Set by plan_exploration for dynamic timing
 
   function scheduleNext() {
     if (stopped || playing) return
@@ -107,12 +150,16 @@ export function createEventPlayer(callbacks: EventPlayerCallbacks): EventPlayer 
       if (stopped) return
 
       // Handle plan_exploration specially — trigger the PlanExplorer animation sequence
+      // Timing is DYNAMIC based on plan complexity (more steps = longer animation)
       if (eventType === 'plan_exploration' && callbacks.onExploration) {
+        const timing = explorationDuration(kind)
         callbacks.onExploration('generating')
-        setTimeout(() => { if (!stopped) callbacks.onExploration?.('comparing') }, 2500)
-        setTimeout(() => { if (!stopped) callbacks.onExploration?.('scoring') }, 4500)
-        setTimeout(() => { if (!stopped) callbacks.onExploration?.('selecting') }, 6000)
-        setTimeout(() => { if (!stopped) callbacks.onExploration?.('done') }, 7500)
+        setTimeout(() => { if (!stopped) callbacks.onExploration?.('comparing') }, timing.comparingAt)
+        setTimeout(() => { if (!stopped) callbacks.onExploration?.('scoring') }, timing.scoringAt)
+        setTimeout(() => { if (!stopped) callbacks.onExploration?.('selecting') }, timing.selectingAt)
+        setTimeout(() => { if (!stopped) callbacks.onExploration?.('done') }, timing.doneAt)
+        // Override the fixed choreography duration with the dynamic one
+        dynamicDuration = timing.total
       }
 
       // Emit the event to state
@@ -157,7 +204,10 @@ export function createEventPlayer(callbacks: EventPlayerCallbacks): EventPlayer 
       }
 
       // Wait for animation duration, then dequeue next
-      const duration = jitter(CHOREOGRAPHY[eventType] ?? DEFAULT_DURATION)
+      // Use dynamic duration for plan_exploration, fixed for everything else
+      const baseDuration = dynamicDuration > 0 ? dynamicDuration : (CHOREOGRAPHY[eventType] ?? DEFAULT_DURATION)
+      dynamicDuration = 0 // Reset for next event
+      const duration = jitter(baseDuration)
       const pause = jitter(INTER_EVENT_PAUSE)
 
       timeoutId = setTimeout(() => {
