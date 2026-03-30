@@ -286,17 +286,19 @@
 
     const label = teamInfo ? `${teamInfo.name} (${teamInfo.topology})` : 'Agent Team (mesh)'
 
-    // Build mini-feed from teammate messages
+    // Build mini-feed from teammate messages with assigned colors
     const feedMessages = teammateMessages.map(m => ({
       from: m.fromName.split(' ').slice(0, 2).join(' '),
       to: m.toName.split(' ').slice(0, 2).join(' '),
       summary: m.summary,
+      fromColor: teammateColorMap.get(m.fromStepId) ?? '#a78bfa',
+      toColor: teammateColorMap.get(m.toStepId) ?? '#22d3ee',
     }))
 
     const minX = Math.min(...teammateNodes.map(n => n.position.x)) - GROUP_PAD
     const minY = Math.min(...teammateNodes.map(n => n.position.y)) - GROUP_PAD - 24
     const maxX = Math.max(...teammateNodes.map(n => n.position.x + NODE_W)) + GROUP_PAD
-    const feedHeight = feedMessages.length > 0 ? feedMessages.slice(-3).length * 22 + 24 : 0
+    const feedHeight = feedMessages.length > 0 ? Math.min(feedMessages.length, 3) * 24 + 28 : 0
     const maxY = Math.max(...teammateNodes.map(n => n.position.y + NODE_H)) + GROUP_PAD + feedHeight
 
     return {

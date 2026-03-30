@@ -1,14 +1,15 @@
 <script lang="ts">
   /**
-   * TeamGroup — background container node wrapping teammate nodes.
-   * Shows team name + topology, and a mini-feed of recent messages.
+   * TeamGroup — background container wrapping teammate nodes.
+   * Shows team name + topology, and a rich mini-feed of recent messages
+   * with colored sender names matching each teammate's assigned color.
    */
   let { data }: { data: Record<string, unknown> } = $props()
 
   let label = $derived(data.label as string)
   let groupWidth = $derived((data.width as number) ?? 300)
   let groupHeight = $derived((data.height as number) ?? 200)
-  let messages = $derived((data.messages as Array<{ from: string; to: string; summary: string }>) ?? [])
+  let messages = $derived((data.messages as Array<{ from: string; to: string; summary: string; fromColor: string; toColor: string }>) ?? [])
   let messageCount = $derived((data.messageCount as number) ?? 0)
 </script>
 
@@ -24,14 +25,14 @@
     {/if}
   </div>
 
-  <!-- Mini message feed (last 3 messages) — anchored at bottom -->
+  <!-- Communication feed (last 3 messages) — bottom-anchored -->
   {#if messages.length > 0}
     <div class="team-feed">
       {#each messages.slice(-3) as msg, i (i)}
         <div class="team-msg">
-          <span class="team-msg-from">{msg.from}</span>
+          <span class="team-msg-from" style="color: {msg.fromColor}">{msg.from}</span>
           <span class="team-msg-arrow">→</span>
-          <span class="team-msg-to">{msg.to}</span>
+          <span class="team-msg-to" style="color: {msg.toColor}">{msg.to}</span>
           <span class="team-msg-text">{msg.summary}</span>
         </div>
       {/each}
@@ -41,7 +42,7 @@
 
 <style>
   .team-group {
-    border: 1px dashed #a78bfa35;
+    border: 1px dashed #a78bfa30;
     border-radius: 14px;
     background: rgba(167, 139, 250, 0.02);
     position: relative;
@@ -80,52 +81,49 @@
     bottom: 8px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 3px;
     pointer-events: none;
-    background: rgba(13, 15, 20, 0.5);
+    background: rgba(13, 15, 20, 0.6);
     border-radius: 6px;
-    padding: 4px 6px;
+    padding: 5px 8px;
+    backdrop-filter: blur(4px);
   }
   .team-msg {
     display: flex;
     align-items: center;
     gap: 4px;
     font-family: ui-monospace, monospace;
-    font-size: 8px;
-    color: #5c6378;
-    opacity: 0.5;
+    font-size: 9px;
     white-space: nowrap;
     overflow: hidden;
     animation: msgSlideIn 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
   }
   @keyframes msgSlideIn {
     0% { opacity: 0; transform: translateY(4px); }
-    100% { opacity: 0.5; transform: translateY(0); }
+    100% { opacity: 1; transform: translateY(0); }
   }
   .team-msg-from {
-    color: #a78bfa;
-    opacity: 0.6;
+    font-weight: 600;
     flex-shrink: 0;
-    max-width: 60px;
+    max-width: 70px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .team-msg-arrow {
     color: #5c6378;
-    opacity: 0.3;
+    opacity: 0.5;
     flex-shrink: 0;
   }
   .team-msg-to {
-    color: #a78bfa;
-    opacity: 0.6;
+    font-weight: 600;
     flex-shrink: 0;
-    max-width: 60px;
+    max-width: 70px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .team-msg-text {
-    color: #5c6378;
-    opacity: 0.4;
+    color: #9aa0b4;
+    opacity: 0.7;
     overflow: hidden;
     text-overflow: ellipsis;
   }
