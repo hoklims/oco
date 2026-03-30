@@ -513,16 +513,8 @@ impl ExecutionPlan {
             return Err(PlanValidationError::CycleDetected);
         }
 
-        // Validate sub-plan depth (max 2 levels per ADR-008)
-        if self.max_depth() > 2 {
-            return Err(PlanValidationError::SubPlanTooDeep {
-                depth: self.max_depth(),
-                max: 2,
-            });
-        }
-
-        // Validate sub-plans: only Subagent/Teammate may have sub-plans,
-        // and each sub-plan must itself be structurally valid.
+        // Validate sub-plans: structural validity FIRST (catches cycles before
+        // max_depth recurses into them — prevents stack overflow on malformed plans).
         for step in &self.steps {
             if let Some(ref sub) = step.sub_plan {
                 if step.execution == StepExecution::Inline {
@@ -533,6 +525,15 @@ impl ExecutionPlan {
                 }
                 sub.validate()?;
             }
+        }
+
+        // Validate sub-plan depth (max 2 levels per ADR-008)
+        // Safe to recurse now — sub-plans are cycle-free after validate() above.
+        if self.max_depth() > 2 {
+            return Err(PlanValidationError::SubPlanTooDeep {
+                depth: self.max_depth(),
+                max: 2,
+            });
         }
 
         Ok(())

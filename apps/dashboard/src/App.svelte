@@ -148,7 +148,7 @@
     } else {
       startDemo()
     }
-    return () => { sseClient?.close(); cancelDemo?.(); eventPlayer?.stop() }
+    return () => { sseClient?.close(); cancelDemo?.(); eventPlayer?.stop(); msgTimers.forEach(clearTimeout) }
   })
 
   // ── Event handler ───────────────────────────────────────────
@@ -201,7 +201,7 @@
         break
       }
 
-      case 'plan_generated':
+      case 'plan_generated': {
         if (phase !== 'demo') phase = 'executing'
         if (explorationPhase === 'idle') explorationPhase = 'done'
         stepSummaries = ((kind.steps as Array<Record<string, unknown>>) ?? []).map(s => ({
@@ -218,6 +218,7 @@
           execution_mode: s.execution_mode as string, verify_passed: null,
         }))
         break
+      }
 
       case 'step_started':
         if (phase !== 'demo') phase = 'executing'

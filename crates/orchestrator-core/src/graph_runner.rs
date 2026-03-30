@@ -539,16 +539,24 @@ impl GraphRunner {
                 }],
             }
         } else {
-            // Multiple steps — run in parallel
+            // Multiple steps — run in parallel (sub-plan steps run inline)
             debug!(count = step_ids.len(), "executing parallel steps");
-            let mut handles = Vec::with_capacity(step_ids.len());
+            let mut handles: Vec<(Uuid, tokio::task::JoinHandle<StepResult>)> = Vec::with_capacity(step_ids.len());
+            let mut results_inline: Vec<StepResult> = Vec::new();
 
             for &id in step_ids {
                 let step = plan.get_step(id).expect("step must exist").clone();
                 self.emit_step_started(&step);
+
+                // ADR-008: steps with sub_plan need &self, so execute them inline
+                if step.sub_plan.is_some() {
+                    results_inline.push(self.execute_sub_plan(&step).await);
+                    continue;
+                }
+
                 let executor = self.executor.clone();
                 let constraints = StepConstraints::new(step.estimated_tokens);
-                handles.push(tokio::spawn(async move {
+                handles.push((id, tokio::spawn(async move {
                     match executor.execute_step(&step, &[], &constraints).await {
                         Ok(r) => r,
                         Err(e) => StepResult {
@@ -559,24 +567,18 @@ impl GraphRunner {
                             tokens_used: 0,
                         },
                     }
-                }));
+                })));
             }
 
-            let mut results = Vec::with_capacity(handles.len());
-            for (i, handle) in handles.into_iter().enumerate() {
+            let mut results = results_inline;
+            for (id, handle) in handles {
                 match handle.await {
                     Ok(r) => results.push(r),
                     Err(e) => {
                         // Fix #8: JoinError (panic/cancel) → produce a Failed StepResult
-                        // so the step doesn't "disappear" from the state machine.
                         warn!(error = %e, "step task panicked or was cancelled");
-                        // Safety: handles and step_ids are built from the same
-                        // iterator so indices are always in sync. Use direct
-                        // indexing to surface logic errors instead of silently
-                        // producing Uuid::nil() which corrupts downstream state.
-                        let failed_id = step_ids[i];
                         results.push(StepResult {
-                            step_id: failed_id,
+                            step_id: id,
                             success: false,
                             output: format!("task panicked: {e}"),
                             duration_ms: 0,

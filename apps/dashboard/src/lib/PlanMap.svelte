@@ -285,15 +285,6 @@
     }, 600))
   }
 
-  // Collapse event-driven sub-plans when parent step completes
-  let _prevEventPlanKey = ''
-  $effect(() => {
-    // Build key from subPlanState entries that are completed
-    const completedKeys = [...subPlanState.entries()].filter(([, v]) => v.completed).map(([k]) => k).sort().join(',')
-    // No action needed — completed sub-plans are removed by the parent component
-    void completedKeys
-  })
-
   // ── Team group as real Svelte Flow node ────────────────────
   function buildTeamGroupNode(graphNodes: Node[], depsMap: Map<string, { depends_on: string[]; verify_after: boolean; execution_mode: string }>): Node | null {
     const teammateIds = new Set<string>()
@@ -428,7 +419,7 @@
     const batches = computeRevealBatches(g)
     const newRevealed = new Set<string>()
     // Always reveal special nodes immediately
-    g.nodes.filter(n => n.type === 'teamGroup' || n.type === 'subActivity').forEach(n => newRevealed.add(n.id))
+    g.nodes.filter(n => n.type === 'teamGroup').forEach(n => newRevealed.add(n.id))
 
     if (batches.length <= 1) { g.nodes.forEach(n => newRevealed.add(n.id)); revealedIds = newRevealed; nodes = g.nodes; edges = g.edges; return }
     nodes = g.nodes.map(n => newRevealed.has(n.id) ? n : { ...n, style: 'opacity:0; transform: scale(0.85) translateX(-10px); transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);' })
@@ -457,7 +448,7 @@
     lastStepCount = mainCount
 
     const allRevealed = new Set(revealedIds)
-    g.nodes.filter(n => n.type === 'subActivity' || n.type === 'teamGroup').forEach(n => allRevealed.add(n.id))
+    g.nodes.filter(n => n.type === 'teamGroup').forEach(n => allRevealed.add(n.id))
 
     nodes = g.nodes.map(n => allRevealed.has(n.id) ? n : { ...n, style: 'opacity:0; transform: scale(0.85) translateX(-10px); transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);' })
     edges = g.edges.map(e => {
@@ -534,7 +525,7 @@
 <style>
   :global(.svelte-flow) { background: transparent !important; }
   :global(.svelte-flow__handle) { opacity: 0 !important; width: 1px !important; height: 1px !important; }
-  :global(.svelte-flow__edge-path) { transition: opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.6s, stroke-width 0.5s; }
+  :global(.svelte-flow__edge-path) { transition: d 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.6s, stroke-width 0.5s; }
   :global(.svelte-flow__node) { transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1), transform 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
   :global(.svelte-flow__node.selected) { box-shadow: 0 0 0 2px #4b8df840 !important; border-radius: 10px; }
 
