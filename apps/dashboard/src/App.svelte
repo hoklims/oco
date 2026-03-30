@@ -126,11 +126,23 @@
       case 'flat_step_completed': {
         const snap = kind.budget_snapshot as BudgetSnapshot | undefined
         if (snap?.tokens_used !== undefined) budget = snap
-        // Classification result: action_type contains "plan" for plan routing
         const actionType = kind.action_type as string
-        if (actionType === 'plan' && phase !== 'demo') {
-          complexity = (kind.reason as string) || ''
-          phase = 'planning'
+        const reason = (kind.reason as string) || ''
+        if (phase !== 'demo') {
+          // Handle phase events injected by oco.emit_phase (via POST /sessions/{id}/events)
+          switch (actionType) {
+            case 'classifying':
+              phase = 'classifying'; complexity = reason; break
+            case 'planning':
+              phase = 'planning'; complexity = reason; break
+            case 'executing':
+              phase = 'executing'; break
+            case 'verifying':
+              phase = 'verifying'; break
+            case 'plan':
+              // Rust orchestrator: classification → plan engine routing
+              complexity = reason; phase = 'planning'; break
+          }
         }
         break
       }

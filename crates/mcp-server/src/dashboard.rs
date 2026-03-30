@@ -79,7 +79,7 @@ pub fn dashboard_router() -> Router<Arc<AppState>> {
         // Run history (scans .oco/runs/ on disk)
         .route("/runs", get(list_runs))
         // Live session streaming
-        .route("/sessions", get(list_live_sessions))
+        .route("/sessions", get(list_live_sessions).post(create_tracking_session))
         .route("/sessions/{session_id}/stream", get(live_session_stream))
         .route("/sessions/{session_id}/events", post(inject_session_event))
         // Replay CRUD + control
@@ -528,6 +528,39 @@ async fn inject_session_event(
 }
 
 // ── Live session endpoints ───────────────────────────────────
+
+/// Request to create a tracking-only session (no OrchestrationLoop).
+#[derive(Debug, Deserialize)]
+pub struct CreateTrackingSessionRequest {
+    pub task: String,
+}
+
+/// `POST /api/v1/dashboard/sessions` — create a tracking-only session.
+///
+/// Unlike `POST /api/v1/sessions`, this does NOT start an OrchestrationLoop.
+/// Used by the MCP bridge to create a session purely for dashboard event tracking.
+async fn create_tracking_session(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateTrackingSessionRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    let session_id = state
+        .session_manager
+        .create_tracking_session(&req.task)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+        })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": session_id,
+            "status": "tracking",
+        })),
+    ))
+}
 
 /// Serializable info about a live session.
 #[derive(Debug, Serialize)]

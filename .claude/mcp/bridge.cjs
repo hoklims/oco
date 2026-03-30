@@ -716,12 +716,11 @@ async function openDashboard(id, args) {
     });
   }
 
-  // Create a session for tracking
+  // Create a tracking-only session (no OrchestrationLoop — just broadcast channel).
   let sessionId;
   try {
-    const res = await httpRequest("POST", port, "/api/v1/sessions", {
-      user_request: args.task || "OCO session",
-      workspace_root: workspace,
+    const res = await httpRequest("POST", port, "/api/v1/dashboard/sessions", {
+      task: args.task || "OCO session",
     });
     if (res.status !== 201 || !res.body?.id) {
       throw new Error(res.body?.error || "session creation failed");

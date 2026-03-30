@@ -471,6 +471,41 @@ impl SessionManager {
 
     /// Subscribe to live dashboard events for a session.
     /// Returns the accumulated events (for catch-up) and a broadcast receiver.
+    /// Create a tracking-only session (no OrchestrationLoop).
+    /// Used by the MCP bridge for dashboard event tracking only.
+    pub fn create_tracking_session(&self, task: &str) -> anyhow::Result<String> {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+
+        let initial_update = SessionStatusUpdate {
+            status: "tracking".into(),
+            steps: 0,
+            tokens_used: 0,
+        };
+        let (status_tx, status_rx) = watch::channel(initial_update);
+        let (dashboard_tx, _) = broadcast::channel(LIVE_BROADCAST_CAPACITY);
+
+        let state = SessionState {
+            orchestration_state: None,
+            status: SessionStatus::Active,
+            status_tx,
+            status_rx,
+            created_at: now,
+            updated_at: now,
+            user_request: task.to_string(),
+            cancel: CancellationToken::new(),
+            external_session_id: None,
+            hook_events: Vec::new(),
+            dashboard_tx,
+            dashboard_events: Vec::new(),
+        };
+
+        self.sessions
+            .insert(session_id.clone(), Arc::new(Mutex::new(state)));
+        info!(session_id = %session_id, "Created tracking-only session");
+        Ok(session_id)
+    }
+
     pub async fn subscribe_dashboard(
         &self,
         id: &str,
