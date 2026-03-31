@@ -199,6 +199,19 @@ This repo includes a `.claude/` directory with project-specific tooling:
 - **MCP bridge** — Exposes OCO tools (search, trace, verify, findings) as MCP resources
 - **Hooks** — Pre/post tool-use validation, session init, stop handlers
 
+### Marketplace Install (recommended)
+
+```
+/plugin marketplace add hoklims/oco-marketplace
+/plugin install oco@hoklims-oco-marketplace
+```
+
+Or via npm (legacy):
+```
+npx oco-claude-plugin install              # legacy .claude/ mode
+npx oco-claude-plugin install --plugin     # native plugin mode
+```
+
 ## Project Layout
 
 ```
