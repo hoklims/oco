@@ -37,6 +37,9 @@ enum Commands {
         /// Port
         #[arg(long, default_value_t = 3000)]
         port: u16,
+        /// Run without the dashboard UI (API/MCP only)
+        #[arg(long)]
+        headless: bool,
     },
     /// Run a one-shot orchestration request
     Run {
@@ -196,7 +199,11 @@ async fn main() -> Result<()> {
     };
 
     match cli.command {
-        Commands::Serve { host, port } => cmd_serve(&mut *r, host, port).await?,
+        Commands::Serve {
+            host,
+            port,
+            headless,
+        } => cmd_serve(&mut *r, host, port, headless).await?,
         Commands::Run {
             request,
             workspace,
@@ -243,7 +250,7 @@ async fn main() -> Result<()> {
 // Command implementations
 // ═══════════════════════════════════════════════════════════
 
-async fn cmd_serve(r: &mut dyn Renderer, host: String, port: u16) -> Result<()> {
+async fn cmd_serve(r: &mut dyn Renderer, host: String, port: u16, headless: bool) -> Result<()> {
     let mut config =
         oco_orchestrator_core::OrchestratorConfig::load_from_dir(&std::env::current_dir()?);
     config.bind_address = host;
@@ -251,27 +258,32 @@ async fn cmd_serve(r: &mut dyn Renderer, host: String, port: u16) -> Result<()> 
 
     let mut server = oco_mcp_server::McpServer::new(config);
 
-    // Auto-detect dashboard dist directory.
-    let dashboard_candidates = [
-        PathBuf::from("apps/dashboard/dist"),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("dashboard")))
-            .unwrap_or_default(),
-    ];
-    let has_dashboard = if let Some(dir) = std::env::var("OCO_DASHBOARD_DIR")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| {
-            dashboard_candidates
-                .iter()
-                .find(|d| d.join("index.html").exists())
-                .cloned()
-        }) {
-        server = server.with_dashboard_dir(dir);
-        true
-    } else {
+    // Dashboard: skip entirely in headless mode.
+    let has_dashboard = if headless {
         false
+    } else {
+        let dashboard_candidates = [
+            PathBuf::from("apps/dashboard/dist"),
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("dashboard")))
+                .unwrap_or_default(),
+        ];
+        if let Some(dir) = std::env::var("OCO_DASHBOARD_DIR")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(|| {
+                dashboard_candidates
+                    .iter()
+                    .find(|d| d.join("index.html").exists())
+                    .cloned()
+            })
+        {
+            server = server.with_dashboard_dir(dir);
+            true
+        } else {
+            false
+        }
     };
 
     // Bind first to get the real port (especially when --port 0).
@@ -283,7 +295,9 @@ async fn cmd_serve(r: &mut dyn Renderer, host: String, port: u16) -> Result<()> 
         port: real_addr.port(),
     });
 
-    if has_dashboard {
+    if headless {
+        eprintln!("Running in headless mode (API/MCP only, no dashboard)");
+    } else if has_dashboard {
         eprintln!("Dashboard: http://{real_addr}/dashboard");
     }
 
