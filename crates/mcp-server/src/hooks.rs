@@ -58,7 +58,26 @@ const HOOK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Global rate limit for hook endpoints (requests per second).
 const HOOK_RATE_LIMIT_RPS: u64 = 100;
 
+use oco_claude_adapter::IntegrationMode;
+
 use crate::server::AppState;
+
+/// Middleware that returns 204 No Content when running in EnterpriseSafe mode.
+///
+/// In EnterpriseSafe mode, managed settings block user/plugin hooks, so
+/// hook endpoints become graceful no-ops. This avoids confusing error logs
+/// when Claude Code can't reach hooks it never called.
+pub async fn enterprise_safe_middleware(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> impl IntoResponse {
+    if state.claude_capabilities.recommended_mode() == IntegrationMode::EnterpriseSafe {
+        debug!("EnterpriseSafe mode: hook endpoint returning 204 noop");
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    next.run(request).await.into_response()
+}
 
 // ---------------------------------------------------------------------------
 // Auth middleware for hook routes
@@ -175,6 +194,11 @@ pub fn hook_router(state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
                 }
             }
         }))
+        // EnterpriseSafe: graceful noop when managed settings restrict hooks
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            enterprise_safe_middleware,
+        ))
         // Outermost: auth
         .layer(middleware::from_fn_with_state(state, hook_auth_middleware))
 }

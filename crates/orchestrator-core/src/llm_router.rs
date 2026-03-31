@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::llm::LlmProvider;
 use oco_claude_adapter::IntegrationMode;
@@ -136,6 +136,12 @@ impl LlmRouter {
     pub fn route_step(&self, step: &PlanStep, budget_remaining_pct: f64) -> RoutingDecision {
         if let Some(mode) = &self.integration_mode {
             debug!(?mode, "routing with integration mode");
+            if *mode == IntegrationMode::SdkFallback {
+                info!(
+                    step = %step.name,
+                    "SdkFallback mode: step should be routed via Agent SDK (sdk-runner.mjs)"
+                );
+            }
         }
 
         let provider = self.for_step(step, budget_remaining_pct);
