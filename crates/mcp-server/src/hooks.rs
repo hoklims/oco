@@ -194,12 +194,13 @@ pub fn hook_router(state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
                 }
             }
         }))
-        // EnterpriseSafe: graceful noop when managed settings restrict hooks
+        // EnterpriseSafe: graceful 204 noop when managed settings restrict hooks
+        // (runs after auth, before rate limit — authenticated but no-op)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             enterprise_safe_middleware,
         ))
-        // Outermost: auth
+        // Outermost (Tower: last .layer() = outermost): auth
         .layer(middleware::from_fn_with_state(state, hook_auth_middleware))
 }
 

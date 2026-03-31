@@ -7,7 +7,6 @@ description = "Boundary layer between Claude Code's documented surface and OCO's
 
 [dependencies]
 oco-shared-types = { workspace = true }
-oco-telemetry = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
