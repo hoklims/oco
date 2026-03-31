@@ -541,7 +541,8 @@ impl GraphRunner {
         } else {
             // Multiple steps — run in parallel (sub-plan steps run inline)
             debug!(count = step_ids.len(), "executing parallel steps");
-            let mut handles: Vec<(Uuid, tokio::task::JoinHandle<StepResult>)> = Vec::with_capacity(step_ids.len());
+            let mut handles: Vec<(Uuid, tokio::task::JoinHandle<StepResult>)> =
+                Vec::with_capacity(step_ids.len());
             let mut results_inline: Vec<StepResult> = Vec::new();
 
             for &id in step_ids {
@@ -556,18 +557,21 @@ impl GraphRunner {
 
                 let executor = self.executor.clone();
                 let constraints = StepConstraints::new(step.estimated_tokens);
-                handles.push((id, tokio::spawn(async move {
-                    match executor.execute_step(&step, &[], &constraints).await {
-                        Ok(r) => r,
-                        Err(e) => StepResult {
-                            step_id: id,
-                            success: false,
-                            output: e.to_string(),
-                            duration_ms: 0,
-                            tokens_used: 0,
-                        },
-                    }
-                })));
+                handles.push((
+                    id,
+                    tokio::spawn(async move {
+                        match executor.execute_step(&step, &[], &constraints).await {
+                            Ok(r) => r,
+                            Err(e) => StepResult {
+                                step_id: id,
+                                success: false,
+                                output: e.to_string(),
+                                duration_ms: 0,
+                                tokens_used: 0,
+                            },
+                        }
+                    }),
+                ));
             }
 
             let mut results = results_inline;
