@@ -52,5 +52,77 @@
         }
       ]
     }
+  ],
+  "SessionStart": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/session-start",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "SubagentStop": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/subagent-stop",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "TeammateIdle": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/teammate-idle",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PreCompact": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/pre-compact",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "ConfigChange": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/config-change",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "Elicitation": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/elicitation",
+          "timeout": 5
+        }
+      ]
+    }
   ]
 }

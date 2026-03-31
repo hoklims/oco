@@ -737,6 +737,7 @@ mod tests {
             replay_registry: oco_orchestrator_core::replay::ReplayRegistry::new(),
             dashboard_dir: None,
             hook_secret: None,
+            claude_capabilities: Arc::new(oco_claude_adapter::ClaudeCapabilities::none()),
         })
     }
 
@@ -750,6 +751,7 @@ mod tests {
             replay_registry: oco_orchestrator_core::replay::ReplayRegistry::new(),
             dashboard_dir: None,
             hook_secret: Some(secret.to_string()),
+            claude_capabilities: Arc::new(oco_claude_adapter::ClaudeCapabilities::none()),
         })
     }
 

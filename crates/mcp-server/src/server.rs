@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use oco_claude_adapter::ClaudeCapabilities;
 use oco_orchestrator_core::llm::LlmProvider;
 use oco_orchestrator_core::replay::ReplayRegistry;
 
@@ -22,6 +23,8 @@ pub struct AppState {
     /// Optional shared secret for authenticating hook requests.
     /// If `None`, hook auth is skipped (dev mode).
     pub hook_secret: Option<String>,
+    /// Claude Code capabilities detected at server startup.
+    pub claude_capabilities: Arc<ClaudeCapabilities>,
 }
 
 /// The MCP server that wraps Axum.
@@ -63,12 +66,21 @@ impl McpServer {
         let session_manager = Arc::new(SessionManager::new(self.config.clone(), self.llm));
         let hook_secret = std::env::var("OCO_HOOK_SECRET").ok();
 
+        // Probe Claude Code capabilities (or load from cache)
+        let claude_capabilities = Arc::new(ClaudeCapabilities::negotiate().await);
+        tracing::info!(
+            mode = %claude_capabilities.recommended_mode(),
+            version = ?claude_capabilities.version,
+            "Claude Code capabilities negotiated"
+        );
+
         let state = Arc::new(AppState {
             config: self.config,
             session_manager,
             replay_registry: ReplayRegistry::new(),
             dashboard_dir: self.dashboard_dir,
             hook_secret,
+            claude_capabilities,
         });
 
         let app = create_router(state)

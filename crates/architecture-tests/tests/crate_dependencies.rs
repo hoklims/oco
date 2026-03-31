@@ -100,6 +100,7 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
             "oco-planner",
             "oco-telemetry",
             "oco-code-intel",
+            "oco-claude-adapter",
         ],
     );
 
@@ -111,6 +112,7 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
             "oco-orchestrator-core",
             "oco-retrieval",
             "oco-code-intel",
+            "oco-claude-adapter",
         ],
     );
     g.insert(
@@ -122,6 +124,7 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
             "oco-mcp-server",
             "oco-policy-engine",
             "oco-verifier",
+            "oco-claude-adapter",
         ],
     );
 
