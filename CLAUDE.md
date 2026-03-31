@@ -135,15 +135,15 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (502+)
-cargo test -p oco-shared-types           # 188 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol
+cargo test                               # All tests (612+)
+cargo test -p oco-shared-types           # 218 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans
 cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
-cargo test -p oco-code-intel             #  36 tests — parser, indexer, language detection, call graph extraction
-cargo test -p oco-retrieval              #  17 tests — FTS5, vector, hybrid ranking, call graph storage & BFS traversal
+cargo test -p oco-code-intel             #  37 tests — parser, indexer, language detection, call graph extraction
+cargo test -p oco-retrieval              #  19 tests — FTS5, vector, hybrid ranking, call graph storage & BFS traversal
 cargo test -p oco-telemetry              #  13 tests — event recording, JSONL export, hook telemetry
-cargo test -p oco-planner               #  48 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, edge cases
-cargo test -p oco-orchestrator-core      #  60 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation
+cargo test -p oco-planner               #  52 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, sub-plan parsing
+cargo test -p oco-orchestrator-core      #  81 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution
 cargo test -p oco-mcp-server             #  37 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools
 cargo test -p oco-verifier               #  32 tests — test/build/lint/typecheck runners, auto-detection
 cargo test -p oco-architecture-tests     #   4 tests — dependency DAG, layer violations, foundation isolation, coverage
