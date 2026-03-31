@@ -1,0 +1,20 @@
+[package]
+name = "oco-claude-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Boundary layer between Claude Code's documented surface and OCO's internal event model"
+
+[dependencies]
+oco-shared-types = { workspace = true }
+oco-telemetry = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -13,6 +13,7 @@ members = [
     "crates/mcp-server",
     "crates/shared-types",
     "crates/shared-proto",
+    "crates/claude-adapter",
     "crates/architecture-tests",
     "apps/dev-cli",
 ]
@@ -88,6 +89,7 @@ oco-verifier = { path = "crates/verifier" }
 oco-planner = { path = "crates/planner" }
 oco-telemetry = { path = "crates/telemetry" }
 oco-mcp-server = { path = "crates/mcp-server" }
+oco-claude-adapter = { path = "crates/claude-adapter" }
 
 [profile.release]
 lto = "thin"

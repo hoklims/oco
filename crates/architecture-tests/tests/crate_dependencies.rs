@@ -75,6 +75,10 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
     g.insert("oco-tool-runtime", vec!["oco-shared-types"]);
     g.insert("oco-verifier", vec!["oco-shared-types"]);
     g.insert("oco-telemetry", vec!["oco-shared-types"]);
+    g.insert(
+        "oco-claude-adapter",
+        vec!["oco-shared-types", "oco-telemetry"],
+    );
 
     // Layer 2 — Mid-layer
     g.insert(
@@ -231,6 +235,7 @@ fn no_circular_layer_violations() {
         ("oco-tool-runtime", 1),
         ("oco-verifier", 1),
         ("oco-telemetry", 1),
+        ("oco-claude-adapter", 1),
         ("oco-context-engine", 2),
         ("oco-planner", 2),
         ("oco-orchestrator-core", 3),

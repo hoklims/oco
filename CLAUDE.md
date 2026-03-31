@@ -45,7 +45,8 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 | 10 | **`planner`** | **Task decomposition: DirectPlanner (Trivial/Low) + LlmPlanner (Medium+) → ExecutionPlan DAG** |
 | 11 | `orchestrator-core` | State machine, action loop, **GraphRunner (DAG execution)**, **LlmRouter (multi-model + effort)**, **AgentTeamsExecutor**, LLM providers, runtime, eval runner, repo profiles |
 | 12 | `mcp-server` | Axum HTTP + MCP server, session management, **HTTP hook endpoints** (Claude Code v2.1.63+), **oco_routes/oco_impact tools** |
-| 13 | `dev-cli` | CLI binary (index, search, run, serve, eval, doctor, runs) — event-driven UI with Terminal/JSONL/Quiet renderers |
+| 13 | **`claude-adapter`** | **Boundary layer: ClaudeVersion detection, ClaudeHookEvent (24 events), HookDecision, ClaudeCapabilities, IntegrationMode, DoctorCheck** |
+| 14 | `dev-cli` | CLI binary (index, search, run, serve, eval, doctor, runs) — event-driven UI with Terminal/JSONL/Quiet renderers |
 | — | `architecture-tests` | Architecture fitness tests — enforces crate dependency DAG, layer violations, foundation isolation |
 
 ### Orchestration v2 — Emergent Plan Engine
@@ -135,13 +136,14 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (612+)
+cargo test                               # All tests (682+)
 cargo test -p oco-shared-types           # 218 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans
 cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             #  37 tests — parser, indexer, language detection, call graph extraction
 cargo test -p oco-retrieval              #  19 tests — FTS5, vector, hybrid ranking, call graph storage & BFS traversal
 cargo test -p oco-telemetry              #  13 tests — event recording, JSONL export, hook telemetry
+cargo test -p oco-claude-adapter         #  70 tests — version detection, 24 hook events, capability matrix, integration modes, doctor checks
 cargo test -p oco-planner               #  52 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, sub-plan parsing
 cargo test -p oco-orchestrator-core      #  81 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution
 cargo test -p oco-mcp-server             #  37 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools
@@ -216,6 +218,7 @@ oco/
 │   ├── verifier/                 # Test/build/lint runners
 │   ├── telemetry/                # Tracing + events
 │   ├── mcp-server/               # HTTP + MCP server + Claude Code hook endpoints
+│   ├── claude-adapter/           # Claude Code boundary layer (version, events, capabilities)
 │   ├── shared-proto/             # Protobuf defs
 │   ├── architecture-tests/       # Architecture fitness tests (DAG enforcement)
 │   └── ...
