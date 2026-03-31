@@ -1,0 +1,135 @@
+{
+  "UserPromptSubmit": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit.cjs",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "matcher": "Bash|Edit|Write|MultiEdit",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pre-tool-use.mjs",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "Bash|Edit|Write|MultiEdit",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/post-tool",
+          "headers": { "Authorization": "Bearer ${user_config.hook_secret}" },
+          "timeout": 5
+        },
+        {
+          "type": "command",
+          "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/post-tool-use.mjs",
+          "timeout": 10,
+          "_comment": "DEPRECATED: fallback when oco serve is not running. Will be removed in 0.15.0."
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/stop.mjs",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
+  "SessionStart": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/session-start",
+          "headers": { "Authorization": "Bearer ${user_config.hook_secret}" },
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "SubagentStop": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/subagent-stop",
+          "headers": { "Authorization": "Bearer ${user_config.hook_secret}" },
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "TeammateIdle": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/teammate-idle",
+          "headers": { "Authorization": "Bearer ${user_config.hook_secret}" },
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PreCompact": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/pre-compact",
+          "headers": { "Authorization": "Bearer ${user_config.hook_secret}" },
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "ConfigChange": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/config-change",
+          "headers": { "Authorization": "Bearer ${user_config.hook_secret}" },
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "Elicitation": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "http",
+          "url": "${user_config.oco_server_url}/api/v1/hooks/elicitation",
+          "headers": { "Authorization": "Bearer ${user_config.hook_secret}" },
+          "timeout": 5
+        }
+      ]
+    }
+  ]
+}

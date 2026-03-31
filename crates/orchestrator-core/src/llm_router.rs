@@ -11,9 +11,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::llm::LlmProvider;
+use oco_claude_adapter::IntegrationMode;
 use oco_shared_types::{EffortLevel, PlanStep};
 
 /// Routing decision: which provider and effort level to use for a step.
@@ -38,6 +39,8 @@ pub struct LlmRouter {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
     /// Default provider name when no preference is specified.
     default: String,
+    /// Integration mode from Claude adapter negotiation (#100).
+    integration_mode: Option<IntegrationMode>,
 }
 
 impl LlmRouter {
@@ -45,7 +48,14 @@ impl LlmRouter {
         Self {
             providers: HashMap::new(),
             default: default.into(),
+            integration_mode: None,
         }
+    }
+
+    /// Set the integration mode from Claude adapter negotiation (#100).
+    pub fn with_integration_mode(mut self, mode: IntegrationMode) -> Self {
+        self.integration_mode = Some(mode);
+        self
     }
 
     /// Register a provider under a name (e.g., "opus", "sonnet", "haiku").
@@ -124,6 +134,16 @@ impl LlmRouter {
     /// Returns a `RoutingDecision` combining model + effort. The effort is
     /// determined by: step preference → role heuristic → budget-aware downgrade.
     pub fn route_step(&self, step: &PlanStep, budget_remaining_pct: f64) -> RoutingDecision {
+        if let Some(mode) = &self.integration_mode {
+            debug!(?mode, "routing with integration mode");
+            if *mode == IntegrationMode::SdkFallback {
+                info!(
+                    step = %step.name,
+                    "SdkFallback mode: step should be routed via Agent SDK (sdk-runner.mjs)"
+                );
+            }
+        }
+
         let provider = self.for_step(step, budget_remaining_pct);
 
         // 1. Determine base effort: explicit preference or role heuristic

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "oco": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/bridge.cjs"],
+      "env": {
+        "OCO_SERVER_URL": "${user_config.oco_server_url}",
+        "OCO_HOOK_SECRET": "${user_config.hook_secret}"
+      }
+    }
+  }
+}

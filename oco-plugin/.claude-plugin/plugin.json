@@ -1,0 +1,36 @@
+{
+  "name": "oco",
+  "version": "0.13.0",
+  "description": "Open Context Orchestrator — AI task orchestration, verification, and audit",
+  "author": {
+    "name": "hoklims",
+    "url": "https://github.com/hoklims"
+  },
+  "repository": "https://github.com/hoklims/oco",
+  "license": "Apache-2.0",
+  "keywords": ["orchestration", "verification", "audit", "agents", "mcp"],
+  "skills": "./skills/",
+  "agents": "./agents/",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json",
+  "channels": [
+    {
+      "server": "oco-events",
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/channel-server.mjs"],
+      "env": {
+        "OCO_SERVER_URL": "${user_config.oco_server_url}"
+      }
+    }
+  ],
+  "userConfig": {
+    "oco_server_url": {
+      "description": "OCO server URL (default: http://localhost:3000)",
+      "sensitive": false
+    },
+    "hook_secret": {
+      "description": "Bearer token for HTTP hook authentication",
+      "sensitive": true
+    }
+  }
+}

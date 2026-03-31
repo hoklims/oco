@@ -44,14 +44,17 @@ const MANIFEST_FILE = '.oco-install-manifest.json';
 const DROPIN_FILE = 'managed-settings.d/50-oco.json';
 const VERSION = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf8')).version;
 
+const PLUGIN_NATIVE_SRC = join(__dirname, 'oco-plugin');
 const MODE_DESCRIPTIONS = {
   full: 'plugin + runtime — all features active',
+  'native-plugin': 'native Claude Code plugin (oco-plugin/) — preferred mode',
   'plugin-only': 'plugin installed, runtime not found — hooks, skills, agents work; MCP tools return fallback results',
   incomplete: 'some plugin files missing — run: npx oco-claude-plugin repair',
   broken: 'settings or hooks missing — plugin will not load, run: npx oco-claude-plugin install --force',
 };
 
-function resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable }) {
+function resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable, nativePlugin }) {
+  if (nativePlugin) return 'native-plugin';
   if (!settingsOk || !allHooksOk) return 'broken';
   if (!bridgeOk) return 'incomplete';
   if (ocoAvailable) return 'full';
@@ -108,10 +111,11 @@ const [,, command, ...args] = process.argv;
 const isGlobal = args.includes('--global') || args.includes('-g');
 const isForce = args.includes('--force') || args.includes('-f');
 const isDryRun = args.includes('--dry-run');
+const isPlugin = args.includes('--plugin');
 
 switch (command) {
-  case 'install':   await install(); break;
-  case 'uninstall': await uninstall(); break;
+  case 'install':   isPlugin ? await installPlugin() : await install(); break;
+  case 'uninstall': isPlugin ? await uninstallPlugin() : await uninstall(); break;
   case 'status':    status(); break;
   case 'doctor':    process.exit(doctor()); break;
   case 'repair':    process.exit(await repair()); break;
@@ -312,7 +316,7 @@ async function install() {
   }
 
   // Mode
-  const mode = resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable });
+  const mode = resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable, nativePlugin: hasNativePlugin() });
   console.log(`\n  Mode: ${mode} (${MODE_DESCRIPTIONS[mode]})`);
 
   if (mode === 'plugin-only') {
@@ -332,7 +336,170 @@ async function install() {
   console.log(`\n  Open Claude Code in this project to activate.\n`);
 }
 
-// --- Uninstall ---
+// --- Install (native plugin) ---
+
+async function installPlugin() {
+  console.log(`\n  OCO Claude Code Plugin v${VERSION} — Native Plugin Mode`);
+
+  // 1. Check Claude Code version >= 1.0.33
+  const claudeVer = getClaudeVersion();
+  if (!claudeVer) {
+    console.error('  ✗ Claude Code not found. Install Claude Code first.');
+    process.exit(1);
+  }
+
+  const minPlugin = { major: 1, minor: 0, patch: 33 };
+  const versionOk = claudeVer.major > minPlugin.major
+    || (claudeVer.major === minPlugin.major && claudeVer.minor > minPlugin.minor)
+    || (claudeVer.major === minPlugin.major && claudeVer.minor === minPlugin.minor && claudeVer.patch >= minPlugin.patch);
+
+  if (!versionOk) {
+    console.error(`  ✗ Claude Code v${claudeVer.raw} is too old. Native plugins require >= ${minPlugin.major}.${minPlugin.minor}.${minPlugin.patch}.`);
+    console.error('    Update: claude update');
+    process.exit(1);
+  }
+
+  // 2. Validate plugin source exists
+  const pluginJsonSrc = join(PLUGIN_NATIVE_SRC, '.claude-plugin', 'plugin.json');
+  if (!existsSync(pluginJsonSrc)) {
+    console.error(`  ✗ Plugin source not found at ${PLUGIN_NATIVE_SRC}`);
+    console.error('    Ensure the oco-plugin/ directory is present in the npm package.');
+    process.exit(1);
+  }
+
+  // 3. Determine target directory
+  const targetDir = isGlobal
+    ? join(homedir(), '.claude', 'plugins', 'oco')
+    : join(findProjectRoot(process.cwd()), '.claude', 'plugins', 'oco');
+
+  console.log(`  Target: ${targetDir}\n`);
+
+  // 4. Copy all plugin files
+  const files = collectFiles(PLUGIN_NATIVE_SRC);
+  let copied = 0;
+  let skipped = 0;
+
+  for (const relPath of files) {
+    const src = join(PLUGIN_NATIVE_SRC, relPath);
+    const dest = join(targetDir, relPath);
+    const destDir = dirname(dest);
+
+    if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
+
+    if (existsSync(dest) && !isForce) {
+      skipped++;
+      console.log(`  skip  ${relPath} (exists, use --force to overwrite)`);
+      continue;
+    }
+
+    try {
+      writeFileSync(dest, readFileSync(src));
+      copied++;
+      console.log(`  copy  ${relPath}`);
+    } catch (err) {
+      skipped++;
+      console.log(`  skip  ${relPath} (${err.code || 'copy failed'})`);
+    }
+  }
+
+  // 5. Write install manifest
+  const manifestPath = join(targetDir, MANIFEST_FILE);
+  const manifest = {
+    version: VERSION,
+    installedAt: new Date().toISOString(),
+    global: isGlobal,
+    mode: 'native-plugin',
+    files,
+  };
+  atomicWriteFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+
+  console.log(`\n  Installed: ${copied} file(s), ${skipped} skipped.`);
+
+  // 6. Post-install summary
+  console.log('\n  Native plugin structure:');
+  console.log('    .claude-plugin/plugin.json  — manifest');
+  console.log('    skills/                     — 6 skills');
+  console.log('    agents/                     — 3 agents');
+  console.log('    hooks/hooks.json            — policy + telemetry hooks');
+  console.log('    scripts/                    — hook scripts + MCP bridge');
+  console.log('    .mcp.json                   — MCP server config');
+
+  const ocoAvailable = commandExists('oco');
+  console.log(`\n  Runtime: ${ocoAvailable ? 'oco binary found' : 'oco binary not found (MCP tools will use fallbacks)'}`);
+  console.log(`  Mode: native-plugin (${MODE_DESCRIPTIONS['native-plugin']})`);
+  console.log(`\n  Open Claude Code in this project to activate.\n`);
+}
+
+// --- Uninstall (native plugin) ---
+
+async function uninstallPlugin() {
+  const targetDir = isGlobal
+    ? join(homedir(), '.claude', 'plugins', 'oco')
+    : join(findProjectRoot(process.cwd()), '.claude', 'plugins', 'oco');
+
+  console.log(`\n  OCO Claude Code Plugin — Uninstall (native)\n`);
+  console.log(`  Target: ${targetDir}\n`);
+
+  const manifestPath = join(targetDir, MANIFEST_FILE);
+
+  if (!existsSync(manifestPath)) {
+    console.log('  No native plugin installation found.\n');
+    process.exit(0);
+  }
+
+  const manifest = safeReadJson(manifestPath, null);
+  if (!manifest || !Array.isArray(manifest.files)) {
+    console.error('  ⚠ Manifest corrupted — removing directory.');
+    rmSync(targetDir, { recursive: true, force: true });
+    console.log('  Done.\n');
+    process.exit(0);
+  }
+
+  // Remove installed files
+  let removed = 0;
+  for (const relPath of manifest.files) {
+    const fullPath = join(targetDir, relPath);
+    if (existsSync(fullPath)) {
+      rmSync(fullPath);
+      removed++;
+      console.log(`  rm    ${relPath}`);
+    }
+  }
+
+  // Remove manifest
+  if (existsSync(manifestPath)) {
+    rmSync(manifestPath);
+    console.log(`  rm    ${MANIFEST_FILE}`);
+  }
+
+  // Clean empty directories
+  const allDirs = new Set();
+  for (const f of manifest.files) {
+    let d = dirname(f);
+    while (d && d !== '.') {
+      allDirs.add(d);
+      d = dirname(d);
+    }
+  }
+  const sortedDirs = [...allDirs].sort((a, b) => b.length - a.length);
+  for (const dir of sortedDirs) {
+    const fullDir = join(targetDir, dir);
+    if (existsSync(fullDir) && isDirEmpty(fullDir)) {
+      rmSync(fullDir, { recursive: true });
+      console.log(`  rmdir ${dir}/`);
+    }
+  }
+
+  // Remove plugin root if empty
+  if (existsSync(targetDir) && isDirEmpty(targetDir)) {
+    rmSync(targetDir, { recursive: true });
+    console.log(`  rmdir oco/`);
+  }
+
+  console.log(`\n  Done! ${removed} file(s) removed.\n`);
+}
+
+// --- Uninstall (legacy) ---
 
 async function uninstall() {
   const targetDir = resolveTarget();
@@ -485,7 +652,7 @@ function status() {
   ].every(f => existsSync(join(targetDir, f)));
   const settingsOk = existsSync(join(targetDir, DROPIN_FILE)) || existsSync(join(targetDir, 'settings.json'));
   const bridgeOk = existsSync(join(targetDir, 'mcp/bridge.cjs'));
-  const mode = resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable });
+  const mode = resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable, nativePlugin: hasNativePlugin() });
   console.log(`  Mode:       ${mode}`);
   console.log();
 }
@@ -648,7 +815,7 @@ function doctor() {
   const settingsOk = existsSync(dropinPath) || existsSync(settingsPath);
   const bridgeOk = existsSync(join(targetDir, 'mcp/bridge.cjs'));
 
-  const mode = resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable });
+  const mode = resolveMode({ settingsOk, allHooksOk, bridgeOk, ocoAvailable, nativePlugin: hasNativePlugin() });
   console.log(`\n  Mode: ${mode} (${MODE_DESCRIPTIONS[mode]})`);
 
   if (mode === 'broken' || mode === 'incomplete') {
@@ -818,24 +985,34 @@ function usage() {
   OCO Claude Code Plugin v${VERSION}
 
   Usage:
-    oco-plugin install   [--global] [--force]   Install plugin
-    oco-plugin uninstall [--global]              Remove plugin
+    oco-plugin install   [--global] [--force]   Install (legacy .claude/ mode)
+    oco-plugin install   --plugin [--global]    Install (native plugin mode)
+    oco-plugin uninstall [--global]              Remove legacy install
+    oco-plugin uninstall --plugin [--global]     Remove native plugin
     oco-plugin status    [--global]              Check installation
     oco-plugin doctor    [--global]              Diagnose installation
     oco-plugin repair    [--global] [--dry-run]  Fix common issues
 
   Options:
     --global, -g   Target ~/.claude/ (all projects)
+    --plugin       Use native Claude Code plugin mode (requires Claude >= 1.0.33)
     --force, -f    Overwrite existing files
     --dry-run      Show what would be fixed without changing anything
 
   Examples:
-    npx oco-claude-plugin install          # project-level
-    npx oco-claude-plugin install -g       # global
-    npx oco-claude-plugin doctor           # check health
-    npx oco-claude-plugin repair           # fix issues
-    npx oco-claude-plugin uninstall        # clean removal
+    npx oco-claude-plugin install              # legacy (default)
+    npx oco-claude-plugin install --plugin     # native plugin (recommended)
+    npx oco-claude-plugin install --plugin -g  # global native plugin
+    npx oco-claude-plugin doctor               # check health
+    npx oco-claude-plugin uninstall            # clean removal
 `);
+}
+
+/** Check if native plugin is installed. */
+function hasNativePlugin() {
+  const projectDir = join(findProjectRoot(process.cwd()), '.claude', 'plugins', 'oco', '.claude-plugin', 'plugin.json');
+  const globalDir = join(homedir(), '.claude', 'plugins', 'oco', '.claude-plugin', 'plugin.json');
+  return existsSync(projectDir) || existsSync(globalDir);
 }
 
 function resolveTarget() {

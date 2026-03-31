@@ -75,6 +75,7 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
     g.insert("oco-tool-runtime", vec!["oco-shared-types"]);
     g.insert("oco-verifier", vec!["oco-shared-types"]);
     g.insert("oco-telemetry", vec!["oco-shared-types"]);
+    g.insert("oco-claude-adapter", vec!["oco-shared-types"]);
 
     // Layer 2 — Mid-layer
     g.insert(
@@ -96,6 +97,7 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
             "oco-planner",
             "oco-telemetry",
             "oco-code-intel",
+            "oco-claude-adapter",
         ],
     );
 
@@ -107,6 +109,7 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
             "oco-orchestrator-core",
             "oco-retrieval",
             "oco-code-intel",
+            "oco-claude-adapter",
         ],
     );
     g.insert(
@@ -118,6 +121,7 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
             "oco-mcp-server",
             "oco-policy-engine",
             "oco-verifier",
+            "oco-claude-adapter",
         ],
     );
 
@@ -231,6 +235,7 @@ fn no_circular_layer_violations() {
         ("oco-tool-runtime", 1),
         ("oco-verifier", 1),
         ("oco-telemetry", 1),
+        ("oco-claude-adapter", 1), // Layer 1: depends only on shared-types
         ("oco-context-engine", 2),
         ("oco-planner", 2),
         ("oco-orchestrator-core", 3),

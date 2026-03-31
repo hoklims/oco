@@ -19,6 +19,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use oco_claude_adapter::{ClaudeCapabilities, ClaudeFeature};
 use oco_planner::{Planner, PlanningContext};
 use oco_shared_types::{
     CheckResult, ExecutionPlan, OrchestrationEvent, PlanStep, StepStatus, StepSummary, TeamSummary,
@@ -189,6 +190,8 @@ pub struct GraphRunner {
     agent_teams: Option<crate::agent_teams::AgentTeamsExecutor>,
     /// External cancellation token (signaled by session manager on stop hook).
     cancel: Option<CancellationToken>,
+    /// Claude Code capabilities detected at runtime (#100).
+    capabilities: Option<Arc<ClaudeCapabilities>>,
 }
 
 impl GraphRunner {
@@ -201,7 +204,14 @@ impl GraphRunner {
             tokens_used: 0,
             agent_teams: None,
             cancel: None,
+            capabilities: None,
         }
+    }
+
+    /// Set Claude Code capabilities for runtime feature gating (#100).
+    pub fn with_capabilities(mut self, caps: Arc<ClaudeCapabilities>) -> Self {
+        self.capabilities = Some(caps);
+        self
     }
 
     pub fn with_event_channel(mut self, tx: UnboundedSender<OrchestrationEvent>) -> Self {
@@ -828,6 +838,17 @@ impl GraphRunner {
             oco_shared_types::StepExecution::Teammate { .. } => "teammate",
             oco_shared_types::StepExecution::McpTool { .. } => "mcp_tool",
         };
+
+        // If capabilities indicate Agent Teams are not available, log a warning (#100)
+        if matches!(
+            step.execution,
+            oco_shared_types::StepExecution::Teammate { .. }
+        ) && let Some(ref caps) = self.capabilities
+            && !caps.has(ClaudeFeature::AgentTeams)
+        {
+            warn!(step = %step.name, "Agent Teams not available, teammate step may fail");
+        }
+
         debug!(
             step_id = %step.id,
             step_name = %step.name,

@@ -1169,6 +1169,27 @@ fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
         test_cmd: profile.test_command.clone(),
     });
 
+    // Claude Code Integration
+    r.emit(UiEvent::DoctorHeader {
+        workspace: "Claude Code Integration".into(),
+    });
+
+    let claude_caps = oco_claude_adapter::ClaudeCapabilities::load_cached(&ws_path)
+        .unwrap_or_else(oco_claude_adapter::ClaudeCapabilities::none);
+
+    for check in claude_caps.doctor_report() {
+        let status = match check.status {
+            oco_claude_adapter::DoctorStatus::Pass => CheckStatus::Pass,
+            oco_claude_adapter::DoctorStatus::Warn => CheckStatus::Warn,
+            oco_claude_adapter::DoctorStatus::Fail => CheckStatus::Fail,
+        };
+        r.emit(UiEvent::DoctorCheck {
+            name: check.name,
+            status,
+            detail: Some(check.detail),
+        });
+    }
+
     r.emit(UiEvent::DoctorSummary { issues });
     Ok(())
 }
