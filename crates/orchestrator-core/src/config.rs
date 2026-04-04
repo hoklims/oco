@@ -176,6 +176,14 @@ impl Default for LlmProviderConfig {
     }
 }
 
+/// Load only the `[gate]` section from an `oco.toml` at the given workspace path.
+///
+/// Returns `GateConfig::default()` if no config file or no `[gate]` section exists.
+pub fn load_gate_config(workspace: &Path) -> GateConfig {
+    let config = OrchestratorConfig::load_from_dir(workspace);
+    config.gate
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("failed to read config file {0}: {1}")]
@@ -186,4 +194,145 @@ pub enum ConfigError {
     SerializeError(String),
     #[error("config validation error: {0}")]
     ValidationError(String),
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oco_shared_types::GateStrategy;
+    use std::io::Write;
+
+    #[test]
+    fn default_config_has_default_gate() {
+        let config = OrchestratorConfig::default();
+        assert_eq!(config.gate.default_policy, "balanced");
+        assert_eq!(config.gate.baseline_path, ".oco/baseline.json");
+    }
+
+    #[test]
+    fn gate_config_from_toml_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+baseline_path = ".oco/my-baseline.json"
+default_policy = "strict"
+min_overall_score = 0.7
+"#
+        )
+        .unwrap();
+
+        let config = OrchestratorConfig::from_file(&config_path).unwrap();
+        assert_eq!(config.gate.baseline_path, ".oco/my-baseline.json");
+        assert_eq!(config.gate.default_policy, "strict");
+        assert_eq!(config.gate.min_overall_score, Some(0.7));
+        assert!(config.gate.max_overall_regression.is_none());
+    }
+
+    #[test]
+    fn gate_config_resolves_correct_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+default_policy = "strict"
+max_overall_regression = -0.05
+"#
+        )
+        .unwrap();
+
+        let config = OrchestratorConfig::from_file(&config_path).unwrap();
+        let policy = config.gate.resolve_policy();
+        assert_eq!(policy.strategy, GateStrategy::Strict);
+        assert!((policy.max_overall_regression - (-0.05)).abs() < 1e-10);
+        // min_overall_score stays at strict default (0.6)
+        assert!((policy.min_overall_score - 0.6).abs() < 1e-10);
+    }
+
+    #[test]
+    fn gate_config_missing_section_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+"#
+        )
+        .unwrap();
+
+        let config = OrchestratorConfig::from_file(&config_path).unwrap();
+        assert_eq!(config.gate, GateConfig::default());
+    }
+
+    #[test]
+    fn invalid_gate_policy_fails_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+default_policy = "mega-strict"
+"#
+        )
+        .unwrap();
+
+        let err = OrchestratorConfig::from_file(&config_path);
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(msg.contains("unknown gate policy"), "got: {msg}");
+    }
+
+    #[test]
+    fn load_gate_config_from_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+default_policy = "lenient"
+baseline_path = "quality/baseline.json"
+"#
+        )
+        .unwrap();
+
+        let gate = load_gate_config(dir.path());
+        assert_eq!(gate.default_policy, "lenient");
+        assert_eq!(gate.baseline_path, "quality/baseline.json");
+    }
+
+    #[test]
+    fn load_gate_config_no_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = load_gate_config(dir.path());
+        assert_eq!(gate, GateConfig::default());
+    }
 }
