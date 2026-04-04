@@ -722,6 +722,20 @@ impl BaselineFreshnessCheck {
     ) -> Self {
         Self::evaluate(baseline.created_at, Utc::now(), fresh_days, stale_days)
     }
+
+    /// Produce an `Unknown` freshness check for baselines without `created_at`
+    /// (e.g., raw `RunScorecard` files that were not saved via `oco baseline-save`).
+    pub fn unknown() -> Self {
+        Self {
+            freshness: BaselineFreshness::Unknown,
+            age_days: 0.0,
+            fresh_threshold_days: Self::DEFAULT_FRESH_DAYS,
+            stale_threshold_days: Self::DEFAULT_STALE_DAYS,
+            recommendation: "baseline has no created_at metadata — save it via \
+                             `oco baseline-save` for freshness tracking"
+                .to_string(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -768,9 +782,21 @@ impl GateReviewArtifact {
         baseline: &EvalBaseline,
         freshness_check: BaselineFreshnessCheck,
     ) -> Self {
+        Self::generate_with_name(gate_result, &baseline.name, freshness_check)
+    }
+
+    /// Generate a review artifact using an explicit baseline name.
+    ///
+    /// Use this when the baseline is a raw `RunScorecard` without `EvalBaseline`
+    /// metadata — pass the scorecard's `run_id` (or any descriptive label) as the name.
+    pub fn generate_with_name(
+        gate_result: GateResult,
+        baseline_name: &str,
+        freshness_check: BaselineFreshnessCheck,
+    ) -> Self {
         let summary = ReviewSummary {
             verdict: gate_result.verdict,
-            baseline_name: baseline.name.clone(),
+            baseline_name: baseline_name.to_string(),
             candidate_id: gate_result.candidate_id.clone(),
             overall_change: format!(
                 "{:.2} → {:.2} ({:+.2})",
@@ -791,7 +817,12 @@ impl GateReviewArtifact {
         let mut recommendations = Vec::new();
 
         // Freshness recommendations
-        if freshness_check.freshness.warrants_warning() {
+        if freshness_check.freshness == BaselineFreshness::Unknown {
+            recommendations.push(format!(
+                "Baseline freshness unknown: {}",
+                freshness_check.recommendation,
+            ));
+        } else if freshness_check.freshness.warrants_warning() {
             recommendations.push(format!(
                 "Baseline is {}: {}",
                 freshness_check.freshness.label(),
@@ -1762,5 +1793,96 @@ mod tests {
         assert_eq!(summary.verdict, parsed.verdict);
         assert_eq!(summary.baseline_name, parsed.baseline_name);
         assert_eq!(summary.dimensions_warning, parsed.dimensions_warning);
+    }
+
+    // ── Q8 consolidation: Unknown freshness ──
+
+    #[test]
+    fn freshness_check_unknown_constructor() {
+        let check = BaselineFreshnessCheck::unknown();
+        assert_eq!(check.freshness, BaselineFreshness::Unknown);
+        assert!((check.age_days - 0.0).abs() < 1e-10);
+        assert!(check.recommendation.contains("baseline-save"));
+        assert_eq!(
+            check.fresh_threshold_days,
+            BaselineFreshnessCheck::DEFAULT_FRESH_DAYS
+        );
+        assert_eq!(
+            check.stale_threshold_days,
+            BaselineFreshnessCheck::DEFAULT_STALE_DAYS
+        );
+    }
+
+    #[test]
+    fn freshness_unknown_does_not_warrant_warning() {
+        assert!(!BaselineFreshness::Unknown.warrants_warning());
+    }
+
+    #[test]
+    fn generate_with_name_matches_generate() {
+        use chrono::Duration;
+        let baseline_sc = full_scorecard("base", 0.8);
+        let candidate_sc = full_scorecard("cand", 0.8);
+        let policy = GatePolicy::default_balanced();
+        let gate_result = GateResult::evaluate(&baseline_sc, &candidate_sc, &policy);
+
+        let mut eval_baseline = EvalBaseline::from_scorecard("v1-stable", baseline_sc, "test");
+        eval_baseline.created_at = Utc::now() - Duration::days(5);
+        let freshness = BaselineFreshnessCheck::from_baseline(&eval_baseline, None, None);
+
+        let via_generate =
+            GateReviewArtifact::generate(gate_result.clone(), &eval_baseline, freshness.clone());
+        let via_name =
+            GateReviewArtifact::generate_with_name(gate_result, &eval_baseline.name, freshness);
+
+        assert_eq!(
+            via_generate.summary.baseline_name,
+            via_name.summary.baseline_name
+        );
+        assert_eq!(via_generate.summary.verdict, via_name.summary.verdict);
+        assert_eq!(
+            via_generate.recommendations.len(),
+            via_name.recommendations.len()
+        );
+    }
+
+    #[test]
+    fn review_artifact_with_unknown_freshness() {
+        let baseline_sc = full_scorecard("base", 0.8);
+        let candidate_sc = full_scorecard("cand", 0.8);
+        let policy = GatePolicy::default_balanced();
+        let gate_result = GateResult::evaluate(&baseline_sc, &candidate_sc, &policy);
+
+        let freshness = BaselineFreshnessCheck::unknown();
+        let artifact =
+            GateReviewArtifact::generate_with_name(gate_result, "legacy-scorecard", freshness);
+
+        assert_eq!(artifact.summary.baseline_name, "legacy-scorecard");
+        assert_eq!(
+            artifact.summary.baseline_freshness,
+            BaselineFreshness::Unknown
+        );
+        // Should recommend baseline-save
+        assert!(
+            artifact
+                .recommendations
+                .iter()
+                .any(|r| r.contains("baseline-save")),
+            "expected baseline-save recommendation, got: {:?}",
+            artifact.recommendations,
+        );
+        // Markdown should still render
+        let md = artifact.to_markdown();
+        assert!(md.contains("Gate Review Report"));
+        assert!(md.contains("[?]")); // Unknown symbol
+    }
+
+    #[test]
+    fn freshness_check_unknown_serde_roundtrip() {
+        let check = BaselineFreshnessCheck::unknown();
+        let json = serde_json::to_string_pretty(&check).unwrap();
+        let parsed: BaselineFreshnessCheck = serde_json::from_str(&json).unwrap();
+        assert_eq!(check.freshness, parsed.freshness);
+        assert!(parsed.recommendation.contains("baseline-save"));
     }
 }
