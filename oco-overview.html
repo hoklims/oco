@@ -1608,7 +1608,7 @@
 
       <div class="warn-item" style="border-left-color: var(--green);">
         <h4><span style="color: var(--green);">FERME</span> — Poids de scorecard non configurables</h4>
-        <p><code>ScorecardWeights</code> dans <code>[scorecard]</code> de <code>oco.toml</code>. Branche dans <code>ScorecardBuilder::build()</code> et <code>review-pack</code>. Fallback strict sur les poids par defaut. 12 tests.</p>
+        <p><code>ScorecardWeights</code> dans <code>[scorecard]</code> de <code>oco.toml</code>. Branche dans tous les chemins runtime : <code>oco run</code>, <code>review-pack</code>, <code>eval-gate</code>, <code>baseline-save</code>, <code>baseline-promote</code>, <code>runs compare</code>. Fallback strict sur les poids par defaut. 12 tests.</p>
       </div>
 
       <div class="warn-item" style="border-left-color: var(--after);">
