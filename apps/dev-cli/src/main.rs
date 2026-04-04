@@ -1842,7 +1842,7 @@ fn cmd_runs_review_pack(
 
     let ws = Path::new(&workspace);
     let gate_cfg = oco_orchestrator_core::load_gate_config_strict(ws)
-        .unwrap_or_else(|_| oco_shared_types::GateConfig::default());
+        .map_err(|e| anyhow::anyhow!("cannot resolve gate config: {e}"))?;
 
     let packet = oco_orchestrator_core::build_review_packet(&run_dir, &run_id, &gate_cfg, ws)?;
 

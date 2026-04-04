@@ -155,9 +155,10 @@ impl ReviewPacket {
     /// Rules:
     /// - If gate verdict is Fail → NotReady
     /// - If trust verdict is None → NotReady
-    /// - If gate verdict is Warn OR baseline is Aging/Stale OR trust is Low → ConditionallyReady
-    /// - If gate verdict is Pass AND trust is High/Medium AND baseline is Fresh → Ready
-    /// - If insufficient data → Unknown
+    /// - If no trust data at all → Unknown
+    /// - If gate or freshness data is missing → ConditionallyReady (incomplete evidence)
+    /// - If gate Warn OR baseline Aging/Stale OR trust Low OR open risks → ConditionallyReady
+    /// - If gate Pass AND trust High/Medium AND baseline Fresh → Ready
     pub fn compute_merge_readiness(
         trust: Option<TrustVerdict>,
         gate: Option<GateVerdict>,
@@ -177,6 +178,11 @@ impl ReviewPacket {
             return MergeReadiness::Unknown;
         }
 
+        // Missing critical evidence — gate or freshness not evaluated means
+        // we cannot confidently declare Ready
+        let gate_missing = gate.is_none();
+        let freshness_missing = freshness.is_none();
+
         // Conditional signals
         let gate_warns = gate == Some(GateVerdict::Warn);
         let baseline_aging = matches!(
@@ -185,11 +191,17 @@ impl ReviewPacket {
         );
         let trust_low = trust == Some(TrustVerdict::Low);
 
-        if gate_warns || baseline_aging || trust_low || has_open_risks {
+        if gate_warns
+            || baseline_aging
+            || trust_low
+            || has_open_risks
+            || gate_missing
+            || freshness_missing
+        {
             return MergeReadiness::ConditionallyReady;
         }
 
-        // If gate is available and passed, or no gate but trust is good
+        // All evidence present and positive
         if matches!(trust, Some(TrustVerdict::High) | Some(TrustVerdict::Medium)) {
             return MergeReadiness::Ready;
         }
@@ -824,10 +836,36 @@ mod tests {
     }
 
     #[test]
-    fn readiness_no_gate_but_good_trust_is_ready() {
+    fn readiness_missing_gate_is_conditional() {
+        assert_eq!(
+            ReviewPacket::compute_merge_readiness(
+                Some(TrustVerdict::High),
+                None,
+                Some(BaselineFreshness::Fresh),
+                false,
+            ),
+            MergeReadiness::ConditionallyReady,
+        );
+    }
+
+    #[test]
+    fn readiness_missing_freshness_is_conditional() {
+        assert_eq!(
+            ReviewPacket::compute_merge_readiness(
+                Some(TrustVerdict::High),
+                Some(GateVerdict::Pass),
+                None,
+                false,
+            ),
+            MergeReadiness::ConditionallyReady,
+        );
+    }
+
+    #[test]
+    fn readiness_missing_both_gate_and_freshness_is_conditional() {
         assert_eq!(
             ReviewPacket::compute_merge_readiness(Some(TrustVerdict::High), None, None, false,),
-            MergeReadiness::Ready,
+            MergeReadiness::ConditionallyReady,
         );
     }
 

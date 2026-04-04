@@ -64,11 +64,15 @@ A new CLI subcommand:
 ```
 Gate Fail                           → NotReady
 Trust None                          → NotReady
-No trust data                       → Unknown
+No trust data at all                → Unknown
+Gate missing OR Freshness missing   → ConditionallyReady (incomplete evidence)
 Gate Warn OR Baseline Aging/Stale   → ConditionallyReady
   OR Trust Low OR Open Risks
-Trust High/Medium + no blockers     → Ready
+Gate Pass + Trust High/Medium       → Ready
+  + Baseline Fresh + no blockers
 ```
+
+**Key invariant:** `Ready` requires *all* critical evidence present and positive. Missing gate or missing freshness is incomplete evidence, not a green light.
 
 ### ReviewPacket structure
 
@@ -100,6 +104,10 @@ oco runs review-pack last --markdown   # Markdown output
 oco runs review-pack last --save       # Save to run dir
 oco runs review-pack last --save ./out # Save to custom dir
 ```
+
+### Fail-closed config loading
+
+`oco runs review-pack` uses `load_gate_config_strict()` (ADR-013 contract). If `oco.toml` exists but contains an invalid `[gate]` section, the command fails with an explicit error rather than silently falling back to defaults. This is consistent with `oco eval-gate` behavior.
 
 ### Rendering
 
