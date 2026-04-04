@@ -748,10 +748,9 @@ impl Renderer for TerminalRenderer {
                     "  {} Baseline freshness: {} ({:.1} days old)",
                     icon, freshness_styled, age_days,
                 ));
-                let _ = self.term.write_line(&format!(
-                    "    {}",
-                    style(&recommendation).dim(),
-                ));
+                let _ = self
+                    .term
+                    .write_line(&format!("    {}", style(&recommendation).dim(),));
             }
 
             // ── Generic ───────────────────────────────────

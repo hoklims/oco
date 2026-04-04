@@ -335,8 +335,9 @@ async fn main() -> Result<()> {
             report,
             workspace,
         } => {
-            let exit_code =
-                cmd_eval_gate(&mut *r, baseline, candidate, policy, json, report, workspace)?;
+            let exit_code = cmd_eval_gate(
+                &mut *r, baseline, candidate, policy, json, report, workspace,
+            )?;
             if exit_code != 0 {
                 std::process::exit(exit_code);
             }
@@ -2061,20 +2062,18 @@ fn cmd_eval_gate(
 
         // Ensure the output directory exists
         if !report_path.exists() {
-            std::fs::create_dir_all(&report_path).map_err(|e| {
-                anyhow::anyhow!("failed to create report directory '{}': {e}", dir)
-            })?;
+            std::fs::create_dir_all(&report_path)
+                .map_err(|e| anyhow::anyhow!("failed to create report directory '{}': {e}", dir))?;
         }
 
         // Load the baseline as EvalBaseline for freshness metadata
-        let eval_baseline = load_eval_baseline(&effective_baseline)?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "cannot generate review report: baseline '{}' is a raw RunScorecard \
+        let eval_baseline = load_eval_baseline(&effective_baseline)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot generate review report: baseline '{}' is a raw RunScorecard \
                      without metadata (save it via `oco baseline-save` first)",
-                    effective_baseline,
-                )
-            })?;
+                effective_baseline,
+            )
+        })?;
 
         let freshness = BaselineFreshnessCheck::from_baseline(
             &eval_baseline,
