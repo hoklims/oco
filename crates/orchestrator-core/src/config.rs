@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use oco_shared_types::{
-    BaselineFreshnessCheck, Budget, EvalBaseline, GateConfig, RepoProfile, ReviewConfig,
+    BaselineDiffSummary, BaselineFreshness, BaselineFreshnessCheck, BaselineHistory, Budget,
+    EvalBaseline, GateConfig, GateResult, PromotionRecommendation, PromotionRecord, RepoProfile,
+    ReviewConfig, RunScorecard,
 };
 use serde::{Deserialize, Serialize};
 
@@ -234,6 +236,141 @@ pub fn evaluate_baseline_freshness(
         gate_cfg.fresh_days,
         gate_cfg.stale_days,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Q11: Baseline promotion operations
+// ---------------------------------------------------------------------------
+
+/// Default path for the baseline history file, relative to workspace root.
+pub const DEFAULT_HISTORY_PATH: &str = ".oco/baseline-history.json";
+
+/// Promote a candidate scorecard to be the new baseline.
+///
+/// This function:
+/// 1. Loads the current baseline (if it exists) from `gate.baseline_path`.
+/// 2. Backs up the current baseline to `<baseline_path>.bak`.
+/// 3. Saves the new baseline to `gate.baseline_path`.
+/// 4. Appends a [`PromotionRecord`] to the baseline history.
+///
+/// Returns the promotion record on success.
+pub fn promote_baseline(
+    workspace: &Path,
+    new_scorecard: RunScorecard,
+    new_name: String,
+    source: String,
+    reason: Option<String>,
+    description: Option<String>,
+) -> Result<PromotionRecord, ConfigError> {
+    let gate_cfg = load_gate_config_strict(workspace)?;
+    let baseline_path = workspace.join(&gate_cfg.baseline_path);
+
+    // Load old baseline (if any)
+    let old_baseline = if baseline_path.exists() {
+        Some(
+            EvalBaseline::load_from(&baseline_path)
+                .map_err(|e| ConfigError::IoError(baseline_path.display().to_string(), e))?,
+        )
+    } else {
+        None
+    };
+
+    // Compute diff
+    let old_name = old_baseline
+        .as_ref()
+        .map(|b| b.name.clone())
+        .unwrap_or_else(|| "(none)".to_string());
+
+    let diff = if let Some(ref old) = old_baseline {
+        BaselineDiffSummary::compute(&old.scorecard, &new_scorecard)
+    } else {
+        // No old baseline — diff is trivially "everything is new"
+        BaselineDiffSummary::compute(&new_scorecard, &new_scorecard)
+    };
+
+    // Evaluate freshness + gate verdict for recommendation
+    let (gate_verdict, baseline_freshness) = if let Some(ref old) = old_baseline {
+        let freshness_check =
+            BaselineFreshnessCheck::from_baseline(old, gate_cfg.fresh_days, gate_cfg.stale_days);
+        let policy = gate_cfg.resolve_policy();
+        let gate_result = GateResult::evaluate(&old.scorecard, &new_scorecard, &policy);
+        (Some(gate_result.verdict), Some(freshness_check.freshness))
+    } else {
+        (None, None)
+    };
+
+    let recommendation = match gate_verdict {
+        Some(gv) => PromotionRecommendation::from_gate_and_freshness(
+            gv,
+            baseline_freshness.unwrap_or(BaselineFreshness::Unknown),
+        ),
+        None => PromotionRecommendation::Promote, // No old baseline = first promotion
+    };
+
+    // Build promotion record
+    let record = PromotionRecord {
+        promoted_at: chrono::Utc::now(),
+        old_baseline_name: old_name,
+        new_baseline_name: new_name.clone(),
+        source,
+        reason,
+        recommendation,
+        gate_verdict,
+        baseline_freshness,
+        diff,
+    };
+
+    // Backup old baseline (atomic-ish: rename then write)
+    if baseline_path.exists() {
+        let backup_path = baseline_path.with_extension("json.bak");
+        std::fs::copy(&baseline_path, &backup_path).map_err(|e| {
+            ConfigError::IoError(
+                format!("backup to {}", backup_path.display()),
+                e.to_string(),
+            )
+        })?;
+    }
+
+    // Ensure parent directory exists
+    if let Some(parent) = baseline_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            ConfigError::IoError(parent.display().to_string(), e.to_string())
+        })?;
+    }
+
+    // Save new baseline
+    let mut new_baseline = EvalBaseline::from_scorecard(new_name, new_scorecard, &record.source);
+    if let Some(desc) = description {
+        new_baseline = new_baseline.with_description(desc);
+    }
+    new_baseline
+        .save_to(&baseline_path)
+        .map_err(|e| ConfigError::IoError(baseline_path.display().to_string(), e))?;
+
+    // Append to history
+    let history_path = workspace.join(DEFAULT_HISTORY_PATH);
+    if let Some(parent) = history_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            ConfigError::IoError(parent.display().to_string(), e.to_string())
+        })?;
+    }
+    let mut history = BaselineHistory::load_from(&history_path)
+        .map_err(|e| ConfigError::IoError(history_path.display().to_string(), e))?;
+    history.append(record.clone());
+    history
+        .save_to(&history_path)
+        .map_err(|e| ConfigError::IoError(history_path.display().to_string(), e))?;
+
+    Ok(record)
+}
+
+/// Load the baseline history for a workspace.
+///
+/// Returns an empty history if the file doesn't exist.
+pub fn load_baseline_history(workspace: &Path) -> Result<BaselineHistory, ConfigError> {
+    let history_path = workspace.join(DEFAULT_HISTORY_PATH);
+    BaselineHistory::load_from(&history_path)
+        .map_err(|e| ConfigError::IoError(history_path.display().to_string(), e))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1096,5 +1233,158 @@ default_format = "json"
             gate_msg2.contains("gate policy") || gate_msg2.contains("unknown gate policy"),
             "error should mention the actual gate problem, got: {gate_msg2}"
         );
+    }
+
+    // ── Q11: Promotion operations ──
+
+    fn make_test_scorecard(run_id: &str, base: f64) -> RunScorecard {
+        use oco_shared_types::{CostMetrics, DimensionScore, ScorecardDimension};
+        let dimensions: Vec<DimensionScore> = ScorecardDimension::all()
+            .iter()
+            .map(|dim| DimensionScore {
+                dimension: *dim,
+                score: base,
+                detail: "test".to_string(),
+            })
+            .collect();
+        let overall = RunScorecard::compute_overall(&dimensions);
+        RunScorecard {
+            run_id: run_id.to_string(),
+            computed_at: chrono::Utc::now(),
+            dimensions,
+            overall_score: overall,
+            cost: CostMetrics::default(),
+        }
+    }
+
+    #[test]
+    fn promote_baseline_first_time() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create oco.toml with gate config
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+baseline_path = ".oco/baseline.json"
+default_policy = "balanced"
+"#
+        )
+        .unwrap();
+
+        let scorecard = make_test_scorecard("run-001", 0.8);
+        let record = promote_baseline(
+            dir.path(),
+            scorecard,
+            "v1-stable".to_string(),
+            "run:run-001".to_string(),
+            Some("first baseline".to_string()),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(record.new_baseline_name, "v1-stable");
+        assert_eq!(record.old_baseline_name, "(none)");
+        assert_eq!(record.recommendation, oco_shared_types::PromotionRecommendation::Promote);
+
+        // Baseline file should exist
+        let baseline_path = dir.path().join(".oco/baseline.json");
+        assert!(baseline_path.exists());
+
+        // History file should exist with 1 entry
+        let history_path = dir.path().join(DEFAULT_HISTORY_PATH);
+        assert!(history_path.exists());
+        let history = oco_shared_types::BaselineHistory::load_from(&history_path).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.latest().unwrap().sequence, 1);
+    }
+
+    #[test]
+    fn promote_baseline_replaces_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+baseline_path = ".oco/baseline.json"
+default_policy = "balanced"
+"#
+        )
+        .unwrap();
+
+        // First promotion
+        let sc1 = make_test_scorecard("run-001", 0.7);
+        promote_baseline(
+            dir.path(),
+            sc1,
+            "v1".to_string(),
+            "run:run-001".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Second promotion
+        let sc2 = make_test_scorecard("run-002", 0.85);
+        let record = promote_baseline(
+            dir.path(),
+            sc2,
+            "v2".to_string(),
+            "run:run-002".to_string(),
+            Some("improved".to_string()),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(record.old_baseline_name, "v1");
+        assert_eq!(record.new_baseline_name, "v2");
+        assert!(record.gate_verdict.is_some());
+
+        // Backup should exist
+        let backup_path = dir.path().join(".oco/baseline.json.bak");
+        assert!(backup_path.exists());
+
+        // New baseline should be v2
+        let baseline = EvalBaseline::load_from(&dir.path().join(".oco/baseline.json")).unwrap();
+        assert_eq!(baseline.name, "v2");
+
+        // History should have 2 entries
+        let history = load_baseline_history(dir.path()).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.latest().unwrap().sequence, 2);
+    }
+
+    #[test]
+    fn load_baseline_history_empty_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = load_baseline_history(dir.path()).unwrap();
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn promote_baseline_no_config_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        // No oco.toml — should use default gate config
+        let scorecard = make_test_scorecard("run-001", 0.8);
+        let record = promote_baseline(
+            dir.path(),
+            scorecard,
+            "v1".to_string(),
+            "test".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(record.new_baseline_name, "v1");
+        // Default baseline_path
+        assert!(dir.path().join(".oco/baseline.json").exists());
     }
 }
