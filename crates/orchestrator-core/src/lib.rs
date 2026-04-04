@@ -20,6 +20,7 @@ pub mod loop_runner;
 pub mod ml_client;
 pub mod replay;
 pub mod runtime;
+pub mod scorecard;
 pub mod state;
 
 pub use config::OrchestratorConfig;
@@ -30,4 +31,5 @@ pub use llm_router::LlmRouter;
 pub use loop_runner::OrchestrationLoop;
 pub use replay::{LoadedTrace, ReplayControls, ReplayRegistry, ReplaySession};
 pub use runtime::OrchestratorRuntime;
+pub use scorecard::ScorecardBuilder;
 pub use state::OrchestrationState;
