@@ -229,6 +229,13 @@ pub enum UiEvent {
         warned_count: usize,
     },
 
+    // ── Baseline Freshness (Q8) ─────────────────────────
+    BaselineFreshness {
+        freshness: String, // "fresh", "aging", "stale", "unknown"
+        age_days: f64,
+        recommendation: String,
+    },
+
     // ── Generic ───────────────────────────────────────────
     Info {
         message: String,

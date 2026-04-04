@@ -164,6 +164,9 @@ enum Commands {
         /// Output full result as JSON
         #[arg(long)]
         json: bool,
+        /// Write a review report (Markdown + JSON) to a directory
+        #[arg(long)]
+        report: Option<String>,
         /// Workspace path (to find oco.toml and .oco/)
         #[arg(long, default_value = ".")]
         workspace: String,
@@ -329,9 +332,11 @@ async fn main() -> Result<()> {
             candidate,
             policy,
             json,
+            report,
             workspace,
         } => {
-            let exit_code = cmd_eval_gate(&mut *r, baseline, candidate, policy, json, workspace)?;
+            let exit_code =
+                cmd_eval_gate(&mut *r, baseline, candidate, policy, json, report, workspace)?;
             if exit_code != 0 {
                 std::process::exit(exit_code);
             }
@@ -1958,15 +1963,17 @@ fn parse_policy_name(name: &str) -> Result<oco_shared_types::GatePolicy> {
 /// Returns the exit code (0=pass, 1=warn, 2=fail).
 ///
 /// Q7: When `baseline_path` or `policy_name` are `None`, reads `[gate]` from `oco.toml`.
+/// Q8: `--report <dir>` generates a review artifact (Markdown + JSON).
 fn cmd_eval_gate(
     r: &mut dyn Renderer,
     baseline_path: Option<String>,
     candidate_path: Option<String>,
     policy_name: Option<String>,
     json_output: bool,
+    report_dir: Option<String>,
     workspace: String,
 ) -> Result<i32> {
-    use oco_shared_types::GateResult;
+    use oco_shared_types::{BaselineFreshnessCheck, GateResult, GateReviewArtifact};
 
     // Load repo gate config from oco.toml (Q7) — strict: fail on invalid config
     let ws = Path::new(&workspace);
@@ -2032,9 +2039,90 @@ fn cmd_eval_gate(
             failed_count: result.failed_dimension_count(),
             warned_count: result.warned_dimension_count(),
         });
+
+        // Q8: Show baseline freshness status in terminal (non-JSON) mode
+        if let Some(eval_baseline) = load_eval_baseline(&effective_baseline)? {
+            let freshness = BaselineFreshnessCheck::from_baseline(
+                &eval_baseline,
+                gate_cfg.fresh_days,
+                gate_cfg.stale_days,
+            );
+            r.emit(UiEvent::BaselineFreshness {
+                freshness: freshness.freshness.label().to_string(),
+                age_days: freshness.age_days,
+                recommendation: freshness.recommendation.clone(),
+            });
+        }
+    }
+
+    // Q8: Generate review artifact report if --report is provided
+    if let Some(ref dir) = report_dir {
+        let report_path = PathBuf::from(dir);
+
+        // Ensure the output directory exists
+        if !report_path.exists() {
+            std::fs::create_dir_all(&report_path).map_err(|e| {
+                anyhow::anyhow!("failed to create report directory '{}': {e}", dir)
+            })?;
+        }
+
+        // Load the baseline as EvalBaseline for freshness metadata
+        let eval_baseline = load_eval_baseline(&effective_baseline)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cannot generate review report: baseline '{}' is a raw RunScorecard \
+                     without metadata (save it via `oco baseline-save` first)",
+                    effective_baseline,
+                )
+            })?;
+
+        let freshness = BaselineFreshnessCheck::from_baseline(
+            &eval_baseline,
+            gate_cfg.fresh_days,
+            gate_cfg.stale_days,
+        );
+
+        let artifact = GateReviewArtifact::generate(result.clone(), &eval_baseline, freshness);
+
+        let md_path = report_path.join("gate-report.md");
+        let json_path = report_path.join("gate-report.json");
+
+        artifact
+            .save_markdown(&md_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        artifact
+            .save_json(&json_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        r.emit(UiEvent::Success {
+            message: format!(
+                "Review report written to {} and {}",
+                md_path.display(),
+                json_path.display(),
+            ),
+        });
     }
 
     Ok(result.verdict.exit_code())
+}
+
+/// Try to load a file as a full `EvalBaseline` (with `created_at` metadata).
+/// Returns `Ok(None)` if the file is a raw `RunScorecard` without baseline metadata.
+fn load_eval_baseline(path: &str) -> Result<Option<oco_shared_types::EvalBaseline>> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read baseline '{}': {e}", path))?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("failed to parse baseline JSON: {e}"))?;
+
+    // EvalBaseline has both "scorecard" and "name" fields
+    if value.get("scorecard").is_some() && value.get("name").is_some() {
+        let baseline: oco_shared_types::EvalBaseline = serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("failed to parse as EvalBaseline: {e}"))?;
+        return Ok(Some(baseline));
+    }
+
+    // Raw RunScorecard — no baseline metadata available
+    Ok(None)
 }
 
 /// Load a scorecard from a baseline file (EvalBaseline JSON) or a raw RunScorecard JSON.

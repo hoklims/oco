@@ -732,6 +732,28 @@ impl Renderer for TerminalRenderer {
                 ));
             }
 
+            // ── Baseline Freshness (Q8) ──────────────────
+            UiEvent::BaselineFreshness {
+                freshness,
+                age_days,
+                recommendation,
+            } => {
+                let (icon, freshness_styled) = match freshness.as_str() {
+                    "fresh" => (self.icon_pass(), style(&freshness).green()),
+                    "aging" => (self.icon_warn(), style(&freshness).yellow()),
+                    "stale" => (self.icon_fail(), style(&freshness).red().bold()),
+                    _ => (self.icon_bullet(), style(&freshness).dim()),
+                };
+                let _ = self.term.write_line(&format!(
+                    "  {} Baseline freshness: {} ({:.1} days old)",
+                    icon, freshness_styled, age_days,
+                ));
+                let _ = self.term.write_line(&format!(
+                    "    {}",
+                    style(&recommendation).dim(),
+                ));
+            }
+
             // ── Generic ───────────────────────────────────
             UiEvent::Info { message } => {
                 let _ = self.term.write_line(&message);

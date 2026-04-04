@@ -419,6 +419,19 @@ impl Renderer for JsonlRenderer {
                 }),
             ),
 
+            UiEvent::BaselineFreshness {
+                freshness,
+                age_days,
+                recommendation,
+            } => self.emit_json(
+                "baseline_freshness",
+                serde_json::json!({
+                    "freshness": freshness,
+                    "age_days": age_days,
+                    "recommendation": recommendation,
+                }),
+            ),
+
             UiEvent::Info { message } => {
                 self.emit_json("info", serde_json::json!({ "message": message }))
             }
