@@ -20,6 +20,11 @@ oco runs handoff last                    # Human-readable handoff document
 oco runs handoff last --json             # Machine-readable mission memory
 oco eval-compare base.json cand.json    # Compare two eval runs (Q5 scorecard)
 oco runs compare <id1> <id2>            # Compare two runs' scorecards
+oco eval-gate baseline.json cand.json   # Quality gate: pass/warn/fail (Q6)
+oco eval-gate b.json c.json --policy strict  # Strict gate policy
+oco eval-gate b.json c.json --json      # Machine-readable gate result
+oco baseline-save last --name v1-stable # Save baseline from last run
+oco baseline-save results.json --name v2 --output .oco/baseline.json
 ```
 
 ### CLI Output Modes
@@ -38,7 +43,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 | # | Crate | Role |
 |---|-------|------|
-| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase**, **MissionMemory**, **RunScorecard**, **ScorecardComparison**, **BatchComparison** |
+| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase**, **MissionMemory**, **RunScorecard**, **ScorecardComparison**, **BatchComparison**, **GateVerdict**, **GatePolicy**, **GateResult**, **EvalBaseline** |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
 | 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer, **call graph extraction** (CallEdge) |
@@ -51,7 +56,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 | 11 | `orchestrator-core` | State machine, action loop, **GraphRunner (DAG execution)**, **LlmRouter (multi-model + effort)**, **AgentTeamsExecutor**, LLM providers, runtime, eval runner, repo profiles |
 | 12 | `mcp-server` | Axum HTTP + MCP server, session management, **HTTP hook endpoints** (Claude Code v2.1.63+), **oco_routes/oco_impact tools** |
 | 13 | **`claude-adapter`** | **Boundary layer: ClaudeVersion detection, ClaudeHookEvent (24 events), HookDecision, ClaudeCapabilities, IntegrationMode, DoctorCheck** |
-| 14 | `dev-cli` | CLI binary (index, search, run, serve, eval, eval-compare, doctor, runs) — event-driven UI with Terminal/JSONL/Quiet renderers, Q5 scorecard persistence |
+| 14 | `dev-cli` | CLI binary (index, search, run, serve, eval, eval-compare, eval-gate, baseline-save, doctor, runs) — event-driven UI with Terminal/JSONL/Quiet renderers, Q5 scorecard persistence, Q6 gate evaluation |
 | — | `architecture-tests` | Architecture fitness tests — enforces crate dependency DAG, layer violations, foundation isolation |
 
 ### Orchestration v2 — Emergent Plan Engine
@@ -84,6 +89,10 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - `RunScorecard` — Q5 multi-dimension evaluation: 7 dimensions (Success, TrustVerdict, VerificationCoverage, MissionContinuity, CostEfficiency, ReplanStability, ErrorRate), weighted composite, `compute_overall()`, `dimension_score()`
 - `ScorecardComparison` — pairwise run comparison with `compare()`, regression detection (Critical/Warning/Minor), `to_report()`, `has_critical_regression()`
 - `BatchComparison` — aggregate comparison across scenario suites, `from_paired()`, overall verdict (Improved/Stable/Regressed)
+- `GateVerdict` — Q6 Pass/Warn/Fail with `exit_code()` (0/1/2), `is_blocking()`, `label()`, `symbol()`
+- `GatePolicy` — Q6 per-dimension thresholds + strategy (Strict/Balanced/Lenient) + overall min score + max regression. Presets: `strict()`, `default_balanced()`, `lenient()`
+- `GateResult` — Q6 full gate evaluation: `evaluate(baseline, candidate, policy)`, per-dimension checks, reasons, `to_report()`, `failed_dimension_count()`, `warned_dimension_count()`
+- `EvalBaseline` — Q6 named scorecard snapshot with `save_to()`/`load_from()`, `from_scorecard()`, `with_description()`
 
 **Key modules**:
 - `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan)
@@ -146,8 +155,8 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (682+)
-cargo test -p oco-shared-types           # 282 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard
+cargo test                               # All tests (836+)
+cargo test -p oco-shared-types           # 311 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate
 cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             #  37 tests — parser, indexer, language detection, call graph extraction
