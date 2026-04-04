@@ -4,7 +4,7 @@
 
 ```bash
 cargo build                              # Build all crates
-cargo test                               # Run full test suite (502+ tests)
+cargo test                               # Run full test suite (695+ tests)
 cargo run -p oco-dev-cli -- --help       # CLI help
 
 oco index ./path                         # Index a workspace
@@ -15,6 +15,9 @@ oco doctor --workspace ./path            # Check plugin health
 oco eval scenarios.jsonl                 # Run evaluation scenarios
 oco runs list                            # List past runs
 oco runs show last                       # Replay last run's trace
+oco runs show last --mission             # Show mission memory (handoff artifact)
+oco runs handoff last                    # Human-readable handoff document
+oco runs handoff last --json             # Machine-readable mission memory
 ```
 
 ### CLI Output Modes
@@ -33,7 +36,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 | # | Crate | Role |
 |---|-------|------|
-| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase** |
+| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase**, **MissionMemory** |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
 | 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer, **call graph extraction** (CallEdge) |
@@ -75,6 +78,7 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - `TeamCoordinator` — spawns members (plan-scoped), shared task list, teardown
 - `SharedTaskList` — claimable/claim(ownership)/complete(ownership)/force_complete
 - `TeamCommunication` — HubSpoke (subagents) / Mesh (Agent Teams) / Pipeline (Factory)
+- `MissionMemory` — durable inter-session handoff artifact: facts, hypotheses, questions, plan, verification, trust verdict, narrative. `from_working_state()`, `to_handoff_text()`, `save_to()`/`load_from()`, `merge_from_previous()`
 
 **Key modules**:
 - `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan)
@@ -137,7 +141,7 @@ cargo test                               # Full suite
 
 ```bash
 cargo test                               # All tests (682+)
-cargo test -p oco-shared-types           # 218 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans
+cargo test -p oco-shared-types           # 257 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory
 cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             #  37 tests — parser, indexer, language detection, call graph extraction
@@ -145,7 +149,7 @@ cargo test -p oco-retrieval              #  19 tests — FTS5, vector, hybrid ra
 cargo test -p oco-telemetry              #  13 tests — event recording, JSONL export, hook telemetry
 cargo test -p oco-claude-adapter         #  70 tests — version detection, 24 hook events, capability matrix, integration modes, doctor checks
 cargo test -p oco-planner               #  52 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, sub-plan parsing
-cargo test -p oco-orchestrator-core      #  81 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution
+cargo test -p oco-orchestrator-core      #  92 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution, mission memory
 cargo test -p oco-mcp-server             #  37 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools
 cargo test -p oco-verifier               #  32 tests — test/build/lint/typecheck runners, auto-detection
 cargo test -p oco-architecture-tests     #   4 tests — dependency DAG, layer violations, foundation isolation, coverage
