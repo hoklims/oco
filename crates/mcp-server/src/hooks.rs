@@ -699,15 +699,38 @@ pub async fn hook_subagent_stop(
 /// Provides a hook point to snapshot critical working memory entries to a
 /// persistent store before they are lost during compaction.
 pub async fn hook_pre_compact(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
 ) -> impl IntoResponse {
     if let Err(resp) = validate_event(&payload, "PreCompact") {
         return resp;
     }
     info!(session = ?payload.session_id, "hook: pre-compact — snapshotting working memory");
-    // TODO: Snapshot WorkingMemory critical entries to persistent store
-    (StatusCode::OK, Json(HookResponse::ok()))
+
+    let oco_sid = resolve_oco_session_id(&state, payload.session_id.as_deref()).await;
+    let typed_snapshot = match oco_sid.as_deref() {
+        Some(sid) => {
+            state
+                .session_manager
+                .create_and_store_compact_snapshot(sid)
+                .await
+        }
+        None => None,
+    };
+
+    match typed_snapshot {
+        Some(snap) if snap.has_content() => (
+            StatusCode::OK,
+            Json(HookResponse::ok_with_message(format!(
+                "snapshotted {} facts, {} hypotheses, {} questions, {} plan steps",
+                snap.verified_facts.len(),
+                snap.hypotheses.len(),
+                snap.questions.len(),
+                snap.plan.len()
+            ))),
+        ),
+        _ => (StatusCode::OK, Json(HookResponse::ok())),
+    }
 }
 
 // ---------------------------------------------------------------------------

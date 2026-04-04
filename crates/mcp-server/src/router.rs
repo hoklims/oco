@@ -840,6 +840,65 @@ mod tests {
         body.collect().await.unwrap().to_bytes().to_vec()
     }
 
+    async fn create_session_with_compactable_state(
+        state: &Arc<AppState>,
+        external_session_id: &str,
+    ) -> String {
+        let oco_sid = state
+            .session_manager
+            .create_test_session("long-running task", Some(external_session_id));
+
+        let session = oco_shared_types::Session::new("long-running task".into(), None);
+        let mut orch_state = oco_orchestrator_core::state::OrchestrationState::new(session);
+
+        for i in 0..6 {
+            let fact = oco_shared_types::MemoryEntry::new(format!("verified fact {i}"), 1.0);
+            let fact_id = fact.id;
+            orch_state.memory.add_finding(fact);
+            orch_state.memory.promote_to_fact(fact_id);
+        }
+
+        for i in 0..4 {
+            orch_state
+                .memory
+                .add_hypothesis(oco_shared_types::MemoryEntry::new(
+                    format!("working hypothesis {i}"),
+                    0.7,
+                ));
+        }
+
+        for i in 0..3 {
+            orch_state
+                .memory
+                .add_question(oco_shared_types::MemoryEntry::new(
+                    format!("open question {i}"),
+                    0.6,
+                ));
+        }
+
+        orch_state.memory.update_plan(vec![
+            "inspect auth boundary".into(),
+            "patch token refresh".into(),
+            "run verification".into(),
+        ]);
+        orch_state
+            .memory
+            .update_planner_state(oco_shared_types::PlannerState {
+                current_step: Some("patch token refresh".into()),
+                replan_count: 2,
+                phase: Some("implement".into()),
+                lease_id: None,
+            });
+
+        state
+            .session_manager
+            .inject_state(&oco_sid, orch_state)
+            .await
+            .unwrap();
+
+        oco_sid
+    }
+
     // -- 1. GET /health -------------------------------------------------------
 
     #[tokio::test]
@@ -1094,6 +1153,100 @@ mod tests {
         let bytes = body_bytes(resp.into_body()).await;
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn hook_pre_compact_stores_snapshot_for_long_session() {
+        let state = test_state();
+        let oco_sid =
+            create_session_with_compactable_state(&state, "claude-pre-compact-long").await;
+        let app = create_router(Arc::clone(&state));
+
+        let body = serde_json::json!({
+            "event": "PreCompact",
+            "session_id": "claude-pre-compact-long",
+            "data": {}
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/pre-compact")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ok"], true);
+        assert!(
+            json["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("snapshotted"),
+            "pre-compact should confirm snapshot creation"
+        );
+
+        let snapshot = state
+            .session_manager
+            .get_typed_compact_snapshot(&oco_sid)
+            .await
+            .expect("pre-compact should store a typed snapshot");
+        assert_eq!(snapshot.verified_facts.len(), 6);
+        assert_eq!(snapshot.hypotheses.len(), 4);
+        assert_eq!(snapshot.questions.len(), 3);
+        assert_eq!(snapshot.plan.len(), 3);
+        assert_eq!(
+            snapshot
+                .planner_state
+                .as_ref()
+                .and_then(|ps| ps.current_step.as_deref()),
+            Some("patch token refresh")
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_post_compact_reinjects_long_session_context() {
+        let state = test_state();
+        let oco_sid =
+            create_session_with_compactable_state(&state, "claude-post-compact-long").await;
+        let app = create_router(Arc::clone(&state));
+
+        let body = serde_json::json!({
+            "event": "PostCompact",
+            "session_id": "claude-post-compact-long",
+            "data": {}
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-compact")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let message = json["message"].as_str().unwrap_or_default();
+        assert_eq!(json["ok"], true);
+        assert!(message.contains("OCO Session State (post-compact)"));
+        assert!(message.contains("Facts (6):"));
+        assert!(message.contains("Hypotheses (4):"));
+        assert!(message.contains("Questions (3):"));
+        assert!(message.contains("Plan:"));
+
+        let snapshot = state
+            .session_manager
+            .get_typed_compact_snapshot(&oco_sid)
+            .await
+            .expect("post-compact should store a typed snapshot");
+        assert!(snapshot.has_content());
+        assert_eq!(snapshot.plan.len(), 3);
     }
 
     // -- 6. Hook auth: rejected without token when secret is set ---------------
@@ -2130,6 +2283,81 @@ mod tests {
         while let Some(result) = join_set.join_next().await {
             result.expect("mixed concurrent hook task panicked");
         }
+    }
+
+    #[tokio::test]
+    async fn hook_concurrent_agent_events_same_session_are_recorded() {
+        use tokio::task::JoinSet;
+
+        let state = test_state();
+        let oco_sid = state
+            .session_manager
+            .create_test_session("parallel teammate run", Some("claude-team-42"));
+
+        let mut join_set = JoinSet::new();
+        let total_requests = 24usize;
+
+        for i in 0..total_requests {
+            let state = Arc::clone(&state);
+            join_set.spawn(async move {
+                let app = create_router(state);
+                let (uri, body) = match i % 3 {
+                    0 => (
+                        "/api/v1/hooks/post-tool",
+                        serde_json::json!({
+                            "event": "PostToolUse",
+                            "session_id": "claude-team-42",
+                            "data": { "tool_name": format!("Edit-{i}"), "success": true }
+                        }),
+                    ),
+                    1 => (
+                        "/api/v1/hooks/task-completed",
+                        serde_json::json!({
+                            "event": "TaskCompleted",
+                            "session_id": "claude-team-42",
+                            "data": { "task_id": format!("task-{i}"), "success": true }
+                        }),
+                    ),
+                    _ => (
+                        "/api/v1/hooks/subagent-stop",
+                        serde_json::json!({
+                            "event": "SubagentStop",
+                            "session_id": "claude-team-42",
+                            "data": { "agent_name": format!("agent-{i}"), "success": true }
+                        }),
+                    ),
+                };
+
+                let req = axum::http::Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap();
+
+                let resp = app.oneshot(req).await.unwrap();
+                assert!(
+                    !resp.status().is_server_error(),
+                    "concurrent agent-like request #{i} returned 5xx: {}",
+                    resp.status()
+                );
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            result.expect("concurrent agent-like hook task panicked");
+        }
+
+        let events = state
+            .session_manager
+            .get_hook_events(&oco_sid)
+            .await
+            .expect("session should exist");
+        assert_eq!(events.len(), total_requests);
+        assert!(events.iter().all(|e| e.recorded));
+        assert!(events.iter().any(|e| e.hook_name == "PostToolUse"));
+        assert!(events.iter().any(|e| e.hook_name == "TaskCompleted"));
+        assert!(events.iter().any(|e| e.hook_name == "SubagentStop"));
     }
 
     // -- Hook failure recovery: handler does not 500 on missing data fields ---

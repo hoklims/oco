@@ -76,35 +76,29 @@ specific workflows tested and nothing beyond.
    full test suite run consistently at each task boundary.
 5. **Cross-crate changes work** — type propagation across 4 crates + 1 app
    completed with natural error-driven iteration.
+6. **Compaction survival is now covered** — `PreCompact` stores a typed
+   `CompactSnapshot`, and `PostCompact` re-injects a human-readable summary for
+   long sessions with populated working memory.
+7. **Concurrent agent-like hook traffic is covered** — parallel
+   `PostToolUse`/`TaskCompleted`/`SubagentStop` requests against the same
+   correlated session complete without 5xx or dropped recordings.
+8. **Adversarial hook inputs are covered** — malformed JSON, oversized bodies,
+   auth edge cases, missing fields, and mixed valid/invalid concurrent traffic
+   all degrade to bounded 4xx/429-style behavior rather than panics.
 
 ### What is NOT validated
 
 Each item below carries a specific risk if deployed without further testing.
 
-1. **Long sessions (>50% context)** — untested.  Risk: hooks or skills may
-   behave differently after `/compact` strips context.  `PostCompact`
-   re-injection is a stub (TODO #45), so critical state could silently
-   disappear.
-2. **Concurrent agent execution** — untested.  Risk: Agent Teams and parallel
-   subagents may produce race conditions in session state or hook ordering.
-3. **Hook failure recovery** — untested.  Risk: a hook timeout or 500 could
-   silently drop events or, worse, block Claude Code if the hook is
-   configured as blocking.
-4. **Rate limiting / abuse** — untested.  Risk: hook endpoints accept unlimited
-   requests (TODO in `hooks.rs:80`); a runaway loop or external caller could
-   exhaust server resources.
-5. **PostCompact context re-injection** — stub only (TODO #45).  Risk: after
-   compaction, working memory and plan state are lost from Claude's context
-   with no recovery mechanism.
-6. **Incremental re-indexing** — stub only (TODO #45).  Risk: symbol index goes
+1. **Incremental re-indexing** — stub only (TODO #45).  Risk: symbol index goes
    stale after file edits, degrading search and code-intel accuracy over long
    sessions.
-7. **Non-Rust projects** — untested.  Risk: hook payloads, skill workflows, and
+2. **Non-Rust projects** — untested.  Risk: hook payloads, skill workflows, and
    verification commands are only proven on a Cargo workspace.  Node, Python,
    or polyglot repos may hit unexpected code paths.
-8. **Adversarial inputs** — untested.  Risk: malformed hook payloads, oversized
-   bodies, or auth bypass attempts could crash handlers or leak state.  Auth
-   middleware exists but has no integration tests.
+3. **Full end-to-end Claude Code multi-agent lifecycle** — not separately
+   validated with a real external Claude Code process.  Risk: real client
+   timing/order may differ slightly from the HTTP-level integration tests.
 
 ### Observability metrics for continued validation
 
@@ -116,7 +110,7 @@ Track across the next 10-20 real sessions:
 | Hook latency p99 | Server-side timing | < 50ms |
 | Skill invocation success rate | Skill execution logs | > 95% |
 | False-positive blocks | Pre-tool-use hook denials | 0 on legitimate ops |
-| Context survival after compact | PostCompact hook | N/A (not yet wired) |
+| Context survival after compact | PreCompact/PostCompact hooks | reinjection text present when snapshot has content |
 | Test suite stability | CI / manual runs | 0 regressions |
 
 ## Consequences

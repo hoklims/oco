@@ -191,7 +191,7 @@ oco baseline-promote last --force          # Override Reject recommendation
 oco baseline-history                       # Show promotion history
 oco baseline-history --json                # Machine-readable history
 oco baseline-history --markdown            # Markdown history document
-oco baseline-history -n 5                  # Last 5 entries only
+oco baseline-history --limit 5             # Last 5 entries only
 ```
 
 ### File layout

@@ -1611,9 +1611,9 @@
         <p><code>ScorecardWeights</code> dans <code>[scorecard]</code> de <code>oco.toml</code>. Branche dans tous les chemins runtime : <code>oco run</code>, <code>review-pack</code>, <code>eval-gate</code>, <code>baseline-save</code>, <code>baseline-promote</code>, <code>runs compare</code>. Fallback strict sur les poids par defaut. 12 tests.</p>
       </div>
 
-      <div class="warn-item" style="border-left-color: var(--after);">
-        <h4><span style="color: var(--after);">PARTIEL</span> — Hooks non valides en conditions adverses</h4>
-        <p>Tests adversaires ajoutes (payloads malformes, auth edge cases, champs inattendus). Sessions longues et agents concurrents restent non testes.</p>
+      <div class="warn-item" style="border-left-color: var(--green);">
+        <h4><span style="color: var(--green);">FERME</span> — Hooks non valides en conditions adverses</h4>
+        <p>Tests adversaires + compaction + concurrence: payloads malformes, auth edge cases, corps surdimensionnes, <code>PreCompact</code>/<code>PostCompact</code> sur session chargee, et trafic hooks concurrent sur une session correlee. Le reliquat restant est ailleurs: re-index incremental encore stub, pas la robustesse hooks.</p>
       </div>
 
       <div class="warn-item" style="border-left-color: var(--green);">
