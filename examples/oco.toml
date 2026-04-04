@@ -72,9 +72,10 @@ default_format = "terminal"              # Default output: "terminal", "markdown
 # Promotion uses the [gate] section above for baseline_path and policy.
 # The audit trail is stored at .oco/baseline-history.json (automatic).
 #
-# Promote a new baseline:
+# Promote a new baseline (aborts on Reject unless --force):
 #   oco baseline-promote last --name v2-stable --reason "CI passed"
 #   oco baseline-promote results.json --name v2 --json
+#   oco baseline-promote last --name v2 --force   # override Reject
 #
 # View audit trail:
 #   oco baseline-history

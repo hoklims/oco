@@ -32,7 +32,8 @@ oco runs review-pack last              # Q9: unified review packet (terminal)
 oco runs review-pack last --json       # Q9: JSON review packet
 oco runs review-pack last --markdown   # Q9: Markdown review document
 oco runs review-pack last --save       # Q9: save to run directory
-oco baseline-promote last --name v2    # Q11: promote candidate to baseline
+oco baseline-promote last --name v2    # Q11: promote (aborts on Reject)
+oco baseline-promote last --name v2 --force  # Q11: override Reject
 oco baseline-promote res.json --name v2 --reason "CI passed" --json
 oco baseline-history                   # Q11: view promotion audit trail
 oco baseline-history --json --limit 5  # Q11: JSON audit trail (recent 5)

@@ -53,6 +53,9 @@ oco baseline-history --limit 3
 # - Shows a promotion recommendation (promote/review/reject)
 # - Outputs a diff between old and new baseline
 
+# Q11: Safety: if the gate fails, baseline-promote aborts with exit code 2.
+#   Use --force to override: oco baseline-promote last --name v2 --force
+#
 # Q11: JSON output for CI integration:
 #   oco baseline-promote last --name v2 --reason "release" --json
 #   oco baseline-history --json

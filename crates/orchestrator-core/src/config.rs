@@ -249,9 +249,12 @@ pub const DEFAULT_HISTORY_PATH: &str = ".oco/baseline-history.json";
 ///
 /// This function:
 /// 1. Loads the current baseline (if it exists) from `gate.baseline_path`.
-/// 2. Backs up the current baseline to `<baseline_path>.bak`.
-/// 3. Saves the new baseline to `gate.baseline_path`.
-/// 4. Appends a [`PromotionRecord`] to the baseline history.
+/// 2. Evaluates the candidate against the gate policy.
+/// 3. If the recommendation is `Reject` and `force` is `false`, aborts
+///    without writing anything and returns [`ConfigError::PromotionRejected`].
+/// 4. Backs up the current baseline to `<baseline_path>.bak`.
+/// 5. Saves the new baseline to `gate.baseline_path`.
+/// 6. Appends a [`PromotionRecord`] to the baseline history.
 ///
 /// Returns the promotion record on success.
 pub fn promote_baseline(
@@ -261,6 +264,7 @@ pub fn promote_baseline(
     source: String,
     reason: Option<String>,
     description: Option<String>,
+    force: bool,
 ) -> Result<PromotionRecord, ConfigError> {
     let gate_cfg = load_gate_config_strict(workspace)?;
     let baseline_path = workspace.join(&gate_cfg.baseline_path);
@@ -319,6 +323,11 @@ pub fn promote_baseline(
         baseline_freshness,
         diff,
     };
+
+    // Guard: abort on Reject unless --force
+    if recommendation == PromotionRecommendation::Reject && !force {
+        return Err(ConfigError::PromotionRejected(Box::new(record)));
+    }
 
     // Backup old baseline (atomic-ish: rename then write)
     if baseline_path.exists() {
@@ -381,6 +390,11 @@ pub enum ConfigError {
     SerializeError(String),
     #[error("config validation error: {0}")]
     ValidationError(String),
+    /// Q11: promotion aborted because recommendation is Reject and `--force`
+    /// was not provided.  Contains the computed record so the CLI can display
+    /// the diff and recommendation before aborting.
+    #[error("promotion rejected — use --force to override")]
+    PromotionRejected(Box<PromotionRecord>),
 }
 
 // ---------------------------------------------------------------------------
@@ -1281,6 +1295,7 @@ default_policy = "balanced"
             "run:run-001".to_string(),
             Some("first baseline".to_string()),
             None,
+            false,
         )
         .unwrap();
 
@@ -1329,10 +1344,11 @@ default_policy = "balanced"
             "run:run-001".to_string(),
             None,
             None,
+            false,
         )
         .unwrap();
 
-        // Second promotion
+        // Second promotion (improved score — should pass gate)
         let sc2 = make_test_scorecard("run-002", 0.85);
         let record = promote_baseline(
             dir.path(),
@@ -1341,6 +1357,7 @@ default_policy = "balanced"
             "run:run-002".to_string(),
             Some("improved".to_string()),
             None,
+            false,
         )
         .unwrap();
 
@@ -1381,11 +1398,134 @@ default_policy = "balanced"
             "test".to_string(),
             None,
             None,
+            false,
         )
         .unwrap();
 
         assert_eq!(record.new_baseline_name, "v1");
         // Default baseline_path
         assert!(dir.path().join(".oco/baseline.json").exists());
+    }
+
+    #[test]
+    fn promote_baseline_reject_aborts_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+baseline_path = ".oco/baseline.json"
+default_policy = "strict"
+"#
+        )
+        .unwrap();
+
+        // Create an initial high-quality baseline
+        let sc_good = make_test_scorecard("run-001", 0.95);
+        promote_baseline(
+            dir.path(),
+            sc_good,
+            "v1-good".to_string(),
+            "run:run-001".to_string(),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        // Try promoting a terrible candidate — strict policy will reject
+        let sc_bad = make_test_scorecard("run-002", 0.0);
+        let err = promote_baseline(
+            dir.path(),
+            sc_bad,
+            "v2-bad".to_string(),
+            "run:run-002".to_string(),
+            None,
+            None,
+            false,
+        );
+        assert!(err.is_err(), "should abort on Reject without --force");
+
+        // Verify: baseline should still be v1-good (not overwritten)
+        let baseline = EvalBaseline::load_from(&dir.path().join(".oco/baseline.json")).unwrap();
+        assert_eq!(baseline.name, "v1-good");
+
+        // History should still have only 1 entry
+        let history = load_baseline_history(dir.path()).unwrap();
+        assert_eq!(history.len(), 1);
+
+        // Check the error variant carries the record
+        match err.unwrap_err() {
+            ConfigError::PromotionRejected(record) => {
+                assert_eq!(
+                    record.recommendation,
+                    oco_shared_types::PromotionRecommendation::Reject,
+                );
+                assert_eq!(record.new_baseline_name, "v2-bad");
+            }
+            other => panic!("expected PromotionRejected, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn promote_baseline_reject_proceeds_with_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+baseline_path = ".oco/baseline.json"
+default_policy = "strict"
+"#
+        )
+        .unwrap();
+
+        // Create an initial high-quality baseline
+        let sc_good = make_test_scorecard("run-001", 0.95);
+        promote_baseline(
+            dir.path(),
+            sc_good,
+            "v1-good".to_string(),
+            "run:run-001".to_string(),
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        // Force promote a terrible candidate
+        let sc_bad = make_test_scorecard("run-002", 0.0);
+        let record = promote_baseline(
+            dir.path(),
+            sc_bad,
+            "v2-forced".to_string(),
+            "run:run-002".to_string(),
+            Some("emergency override".to_string()),
+            None,
+            true, // --force
+        )
+        .unwrap();
+
+        assert_eq!(
+            record.recommendation,
+            oco_shared_types::PromotionRecommendation::Reject,
+        );
+        assert_eq!(record.new_baseline_name, "v2-forced");
+
+        // Baseline should now be v2-forced
+        let baseline = EvalBaseline::load_from(&dir.path().join(".oco/baseline.json")).unwrap();
+        assert_eq!(baseline.name, "v2-forced");
+
+        // History should have 2 entries
+        let history = load_baseline_history(dir.path()).unwrap();
+        assert_eq!(history.len(), 2);
     }
 }

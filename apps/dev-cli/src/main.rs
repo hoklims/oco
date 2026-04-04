@@ -195,6 +195,9 @@ enum Commands {
     /// Loads the current baseline, evaluates the candidate against it,
     /// backs up the old baseline, saves the new one, and appends an
     /// audit trail entry to `.oco/baseline-history.json`.
+    ///
+    /// If the gate verdict is Fail (recommendation: reject), the promotion
+    /// is aborted unless --force is provided.
     BaselinePromote {
         /// Source: run ID ("last"), eval results file, or scorecard.json path
         source: String,
@@ -213,6 +216,9 @@ enum Commands {
         /// Output the promotion record as JSON
         #[arg(long)]
         json: bool,
+        /// Force promotion even when recommendation is reject
+        #[arg(long)]
+        force: bool,
     },
     /// Show the baseline promotion audit trail (Q11)
     BaselineHistory {
@@ -412,7 +418,17 @@ async fn main() -> Result<()> {
             description,
             workspace,
             json,
-        } => cmd_baseline_promote(&mut *r, source, name, reason, description, workspace, json)?,
+            force,
+        } => cmd_baseline_promote(
+            &mut *r,
+            source,
+            name,
+            reason,
+            description,
+            workspace,
+            json,
+            force,
+        )?,
         Commands::BaselineHistory {
             workspace,
             json,
@@ -2518,6 +2534,7 @@ fn cmd_baseline_save(
 // Q11: Baseline promotion & audit trail
 // ═══════════════════════════════════════════════════════════
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_baseline_promote(
     r: &mut dyn Renderer,
     source: String,
@@ -2526,6 +2543,7 @@ fn cmd_baseline_promote(
     description: Option<String>,
     workspace: String,
     json: bool,
+    force: bool,
 ) -> Result<()> {
     let ws = Path::new(&workspace);
 
@@ -2539,15 +2557,55 @@ fn cmd_baseline_promote(
         (sc, format!("file:{source}"))
     };
 
-    let record = oco_orchestrator_core::promote_baseline(
+    let result = oco_orchestrator_core::promote_baseline(
         ws,
         scorecard,
         name.clone(),
         source_label,
         reason,
         description,
-    )
-    .map_err(|e| anyhow::anyhow!("promotion failed: {e}"))?;
+        force,
+    );
+
+    // Handle PromotionRejected: show the record + diff, then abort with exit code 2
+    let record = match result {
+        Ok(record) => record,
+        Err(oco_orchestrator_core::config::ConfigError::PromotionRejected(record)) => {
+            if json {
+                // In JSON mode, output the record with an "aborted" wrapper
+                let wrapper = serde_json::json!({
+                    "status": "rejected",
+                    "message": "promotion rejected — use --force to override",
+                    "record": record,
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&wrapper)
+                        .map_err(|e| anyhow::anyhow!("serialize: {e}"))?
+                );
+            } else {
+                r.emit(UiEvent::Error {
+                    message: format!(
+                        "{} Promotion rejected: '{}' → '{}' (gate: {})",
+                        record.recommendation.symbol(),
+                        record.old_baseline_name,
+                        record.new_baseline_name,
+                        record
+                            .gate_verdict
+                            .map_or("n/a".to_string(), |v| v.symbol().to_string()),
+                    ),
+                });
+                println!();
+                println!("{}", record.diff.to_report());
+                println!();
+                r.emit(UiEvent::Info {
+                    message: "Use --force to override this safety check.".to_string(),
+                });
+            }
+            std::process::exit(2);
+        }
+        Err(e) => return Err(anyhow::anyhow!("promotion failed: {e}")),
+    };
 
     if json {
         let json_str = serde_json::to_string_pretty(&record)
@@ -2624,7 +2682,16 @@ fn cmd_baseline_history(
         let json_str = limited.to_json().map_err(|e| anyhow::anyhow!("{e}"))?;
         println!("{json_str}");
     } else if markdown {
-        println!("{}", history.to_markdown());
+        // Apply limit: slice entries the same way as JSON and terminal
+        let limited = if limit < history.len() {
+            let mut h = history.clone();
+            let start = h.entries.len().saturating_sub(limit);
+            h.entries = h.entries[start..].to_vec();
+            h
+        } else {
+            history
+        };
+        println!("{}", limited.to_markdown());
     } else {
         // Terminal output — show recent entries
         let recent = history.recent(limit);

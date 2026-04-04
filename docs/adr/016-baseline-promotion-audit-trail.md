@@ -69,7 +69,7 @@ A deterministic recommendation derived from gate verdict and baseline freshness 
 | Pass | Stale | **Review** |
 | Pass | Fresh / Aging / Unknown | **Promote** |
 
-The logic is a pure function — no LLM calls, no heuristics, no configuration. A `Reject` does not block the CLI command (the user can override with `--force`), but the recommendation is recorded in the audit trail. Methods: `label()` returns `"promote"` / `"review"` / `"reject"`, `symbol()` returns `[PROMOTE]` / `[REVIEW]` / `[REJECT]`.
+The logic is a pure function — no LLM calls, no heuristics, no configuration. A `Reject` aborts the promotion by default — the user must provide `--force` to override, and the override is recorded in the audit trail. Methods: `label()` returns `"promote"` / `"review"` / `"reject"`, `symbol()` returns `[PROMOTE]` / `[REVIEW]` / `[REJECT]`.
 
 #### 2. `BaselineDiffSummary`
 
@@ -210,7 +210,7 @@ oco baseline-history -n 5                  # Last 5 entries only
 - **Deterministic**: `PromotionRecommendation` is a pure function of `GateVerdict` and `BaselineFreshness`. No LLM calls, no probability thresholds, no external dependencies.
 - **Local-first**: The history file is plain JSON on disk. No database, no cloud service, no network dependencies. Consistent with the project's local-first principle.
 - **Append-only**: The history file is never truncated or rewritten (except for JSON re-serialization when appending). This provides a reliable audit trail without the complexity of a write-ahead log or database.
-- **Non-blocking**: A `Reject` recommendation does not hard-block the CLI. The user can override with `--force`, and the override is recorded in the history. This balances safety with developer autonomy.
+- **Safe by default**: A `Reject` recommendation aborts the promotion (exit code 2). The user can override with `--force`, and the override is recorded in the history. This balances safety with developer autonomy.
 
 ## Consequences
 
