@@ -1,0 +1,28 @@
+{
+  "name": "v0.5-stable",
+  "created_at": "2026-04-01T00:00:00Z",
+  "scorecard": {
+    "run_id": "baseline-v0.5",
+    "computed_at": "2026-04-01T00:00:00Z",
+    "dimensions": [
+      { "dimension": "success", "score": 0.9, "detail": "9/10 scenarios passed" },
+      { "dimension": "trust_verdict", "score": 0.8, "detail": "trust=high average" },
+      { "dimension": "verification_coverage", "score": 0.75, "detail": "75% files verified" },
+      { "dimension": "mission_continuity", "score": 0.7, "detail": "7/10 missions have content" },
+      { "dimension": "cost_efficiency", "score": 0.6, "detail": "avg 40k tokens" },
+      { "dimension": "replan_stability", "score": 0.85, "detail": "avg 0.5 replans" },
+      { "dimension": "error_rate", "score": 0.9, "detail": "low error rate" }
+    ],
+    "overall_score": 0.81,
+    "cost": {
+      "steps": 12,
+      "tokens": 40000,
+      "duration_ms": 15000,
+      "tool_calls": 8,
+      "verify_cycles": 2,
+      "replans": 0
+    }
+  },
+  "description": "Stable baseline from v0.5 release eval suite",
+  "source": "oco eval --output baseline-v0.5-results.json"
+}
