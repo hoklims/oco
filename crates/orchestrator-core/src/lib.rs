@@ -26,7 +26,8 @@ pub mod state;
 
 pub use config::{
     DEFAULT_HISTORY_PATH, OrchestratorConfig, evaluate_baseline_freshness, load_baseline_history,
-    load_gate_config, load_gate_config_strict, load_review_config_strict, promote_baseline,
+    load_gate_config, load_gate_config_strict, load_review_config_strict, load_scorecard_weights,
+    promote_baseline,
 };
 pub use error::OrchestratorError;
 pub use graph_runner::GraphRunner;

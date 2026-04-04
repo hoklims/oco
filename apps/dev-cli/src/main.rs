@@ -235,6 +235,21 @@ enum Commands {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Prune old entries from the baseline history, keeping only the most recent N
+    BaselineHistoryPrune {
+        /// Number of entries to keep (most recent)
+        #[arg(long)]
+        keep: usize,
+        /// Workspace path
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Preview what would be removed without modifying anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Check plugin health and configuration
     Doctor {
         /// Workspace path to check
@@ -435,6 +450,12 @@ async fn main() -> Result<()> {
             markdown,
             limit,
         } => cmd_baseline_history(&mut *r, workspace, json, markdown, limit)?,
+        Commands::BaselineHistoryPrune {
+            keep,
+            workspace,
+            dry_run,
+            json,
+        } => cmd_baseline_history_prune(&mut *r, workspace, keep, dry_run, json)?,
         Commands::Doctor { workspace } => cmd_doctor(&mut *r, workspace)?,
         Commands::Runs { action } => match action {
             RunsAction::Show {
@@ -2707,6 +2728,102 @@ fn cmd_baseline_history(
             println!("#{}", entry.sequence);
             println!("{}", entry.promotion.to_summary());
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_baseline_history_prune(
+    r: &mut dyn Renderer,
+    workspace: String,
+    keep: usize,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    let ws = Path::new(&workspace);
+    let mut history = oco_orchestrator_core::load_baseline_history(ws)
+        .map_err(|e| anyhow::anyhow!("failed to load baseline history: {e}"))?;
+
+    if history.is_empty() {
+        r.emit(UiEvent::Info {
+            message: "No baseline promotions recorded. Nothing to prune.".to_string(),
+        });
+        return Ok(());
+    }
+
+    if dry_run {
+        let to_remove = history.prune_preview(keep);
+        if to_remove.is_empty() {
+            r.emit(UiEvent::Info {
+                message: format!(
+                    "Nothing to prune: {} entries, keeping {}.",
+                    history.len(),
+                    keep
+                ),
+            });
+        } else if json {
+            let entries: Vec<_> = to_remove.iter().map(|e| &e.promotion).collect();
+            let json_str = serde_json::to_string_pretty(&serde_json::json!({
+                "dry_run": true,
+                "total": history.len(),
+                "keep": keep,
+                "would_remove": to_remove.len(),
+                "entries": entries,
+            }))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!("{json_str}");
+        } else {
+            r.emit(UiEvent::Info {
+                message: format!(
+                    "Dry run: would remove {} of {} entries (keeping {}):",
+                    to_remove.len(),
+                    history.len(),
+                    keep
+                ),
+            });
+            for entry in &to_remove {
+                println!("  #{}: {}", entry.sequence, entry.promotion.new_baseline_name);
+            }
+        }
+        return Ok(());
+    }
+
+    let total_before = history.len();
+    let removed = history.prune(keep);
+
+    if removed == 0 {
+        r.emit(UiEvent::Info {
+            message: format!(
+                "Nothing to prune: {} entries, keeping {}.",
+                total_before, keep
+            ),
+        });
+        return Ok(());
+    }
+
+    // Save the pruned history
+    let history_path = ws.join(oco_orchestrator_core::DEFAULT_HISTORY_PATH);
+    history
+        .save_to(&history_path)
+        .map_err(|e| anyhow::anyhow!("failed to save pruned history: {e}"))?;
+
+    if json {
+        let json_str = serde_json::to_string_pretty(&serde_json::json!({
+            "pruned": removed,
+            "remaining": history.len(),
+            "total_before": total_before,
+        }))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!("{json_str}");
+    } else {
+        r.emit(UiEvent::Info {
+            message: format!(
+                "Pruned {} entries. {} entries remaining (was {}).",
+                removed,
+                history.len(),
+                total_before,
+            ),
+        });
     }
 
     Ok(())

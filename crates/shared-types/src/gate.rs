@@ -1345,6 +1345,33 @@ impl BaselineHistory {
         serde_json::to_string_pretty(self)
             .map_err(|e| format!("failed to serialize baseline history: {e}"))
     }
+
+    /// Prune old entries, keeping only the most recent `keep` entries.
+    ///
+    /// Returns the number of entries removed.
+    /// If `keep >= self.len()`, no entries are removed.
+    pub fn prune(&mut self, keep: usize) -> usize {
+        if self.entries.len() <= keep {
+            return 0;
+        }
+        let removed = self.entries.len() - keep;
+        // Keep the tail (most recent entries).
+        let start = self.entries.len() - keep;
+        self.entries = self.entries.split_off(start);
+        removed
+    }
+
+    /// Preview which entries would be removed by `prune(keep)`.
+    ///
+    /// Returns the entries that would be dropped (oldest first), without
+    /// modifying the history.
+    pub fn prune_preview(&self, keep: usize) -> Vec<&BaselineHistoryEntry> {
+        if self.entries.len() <= keep {
+            return Vec::new();
+        }
+        let drop_count = self.entries.len() - keep;
+        self.entries.iter().take(drop_count).collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2737,5 +2764,82 @@ mod tests {
         let json = h.to_json().unwrap();
         assert!(json.contains("schema_version"));
         assert!(json.contains("entries"));
+    }
+
+    // ── BaselineHistory::prune ──
+
+    fn make_history(n: usize) -> BaselineHistory {
+        let mut h = BaselineHistory::new();
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.7);
+        for i in 0..n {
+            let diff = BaselineDiffSummary::compute(&old, &new);
+            h.append(PromotionRecord {
+                promoted_at: Utc::now(),
+                old_baseline_name: format!("v{i}"),
+                new_baseline_name: format!("v{}", i + 1),
+                source: "test".to_string(),
+                reason: None,
+                recommendation: PromotionRecommendation::Promote,
+                gate_verdict: None,
+                baseline_freshness: None,
+                diff,
+            });
+        }
+        h
+    }
+
+    #[test]
+    fn prune_keeps_most_recent() {
+        let mut h = make_history(5);
+        assert_eq!(h.len(), 5);
+        let removed = h.prune(3);
+        assert_eq!(removed, 2);
+        assert_eq!(h.len(), 3);
+        // Kept entries should be the last 3 (sequences 3, 4, 5)
+        assert_eq!(h.entries[0].sequence, 3);
+        assert_eq!(h.entries[2].sequence, 5);
+    }
+
+    #[test]
+    fn prune_noop_when_fewer_entries() {
+        let mut h = make_history(3);
+        let removed = h.prune(5);
+        assert_eq!(removed, 0);
+        assert_eq!(h.len(), 3);
+    }
+
+    #[test]
+    fn prune_noop_when_exact() {
+        let mut h = make_history(3);
+        let removed = h.prune(3);
+        assert_eq!(removed, 0);
+        assert_eq!(h.len(), 3);
+    }
+
+    #[test]
+    fn prune_to_zero() {
+        let mut h = make_history(5);
+        let removed = h.prune(0);
+        assert_eq!(removed, 5);
+        assert!(h.is_empty());
+    }
+
+    #[test]
+    fn prune_preview_does_not_modify() {
+        let h = make_history(5);
+        let preview = h.prune_preview(3);
+        assert_eq!(preview.len(), 2);
+        assert_eq!(preview[0].sequence, 1);
+        assert_eq!(preview[1].sequence, 2);
+        // History unchanged
+        assert_eq!(h.len(), 5);
+    }
+
+    #[test]
+    fn prune_preview_empty_when_under_limit() {
+        let h = make_history(3);
+        let preview = h.prune_preview(5);
+        assert!(preview.is_empty());
     }
 }
