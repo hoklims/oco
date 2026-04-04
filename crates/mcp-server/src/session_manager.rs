@@ -87,6 +87,8 @@ pub struct SessionState {
     pub dashboard_events: Vec<DashboardEvent>,
     /// Last compact snapshot created by post-compact handler.
     pub last_compact_snapshot: Option<oco_shared_types::CompactSnapshot>,
+    /// Last mission memory created for handoff/resume.
+    pub last_mission_memory: Option<oco_shared_types::MissionMemory>,
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +168,7 @@ impl SessionManager {
             dashboard_tx: dashboard_tx.clone(),
             dashboard_events: Vec::new(),
             last_compact_snapshot: None,
+            last_mission_memory: None,
         };
 
         let state = Arc::new(Mutex::new(state));
@@ -356,6 +359,27 @@ impl SessionManager {
         let session = self.sessions.get(id).map(|e| e.value().clone())?;
         let guard = session.lock().await;
         guard.last_compact_snapshot.clone()
+    }
+
+    /// Create a [`MissionMemory`] from a session's current orchestration state.
+    ///
+    /// Returns `None` if the session doesn't exist, has no orchestration state,
+    /// or if the mission memory has no substantive content. The created mission
+    /// memory is also stored on the session for later retrieval.
+    pub async fn get_mission_memory(
+        &self,
+        id: &str,
+    ) -> Option<oco_shared_types::MissionMemory> {
+        let session = self.sessions.get(id).map(|e| e.value().clone())?;
+        let mut guard = session.lock().await;
+        let state = guard.orchestration_state.as_ref()?;
+        let mm = state.create_mission_memory();
+        if mm.has_content() {
+            guard.last_mission_memory = Some(mm.clone());
+            Some(mm)
+        } else {
+            None
+        }
     }
 
     /// Build a [`RunSummary`] from the session's current state.
@@ -568,6 +592,7 @@ impl SessionManager {
             dashboard_tx,
             dashboard_events: Vec::new(),
             last_compact_snapshot: None,
+            last_mission_memory: None,
         };
 
         self.sessions
@@ -674,6 +699,7 @@ impl SessionManager {
             dashboard_tx,
             dashboard_events: Vec::new(),
             last_compact_snapshot: None,
+            last_mission_memory: None,
         };
         self.sessions
             .insert(session_id.clone(), Arc::new(Mutex::new(state)));

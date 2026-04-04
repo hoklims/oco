@@ -112,6 +112,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/api/v1/sessions/{session_id}/snapshot",
             get(get_session_snapshot),
         )
+        .route(
+            "/api/v1/sessions/{session_id}/mission",
+            get(get_session_mission),
+        )
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/index", post(index_workspace))
         .route("/api/v1/search", post(search_workspace))
@@ -289,6 +293,42 @@ async fn get_session_snapshot(
         None => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": format!("no snapshot for session: {session_id}") })),
+        ),
+    }
+}
+
+/// `GET /api/v1/sessions/{id}/mission` — get mission memory for handoff/resume.
+async fn get_session_mission(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    // Resolve session ID (supports both OCO UUID and external Claude Code session ID).
+    let resolved_id = match state.session_manager.resolve_session_id(&session_id).await {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(
+                    serde_json::json!({ "error": format!("session not found: {session_id}") }),
+                ),
+            )
+        }
+    };
+
+    match state
+        .session_manager
+        .get_mission_memory(&resolved_id)
+        .await
+    {
+        Some(mm) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(mm).unwrap_or_default()),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(
+                serde_json::json!({ "error": format!("no mission memory for session: {session_id}") }),
+            ),
         ),
     }
 }
