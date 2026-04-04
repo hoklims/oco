@@ -666,17 +666,14 @@ impl Renderer for TerminalRenderer {
                     style(&baseline_id).bold(),
                     style(&candidate_id).bold(),
                 ));
-                let _ = self.term.write_line(&format!(
-                    "  Policy: {}",
-                    style(&policy).dim(),
-                ));
+                let _ = self
+                    .term
+                    .write_line(&format!("  Policy: {}", style(&policy).dim(),));
                 let _ = self.term.write_line("");
-                let _ = self.term.write_line(
-                    &format!(
-                        "  {:<24} {:>8}  {:>9}  {:>6}  {:>5}  {}",
-                        "Dimension", "Baseline", "Candidate", "Delta", "Min", "Verdict"
-                    ),
-                );
+                let _ = self.term.write_line(&format!(
+                    "  {:<24} {:>8}  {:>9}  {:>6}  {:>5}  {}",
+                    "Dimension", "Baseline", "Candidate", "Delta", "Min", "Verdict"
+                ));
                 let _ = self.term.write_line(
                     "  -----------------------------------------------------------------------",
                 );
@@ -697,12 +694,7 @@ impl Renderer for TerminalRenderer {
                 };
                 let _ = self.term.write_line(&format!(
                     "  {:<24} {:>7.2}   {:>8.2}  {:>+6.2}  {:>5.2}  {}",
-                    dimension,
-                    baseline_score,
-                    candidate_score,
-                    delta,
-                    min_score,
-                    verdict_styled,
+                    dimension, baseline_score, candidate_score, delta, min_score, verdict_styled,
                 ));
             }
 
@@ -715,16 +707,13 @@ impl Renderer for TerminalRenderer {
             } => {
                 let _ = self.term.write_line("");
                 if !reasons.is_empty() {
-                    let _ = self.term.write_line(&format!(
-                        "  Reasons ({}):",
-                        reasons.len()
-                    ));
+                    let _ = self
+                        .term
+                        .write_line(&format!("  Reasons ({}):", reasons.len()));
                     for reason in &reasons {
-                        let _ = self.term.write_line(&format!(
-                            "    {} {}",
-                            style("-").dim(),
-                            reason,
-                        ));
+                        let _ =
+                            self.term
+                                .write_line(&format!("    {} {}", style("-").dim(), reason,));
                     }
                     let _ = self.term.write_line("");
                 }

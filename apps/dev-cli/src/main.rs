@@ -1967,7 +1967,12 @@ fn load_candidate_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard
             return Ok(sc);
         }
         // Fall back to reconstruct from summary
-        return load_or_build_scorecard(&p, &p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+        return load_or_build_scorecard(
+            &p,
+            &p.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        );
     }
 
     let content = std::fs::read_to_string(path)
@@ -1989,12 +1994,12 @@ fn load_candidate_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard
     }
 
     // Try eval results envelope (has "results" array) — build scorecard from first result
-    if let Some(results) = value.get("results").and_then(|r| r.as_array()) {
-        if let Some(first) = results.first() {
-            let sr: oco_shared_types::ScenarioResult = serde_json::from_value(first.clone())
-                .map_err(|e| anyhow::anyhow!("failed to parse eval result: {e}"))?;
-            return Ok(scorecard_from_scenario_result(&sr));
-        }
+    if let Some(results) = value.get("results").and_then(|r| r.as_array())
+        && let Some(first) = results.first()
+    {
+        let sr: oco_shared_types::ScenarioResult = serde_json::from_value(first.clone())
+            .map_err(|e| anyhow::anyhow!("failed to parse eval result: {e}"))?;
+        return Ok(scorecard_from_scenario_result(&sr));
     }
 
     anyhow::bail!(

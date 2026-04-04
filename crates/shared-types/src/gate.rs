@@ -243,8 +243,12 @@ impl GateResult {
             let max_regression = threshold.map(|t| t.max_regression).unwrap_or(-1.0);
 
             let dim_verdict = if c_score < min_score {
-                let reason =
-                    format!("{}: score {:.2} below minimum {:.2}", dim.label(), c_score, min_score);
+                let reason = format!(
+                    "{}: score {:.2} below minimum {:.2}",
+                    dim.label(),
+                    c_score,
+                    min_score
+                );
                 reasons.push(reason.clone());
                 // In balanced mode, only critical dims cause fail
                 match policy.strategy {
@@ -290,12 +294,9 @@ impl GateResult {
                     }
                     GateStrategy::Lenient => {
                         // Only fail on critical severity regressions
-                        let is_critical_regression = comparison
-                            .regressions
-                            .iter()
-                            .any(|r| {
-                                r.dimension == *dim && r.severity == RegressionSeverity::Critical
-                            });
+                        let is_critical_regression = comparison.regressions.iter().any(|r| {
+                            r.dimension == *dim && r.severity == RegressionSeverity::Critical
+                        });
                         if is_critical_regression {
                             has_fail = true;
                             GateVerdict::Fail
@@ -386,8 +387,12 @@ impl GateResult {
         lines.push(String::new());
 
         // Dimension table
-        lines.push("  Dimension                Baseline  Candidate  Delta   Min    Verdict".to_string());
-        lines.push("  -----------------------------------------------------------------------".to_string());
+        lines.push(
+            "  Dimension                Baseline  Candidate  Delta   Min    Verdict".to_string(),
+        );
+        lines.push(
+            "  -----------------------------------------------------------------------".to_string(),
+        );
         for check in &self.dimension_checks {
             lines.push(format!(
                 "  {:<24} {:>7.2}   {:>8.2}  {:>+6.2}  {:>5.2}  {}",
@@ -754,10 +759,7 @@ mod tests {
         let parsed: GateResult = serde_json::from_str(&json).unwrap();
         assert_eq!(result.verdict, parsed.verdict);
         assert_eq!(result.reasons.len(), parsed.reasons.len());
-        assert_eq!(
-            result.dimension_checks.len(),
-            parsed.dimension_checks.len()
-        );
+        assert_eq!(result.dimension_checks.len(), parsed.dimension_checks.len());
     }
 
     #[test]
@@ -788,7 +790,10 @@ mod tests {
         let sc = full_scorecard("test", 0.8);
         let baseline = EvalBaseline::from_scorecard("v1", sc, "eval")
             .with_description("Stable baseline from CI");
-        assert_eq!(baseline.description.as_deref(), Some("Stable baseline from CI"));
+        assert_eq!(
+            baseline.description.as_deref(),
+            Some("Stable baseline from CI")
+        );
     }
 
     #[test]
