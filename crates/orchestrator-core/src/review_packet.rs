@@ -373,8 +373,7 @@ mod tests {
         )
         .unwrap();
 
-        let sc =
-            load_scorecard(&dir, "fallback-run", &ScorecardWeights::default()).unwrap();
+        let sc = load_scorecard(&dir, "fallback-run", &ScorecardWeights::default()).unwrap();
         assert_eq!(sc.run_id, "fallback-run");
         assert_eq!(sc.dimension_score(ScorecardDimension::Success), Some(1.0));
 
@@ -513,7 +512,10 @@ mod tests {
         .unwrap();
 
         // Both must have scorecards (reconstructed from summary)
-        let sc_default = packet_default.scorecard.as_ref().expect("default scorecard");
+        let sc_default = packet_default
+            .scorecard
+            .as_ref()
+            .expect("default scorecard");
         let sc_custom = packet_custom.scorecard.as_ref().expect("custom scorecard");
 
         // Dimension scores should be identical (same data)
