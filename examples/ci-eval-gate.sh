@@ -45,4 +45,9 @@ case $EXIT_CODE in
   *) echo "ERROR: Unexpected exit code $EXIT_CODE" ;;
 esac
 
+# Q7: With repo config ([gate] in oco.toml), the gate can run with fewer arguments:
+#   oco eval-gate                              # Uses config baseline + default policy
+#   oco eval-gate --candidate eval-results.json # Explicit candidate, config baseline+policy
+#   oco eval-gate baseline.json candidate.json  # Full explicit (backward compatible)
+
 exit $EXIT_CODE

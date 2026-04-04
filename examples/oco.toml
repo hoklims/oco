@@ -45,3 +45,13 @@ risk_level = "standard"
 # Paths considered sensitive — modification triggers thorough verification
 # and affects the trust verdict.
 sensitive_paths = [".env", "*.pem", "*.key", "credentials.json"]
+
+# Quality gate configuration (Q7).
+# Declares the repo's evaluation contract so `oco eval-gate` works with
+# minimal or no CLI arguments.
+[gate]
+baseline_path = ".oco/baseline.json"
+default_policy = "balanced"          # "strict", "balanced", or "lenient"
+# Uncomment to override preset thresholds:
+# min_overall_score = 0.5
+# max_overall_regression = -0.12
