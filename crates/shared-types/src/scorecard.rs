@@ -40,12 +40,10 @@ impl ScorecardWeights {
             ("error_rate", self.error_rate),
         ];
         for (name, val) in checks {
-            if let Some(w) = val {
-                if *w <= 0.0 {
-                    return Err(format!(
-                        "scorecard weight '{name}' must be > 0.0, got {w}"
-                    ));
-                }
+            if let Some(w) = val
+                && *w <= 0.0
+            {
+                return Err(format!("scorecard weight '{name}' must be > 0.0, got {w}"));
             }
         }
         Ok(())

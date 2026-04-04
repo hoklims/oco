@@ -2782,7 +2782,10 @@ fn cmd_baseline_history_prune(
                 ),
             });
             for entry in &to_remove {
-                println!("  #{}: {}", entry.sequence, entry.promotion.new_baseline_name);
+                println!(
+                    "  #{}: {}",
+                    entry.sequence, entry.promotion.new_baseline_name
+                );
             }
         }
         return Ok(());

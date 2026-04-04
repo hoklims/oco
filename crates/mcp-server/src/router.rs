@@ -1668,7 +1668,9 @@ mod tests {
             .method("POST")
             .uri("/api/v1/hooks/post-tool")
             .header("content-type", "application/json")
-            .body(Body::from(b"{\"event\": \"PostToolUse\", \"data\":".to_vec()))
+            .body(Body::from(
+                b"{\"event\": \"PostToolUse\", \"data\":".to_vec(),
+            ))
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
@@ -2020,23 +2022,35 @@ mod tests {
         let mut join_set = JoinSet::new();
 
         let payloads = [
-            ("/api/v1/hooks/post-tool", serde_json::json!({
-                "event": "PostToolUse",
-                "session_id": "concurrent-1",
-                "data": { "tool_name": "Edit", "success": true }
-            })),
-            ("/api/v1/hooks/task-completed", serde_json::json!({
-                "event": "TaskCompleted",
-                "data": { "task_id": "ct-1", "success": true }
-            })),
-            ("/api/v1/hooks/file-changed", serde_json::json!({
-                "event": "FileChanged",
-                "data": { "paths": ["lib.rs"] }
-            })),
-            ("/api/v1/hooks/stop", serde_json::json!({
-                "event": "Stop",
-                "data": { "reason": "user_cancelled" }
-            })),
+            (
+                "/api/v1/hooks/post-tool",
+                serde_json::json!({
+                    "event": "PostToolUse",
+                    "session_id": "concurrent-1",
+                    "data": { "tool_name": "Edit", "success": true }
+                }),
+            ),
+            (
+                "/api/v1/hooks/task-completed",
+                serde_json::json!({
+                    "event": "TaskCompleted",
+                    "data": { "task_id": "ct-1", "success": true }
+                }),
+            ),
+            (
+                "/api/v1/hooks/file-changed",
+                serde_json::json!({
+                    "event": "FileChanged",
+                    "data": { "paths": ["lib.rs"] }
+                }),
+            ),
+            (
+                "/api/v1/hooks/stop",
+                serde_json::json!({
+                    "event": "Stop",
+                    "data": { "reason": "user_cancelled" }
+                }),
+            ),
         ];
 
         for i in 0..20 {
@@ -2088,7 +2102,10 @@ mod tests {
                         "event": "PostToolUse",
                         "data": { "tool_name": "Read", "success": true }
                     });
-                    ("/api/v1/hooks/post-tool", Body::from(serde_json::to_vec(&b).unwrap()))
+                    (
+                        "/api/v1/hooks/post-tool",
+                        Body::from(serde_json::to_vec(&b).unwrap()),
+                    )
                 } else {
                     // Invalid (bad JSON)
                     ("/api/v1/hooks/post-tool", Body::from(b"not-json".to_vec()))

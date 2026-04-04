@@ -520,7 +520,10 @@ impl MissionMemory {
 /// to a single space, and lowercase. This is a deterministic textual
 /// normalization — no semantic or fuzzy matching.
 fn normalize_for_dedup(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 // ---------------------------------------------------------------------------
@@ -917,9 +920,7 @@ mod tests {
             established_at: Utc::now(),
         });
         current.open_questions.push("q1".to_string());
-        current
-            .key_decisions
-            .push("chose direct fix".to_string());
+        current.key_decisions.push("chose direct fix".to_string());
 
         let mut previous = make_empty_mission("previous");
         previous.facts.push(MissionFact {
@@ -932,16 +933,18 @@ mod tests {
             source: None,
             established_at: Utc::now(),
         });
-        previous
-            .open_questions
-            .push("  q1  ".to_string());
+        previous.open_questions.push("  q1  ".to_string());
         previous
             .key_decisions
             .push("chose  direct  fix".to_string());
 
         current.merge_from_previous(&previous);
 
-        assert_eq!(current.facts.len(), 1, "whitespace-only variants should be deduplicated");
+        assert_eq!(
+            current.facts.len(),
+            1,
+            "whitespace-only variants should be deduplicated"
+        );
         assert_eq!(current.open_questions.len(), 1);
         assert_eq!(current.key_decisions.len(), 1);
     }
@@ -986,10 +989,26 @@ mod tests {
 
         current.merge_from_previous(&previous);
 
-        assert_eq!(current.facts.len(), 1, "case-different facts should be deduplicated");
-        assert_eq!(current.hypotheses.len(), 1, "case-different hypotheses should be deduplicated");
-        assert_eq!(current.open_questions.len(), 1, "case-different questions should be deduplicated");
-        assert_eq!(current.key_decisions.len(), 1, "case-different decisions should be deduplicated");
+        assert_eq!(
+            current.facts.len(),
+            1,
+            "case-different facts should be deduplicated"
+        );
+        assert_eq!(
+            current.hypotheses.len(),
+            1,
+            "case-different hypotheses should be deduplicated"
+        );
+        assert_eq!(
+            current.open_questions.len(),
+            1,
+            "case-different questions should be deduplicated"
+        );
+        assert_eq!(
+            current.key_decisions.len(),
+            1,
+            "case-different decisions should be deduplicated"
+        );
     }
 
     #[test]
@@ -1020,16 +1039,30 @@ mod tests {
             supporting_evidence: vec![],
         });
         previous.open_questions.push("question 2".to_string());
-        previous
-            .key_decisions
-            .push("decision beta".to_string());
+        previous.key_decisions.push("decision beta".to_string());
 
         current.merge_from_previous(&previous);
 
-        assert_eq!(current.facts.len(), 2, "genuinely different facts should both be kept");
-        assert_eq!(current.hypotheses.len(), 2, "genuinely different hypotheses should both be kept");
-        assert_eq!(current.open_questions.len(), 2, "genuinely different questions should both be kept");
-        assert_eq!(current.key_decisions.len(), 2, "genuinely different decisions should both be kept");
+        assert_eq!(
+            current.facts.len(),
+            2,
+            "genuinely different facts should both be kept"
+        );
+        assert_eq!(
+            current.hypotheses.len(),
+            2,
+            "genuinely different hypotheses should both be kept"
+        );
+        assert_eq!(
+            current.open_questions.len(),
+            2,
+            "genuinely different questions should both be kept"
+        );
+        assert_eq!(
+            current.key_decisions.len(),
+            2,
+            "genuinely different decisions should both be kept"
+        );
     }
 
     /// Helper to build a minimal empty mission memory for merge tests.
