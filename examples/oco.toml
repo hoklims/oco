@@ -33,3 +33,15 @@ timeout_secs = 60
 
 # ML worker (optional — system degrades gracefully without it)
 ml_worker_url = "http://127.0.0.1:50052"
+
+# Per-repository trust profile.
+# Auto-detected from manifests; override here for finer control.
+[profile]
+# Policy pack: "fast" (build only, stale allowed), "balanced" (default),
+# or "strict" (full suite, stale blocked, sensitive paths enforced).
+policy_pack = "balanced"
+# Risk level: "low", "standard", "high", "critical".
+risk_level = "standard"
+# Paths considered sensitive — modification triggers thorough verification
+# and affects the trust verdict.
+sensitive_paths = [".env", "*.pem", "*.key", "credentials.json"]

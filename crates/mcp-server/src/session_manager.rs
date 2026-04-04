@@ -372,6 +372,10 @@ impl SessionManager {
         let mut builder =
             oco_telemetry::RunSummaryBuilder::new(session_id, guard.user_request.clone());
 
+        builder = builder
+            .policy_pack(self.config.profile.policy_pack)
+            .sensitive_paths(self.config.profile.sensitive_paths.clone());
+
         if let Some(state) = guard.orchestration_state.as_ref() {
             let duration_ms = (chrono::Utc::now() - state.started_at)
                 .num_milliseconds()

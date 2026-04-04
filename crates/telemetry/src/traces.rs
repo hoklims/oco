@@ -141,6 +141,7 @@ pub struct RunSummaryBuilder {
     complexity: TaskComplexity,
     policy_pack: PolicyPack,
     verification_state: VerificationState,
+    sensitive_paths: Vec<String>,
     risks: Vec<String>,
     key_decisions: Vec<String>,
     total_steps: u32,
@@ -158,6 +159,7 @@ impl RunSummaryBuilder {
             complexity: TaskComplexity::Medium,
             policy_pack: PolicyPack::default(),
             verification_state: VerificationState::default(),
+            sensitive_paths: Vec::new(),
             risks: Vec::new(),
             key_decisions: Vec::new(),
             total_steps: 0,
@@ -182,6 +184,12 @@ impl RunSummaryBuilder {
     /// Set the verification state to derive file coverage and freshness.
     pub fn verification_state(mut self, state: VerificationState) -> Self {
         self.verification_state = state;
+        self
+    }
+
+    /// Set sensitive paths for accurate trust verdict computation.
+    pub fn sensitive_paths(mut self, paths: Vec<String>) -> Self {
+        self.sensitive_paths = paths;
         self
     }
 
@@ -259,7 +267,17 @@ impl RunSummaryBuilder {
 
         let all_mandatory_passed = checks_run.iter().filter(|c| c.mandatory).all(|c| c.passed);
 
-        let has_unverified_sensitive = false; // TODO: check against profile.sensitive_paths
+        let has_unverified_sensitive = !self.sensitive_paths.is_empty()
+            && files_unverified.iter().any(|f| {
+                self.sensitive_paths.iter().any(|pat| {
+                    if pat.contains('*') {
+                        let suffix = pat.trim_start_matches('*');
+                        f.ends_with(suffix)
+                    } else {
+                        f == pat || f.ends_with(pat)
+                    }
+                })
+            });
 
         let trust_verdict =
             TrustVerdict::compute(freshness, all_mandatory_passed, has_unverified_sensitive);
@@ -292,6 +310,7 @@ impl RunSummaryBuilder {
             complexity: self.complexity,
             policy_pack: self.policy_pack,
             verification_state: self.verification_state.clone(),
+            sensitive_paths: self.sensitive_paths.clone(),
             risks: self.risks.clone(),
             key_decisions: self.key_decisions.clone(),
             total_steps: self.total_steps,
@@ -311,6 +330,7 @@ impl RunSummaryBuilder {
             complexity: self.complexity,
             policy_pack: self.policy_pack,
             verification_state: self.verification_state.clone(),
+            sensitive_paths: self.sensitive_paths.clone(),
             risks: self.risks.clone(),
             key_decisions: self.key_decisions.clone(),
             total_steps: self.total_steps,
@@ -535,5 +555,47 @@ mod tests {
     fn builder_default_policy_is_balanced() {
         let summary = RunSummaryBuilder::new(SessionId::new(), "test".into()).build();
         assert_eq!(summary.policy_pack, PolicyPack::Balanced);
+    }
+
+    #[test]
+    fn builder_sensitive_unverified_downgrades_to_medium() {
+        // Fresh verification, all mandatory passed, but unverified sensitive file
+        let now = chrono::Utc::now();
+        let mut state = VerificationState::default();
+        // Two files modified: one verified, one not covered
+        state.modified_files.insert("src/lib.rs".into(), now);
+        state.modified_files.insert(".env".into(), now);
+        state.runs.push(VerificationRun {
+            strategy: "build".into(),
+            timestamp: now + chrono::Duration::seconds(1),
+            passed: true,
+            covered_files: {
+                let mut s = std::collections::HashSet::new();
+                s.insert("src/lib.rs".into());
+                s
+            },
+            modifications_snapshot: state.modified_files.clone(),
+            duration_ms: 100,
+            failures: vec![],
+        });
+
+        let summary = RunSummaryBuilder::new(SessionId::new(), "deploy".into())
+            .verification_state(state)
+            .sensitive_paths(vec![".env".into(), "*.pem".into()])
+            .build();
+
+        // .env is unverified and sensitive → downgrades from High to Medium
+        assert_eq!(summary.trust_verdict, TrustVerdict::Medium);
+    }
+
+    #[test]
+    fn builder_no_sensitive_paths_means_no_downgrade() {
+        let state = make_verification_state_with_run(&["src/lib.rs"], true);
+        let summary = RunSummaryBuilder::new(SessionId::new(), "fix".into())
+            .verification_state(state)
+            // no sensitive_paths set → has_unverified_sensitive = false
+            .build();
+
+        assert_eq!(summary.trust_verdict, TrustVerdict::High);
     }
 }

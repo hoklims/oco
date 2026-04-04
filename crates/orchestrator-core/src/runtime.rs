@@ -161,6 +161,9 @@ impl OrchestratorRuntime {
     }
 
     /// Index the workspace with optional progress callback (files_done, symbols_so_far).
+    ///
+    /// Uses incremental indexing when a persistent index exists: only re-indexes
+    /// files whose mtime changed since last index, and removes deleted files.
     pub fn index_workspace_with_progress(
         &mut self,
         on_progress: Option<&dyn Fn(u32, u32)>,
@@ -183,44 +186,96 @@ impl OrchestratorRuntime {
 
         let mut file_count = 0u32;
         let mut symbol_count = 0u32;
-        let mut batch = Vec::new();
         let workspace_root = self.workspace_root.clone();
 
-        // Collect files first (avoids borrow conflict with symbol_indexer)
+        // Collect files with mtime for incremental plan.
         let mut collected_files: Vec<(PathBuf, String)> = Vec::new();
         self.walk_dir(&workspace_root, extensions, &mut |path, content| {
             collected_files.push((path.to_path_buf(), content));
         })?;
 
-        for (path, content) in &collected_files {
-            let rel_path = path
-                .strip_prefix(&workspace_root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
+        // Build mtime map for incremental check.
+        let workspace_files: Vec<(String, i64)> = collected_files
+            .iter()
+            .map(|(path, _)| {
+                let rel = path
+                    .strip_prefix(&workspace_root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+                let mtime = std::fs::metadata(path)
+                    .and_then(|m| m.modified())
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64
+                    })
+                    .unwrap_or(0);
+                (rel, mtime)
+            })
+            .collect();
 
-            let id = rel_path.clone();
+        // Compute incremental plan.
+        let plan = fts.needs_reindex(&workspace_files)?;
 
-            // Add to FTS batch
-            batch.push((id, rel_path.clone(), content.clone()));
-
-            // Index symbols
-            let lang =
-                oco_code_intel::language_from_path(&path.to_string_lossy()).unwrap_or("text");
-            if let Ok(symbols) = self.symbol_indexer.index_file(&rel_path, content, lang) {
-                symbol_count += symbols.len() as u32;
-            }
-
-            file_count += 1;
-
-            if let Some(cb) = on_progress {
-                cb(file_count, symbol_count);
-            }
+        // Remove deleted files from index.
+        if !plan.to_remove.is_empty() {
+            let removed = fts.remove_documents(&plan.to_remove)?;
+            info!(removed, "Removed deleted files from index");
         }
 
-        // Batch insert into FTS
-        if !batch.is_empty() {
-            fts.index_documents_batch(batch)?;
+        if plan.is_noop() {
+            info!(up_to_date = plan.up_to_date, "Index is up to date");
+            file_count = plan.up_to_date as u32;
+        } else {
+            // Build lookup of which paths need indexing.
+            let needs_index: std::collections::HashSet<&str> =
+                plan.to_index.iter().map(|s| s.as_str()).collect();
+
+            let mtime_map: std::collections::HashMap<&str, i64> = workspace_files
+                .iter()
+                .map(|(p, m)| (p.as_str(), *m))
+                .collect();
+
+            let mut batch = Vec::new();
+
+            for (path, content) in &collected_files {
+                let rel_path = path
+                    .strip_prefix(&workspace_root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+
+                // Only index files that need it.
+                if needs_index.contains(rel_path.as_str()) {
+                    let mtime = mtime_map.get(rel_path.as_str()).copied().unwrap_or(0);
+                    batch.push((rel_path.clone(), rel_path.clone(), content.clone(), mtime));
+
+                    // Index symbols for changed files.
+                    let lang = oco_code_intel::language_from_path(&path.to_string_lossy())
+                        .unwrap_or("text");
+                    if let Ok(symbols) = self.symbol_indexer.index_file(&rel_path, content, lang) {
+                        symbol_count += symbols.len() as u32;
+                    }
+                }
+
+                file_count += 1;
+
+                if let Some(cb) = on_progress {
+                    cb(file_count, symbol_count);
+                }
+            }
+
+            // Incremental batch insert.
+            if !batch.is_empty() {
+                let indexed = fts.index_documents_incremental(batch)?;
+                info!(
+                    indexed,
+                    skipped = plan.up_to_date,
+                    removed = plan.to_remove.len(),
+                    "Incremental indexing complete"
+                );
+            }
         }
 
         self.fts_index = Some(fts);
