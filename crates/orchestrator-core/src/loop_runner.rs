@@ -120,6 +120,8 @@ pub struct OrchestrationLoop {
     cancel: Option<crate::graph_runner::CancellationToken>,
     /// External session ID for correlation (e.g. Claude Code session).
     external_session_id: Option<String>,
+    /// Mission memory to restore on run start (for `--resume`).
+    resume_mission: Option<oco_shared_types::MissionMemory>,
 }
 
 impl OrchestrationLoop {
@@ -139,6 +141,7 @@ impl OrchestrationLoop {
             event_tx: None,
             cancel: None,
             external_session_id: None,
+            resume_mission: None,
         }
     }
 
@@ -183,6 +186,12 @@ impl OrchestrationLoop {
             warn!(error = %e, "Failed to index workspace, continuing without index");
         }
         self.runtime = Some(rt);
+        self
+    }
+
+    /// Set a mission memory to restore at the start of the run (for `--resume`).
+    pub fn with_resume_mission(&mut self, mission: oco_shared_types::MissionMemory) -> &mut Self {
+        self.resume_mission = Some(mission);
         self
     }
 
@@ -231,6 +240,15 @@ impl OrchestrationLoop {
             session.external_session_id = Some(ext_id.clone());
         }
         let mut state = OrchestrationState::new(session);
+
+        // Restore mission memory from a previous run if --resume was used.
+        if let Some(ref mission) = self.resume_mission {
+            info!(
+                "Restoring mission memory from previous session {}",
+                mission.session_id.0
+            );
+            state.restore_from_mission(mission);
+        }
 
         // Apply max_steps override from config (e.g. eval scenario overrides).
         if self.config.max_steps > 0 {

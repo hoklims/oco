@@ -370,7 +370,7 @@ impl SessionManager {
         let session = self.sessions.get(id).map(|e| e.value().clone())?;
         let mut guard = session.lock().await;
         let state = guard.orchestration_state.as_ref()?;
-        let mm = state.create_mission_memory();
+        let mm = state.create_mission_memory(&self.config.profile);
         if mm.has_content() {
             guard.last_mission_memory = Some(mm.clone());
             Some(mm)

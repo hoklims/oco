@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use oco_shared_types::{
     ActionCandidate, AssembledContext, BudgetSnapshot, CompactSnapshot, DecisionTrace,
-    MissionMemory, Observation, OrchestratorAction, PolicyPack, Session, TaskCategory,
+    MissionMemory, Observation, OrchestratorAction, PolicyPack, RepoProfile, Session, TaskCategory,
     TaskComplexity, TrustVerdict, VerificationState, WorkingMemory,
 };
 use std::collections::VecDeque;
@@ -174,16 +174,56 @@ impl OrchestrationState {
 
     /// Create a [`MissionMemory`] from the current orchestration state.
     ///
-    /// Captures verified facts, hypotheses, open questions, plan, verification
-    /// status, and trust verdict into a durable handoff artifact suitable for
-    /// inter-session persistence and resume.
-    pub fn create_mission_memory(&self) -> MissionMemory {
-        let trust_verdict = TrustVerdict::compute(
-            self.verification.freshness(),
-            // all mandatory passed = no failed mandatory runs
-            self.verification.runs.iter().all(|r| r.passed),
-            false, // simplified — no sensitive-path check at this level
-        );
+    /// Uses the same trust-verdict logic as `RunSummaryBuilder` (Q3):
+    /// mandatory strategies come from the profile's policy pack, and
+    /// sensitive-path checks use the profile's sensitive_paths list.
+    pub fn create_mission_memory(&self, profile: &RepoProfile) -> MissionMemory {
+        let freshness = self.verification.freshness();
+        let policy_pack = profile.policy_pack;
+
+        // Determine which verification runs are mandatory for this policy pack.
+        let mandatory_strats = policy_pack.mandatory_strategies();
+        let all_mandatory_passed = self
+            .verification
+            .runs
+            .iter()
+            .filter(|run| {
+                mandatory_strats
+                    .iter()
+                    .any(|s| format!("{s:?}").to_lowercase() == run.strategy)
+            })
+            .all(|run| run.passed);
+
+        // Check whether any unverified file matches a sensitive path pattern.
+        // Uses the same logic as RunSummaryBuilder: a file is "unverified" if
+        // no run covers it (empty covered_files = whole-project coverage).
+        let files_unverified: Vec<&str> =
+            if self.verification.runs.is_empty() {
+                self.verification
+                    .modified_files
+                    .keys()
+                    .map(|s| s.as_str())
+                    .collect()
+            } else {
+                self.verification
+                    .modified_files
+                    .keys()
+                    .filter(|f| {
+                        !self.verification.runs.iter().any(|run| {
+                            run.covered_files.is_empty() || run.covered_files.contains(*f)
+                        })
+                    })
+                    .map(|s| s.as_str())
+                    .collect()
+            };
+        let has_unverified_sensitive = !profile.sensitive_paths.is_empty()
+            && files_unverified
+                .iter()
+                .any(|path| profile.is_sensitive(path));
+
+        let trust_verdict =
+            TrustVerdict::compute(freshness, all_mandatory_passed, has_unverified_sensitive);
+
         MissionMemory::from_working_state(
             self.session.id,
             &self.session.user_request,
@@ -193,12 +233,19 @@ impl OrchestrationState {
         )
     }
 
-    /// Restore working memory state from a [`MissionMemory`] (for session resume).
+    /// Restore state from a [`MissionMemory`] (for inter-session resume).
     ///
-    /// Re-populates verified facts, hypotheses, questions, plan, and planner
-    /// state from the mission memory. Existing entries in those categories are
-    /// replaced. Other memory categories (findings, inspected areas,
-    /// invalidated) are left untouched.
+    /// **Restored faithfully**: verified facts, hypotheses, questions, plan,
+    /// planner state, and the list of previously-modified files (as stale).
+    ///
+    /// **Not restored** (irrecoverably lost between sessions):
+    /// - Raw observations, tool output history, action history
+    /// - Verification runs (timestamps, durations, covered files)
+    /// - Evidence link UUIDs between entries
+    /// - Findings, inspected areas, invalidated entries
+    ///
+    /// After restore, `verification.freshness()` will return `Stale` or `None`,
+    /// forcing the orchestrator to re-verify before completing.
     pub fn restore_from_mission(&mut self, mission: &MissionMemory) {
         // Restore verified facts
         self.memory.verified_facts = mission
@@ -245,6 +292,20 @@ impl OrchestrationState {
                 lease_id: None,
             });
         }
+
+        // Restore verification awareness: mark previously-modified files as
+        // modified at the current time. Because there are no verification runs
+        // in the fresh state, freshness() will return Stale or None — forcing
+        // re-verification before the task can complete.
+        for file in &mission.modified_files {
+            self.verification.record_modification(file.clone());
+        }
+        // Also mark unverified files from the previous session.
+        for file in &mission.verification.unverified_files {
+            if !self.verification.modified_files.contains_key(file) {
+                self.verification.record_modification(file.clone());
+            }
+        }
     }
 }
 
@@ -256,7 +317,7 @@ impl OrchestrationState {
 mod tests {
     use super::*;
     use oco_shared_types::{
-        MemoryEntry, MissionFact, MissionHypothesis, MissionPlan, PlannerState,
+        MemoryEntry, MissionFact, MissionHypothesis, MissionPlan, PlannerState, RepoProfile,
     };
 
     fn test_session() -> Session {
@@ -458,7 +519,7 @@ mod tests {
             lease_id: None,
         });
 
-        let mm = state.create_mission_memory();
+        let mm = state.create_mission_memory(&RepoProfile::default());
 
         assert_eq!(mm.mission, "fix the auth bug");
         assert_eq!(mm.facts.len(), 1);
@@ -476,7 +537,7 @@ mod tests {
     #[test]
     fn create_mission_memory_empty_state() {
         let state = OrchestrationState::new(test_session());
-        let mm = state.create_mission_memory();
+        let mm = state.create_mission_memory(&RepoProfile::default());
         assert!(!mm.has_content());
     }
 
@@ -613,7 +674,7 @@ mod tests {
             lease_id: None,
         });
 
-        let mm = state.create_mission_memory();
+        let mm = state.create_mission_memory(&RepoProfile::default());
 
         let mut fresh_state = OrchestrationState::new(test_session());
         fresh_state.restore_from_mission(&mm);
@@ -673,5 +734,136 @@ mod tests {
 
         state.restore_from_mission(&mm);
         assert!(state.memory.planner_state.is_none());
+    }
+
+    #[test]
+    fn restore_from_mission_marks_modified_files_as_stale() {
+        let mut state = OrchestrationState::new(test_session());
+        assert!(state.verification.modified_files.is_empty());
+
+        let mm = MissionMemory {
+            schema_version: 1,
+            session_id: state.session.id,
+            created_at: Utc::now(),
+            mission: "test".into(),
+            facts: vec![],
+            hypotheses: vec![],
+            open_questions: vec![],
+            plan: MissionPlan::default(),
+            verification: oco_shared_types::MissionVerificationStatus {
+                freshness: oco_shared_types::VerificationFreshness::Stale,
+                unverified_files: vec!["src/extra.rs".into()],
+                ..Default::default()
+            },
+            modified_files: vec!["src/main.rs".into(), "src/lib.rs".into()],
+            key_decisions: vec![],
+            risks: vec![],
+            trust_verdict: oco_shared_types::TrustVerdict::Low,
+            narrative: String::new(),
+        };
+
+        state.restore_from_mission(&mm);
+
+        // All modified + unverified files are now tracked
+        assert!(
+            state
+                .verification
+                .modified_files
+                .contains_key("src/main.rs")
+        );
+        assert!(state.verification.modified_files.contains_key("src/lib.rs"));
+        assert!(
+            state
+                .verification
+                .modified_files
+                .contains_key("src/extra.rs")
+        );
+
+        // No verification runs → freshness is None, forcing re-verification
+        assert_eq!(
+            state.verification.freshness(),
+            oco_shared_types::VerificationFreshness::None
+        );
+    }
+
+    #[test]
+    fn create_mission_memory_sensitive_path_downgrades_trust() {
+        let mut state = OrchestrationState::new(test_session());
+
+        // Record modifications to two files: one sensitive, one not
+        state.verification.record_modification("src/main.rs".into());
+        state
+            .verification
+            .record_modification("certs/server.pem".into());
+
+        // No verification runs yet → freshness is None → trust = None
+        let mm = state.create_mission_memory(&RepoProfile::default());
+        assert_eq!(mm.trust_verdict, oco_shared_types::TrustVerdict::None);
+
+        // Add passing runs that cover only src/main.rs but NOT certs/server.pem
+        let covered: std::collections::HashSet<String> =
+            ["src/main.rs".to_string()].into_iter().collect();
+        state
+            .verification
+            .record_run(oco_shared_types::VerificationRun {
+                strategy: "build".into(),
+                timestamp: chrono::Utc::now() + chrono::Duration::seconds(1),
+                passed: true,
+                covered_files: covered.clone(),
+                modifications_snapshot: state.verification.modified_files.clone(),
+                duration_ms: 100,
+                failures: vec![],
+            });
+        state
+            .verification
+            .record_run(oco_shared_types::VerificationRun {
+                strategy: "test".into(),
+                timestamp: chrono::Utc::now() + chrono::Duration::seconds(2),
+                passed: true,
+                covered_files: covered,
+                modifications_snapshot: state.verification.modified_files.clone(),
+                duration_ms: 200,
+                failures: vec![],
+            });
+
+        // With no sensitive paths in profile → freshness Partial, trust Medium
+        // (because certs/server.pem is unverified but not sensitive)
+        let mm_no_sens = state.create_mission_memory(&RepoProfile {
+            sensitive_paths: vec![],
+            ..Default::default()
+        });
+        // Partial freshness + all mandatory passed + no sensitive = Medium
+        assert_eq!(
+            mm_no_sens.trust_verdict,
+            oco_shared_types::TrustVerdict::Medium
+        );
+
+        // With sensitive *.pem pattern → still Medium, but for the right reason:
+        // Partial freshness + has_unverified_sensitive=true → Medium
+        let mm_sens = state.create_mission_memory(&RepoProfile {
+            sensitive_paths: vec!["*.pem".into()],
+            ..Default::default()
+        });
+        assert_eq!(
+            mm_sens.trust_verdict,
+            oco_shared_types::TrustVerdict::Medium
+        );
+
+        // Verify the sensitive path actually matters by testing with Fresh:
+        // Add a whole-project run that covers everything
+        state
+            .verification
+            .record_run(oco_shared_types::VerificationRun {
+                strategy: "build".into(),
+                timestamp: chrono::Utc::now() + chrono::Duration::seconds(3),
+                passed: true,
+                covered_files: std::collections::HashSet::new(), // whole-project
+                modifications_snapshot: state.verification.modified_files.clone(),
+                duration_ms: 50,
+                failures: vec![],
+            });
+        // Now fresh + no unverified → High
+        let mm_fresh = state.create_mission_memory(&RepoProfile::default());
+        assert_eq!(mm_fresh.trust_verdict, oco_shared_types::TrustVerdict::High);
     }
 }

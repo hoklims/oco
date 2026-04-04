@@ -57,6 +57,9 @@ enum Commands {
         /// Maximum steps
         #[arg(long, default_value_t = 25)]
         max_steps: u32,
+        /// Resume from a previous run's mission memory (session ID or "last")
+        #[arg(long)]
+        resume: Option<String>,
     },
     /// Index a workspace for retrieval
     Index {
@@ -224,7 +227,13 @@ async fn main() -> Result<()> {
             provider,
             model,
             max_steps: _,
-        } => cmd_run(&mut *r, out_format, request, workspace, provider, model).await?,
+            resume,
+        } => {
+            cmd_run(
+                &mut *r, out_format, request, workspace, provider, model, resume,
+            )
+            .await?
+        }
         Commands::Index { path } => cmd_index(&mut *r, path)?,
         Commands::Search {
             query,
@@ -341,6 +350,7 @@ async fn cmd_run(
     workspace: Option<String>,
     provider: String,
     model: Option<String>,
+    resume: Option<String>,
 ) -> Result<()> {
     let mut config = oco_orchestrator_core::OrchestratorConfig::default();
     config.default_budget.max_duration_secs = 120;
@@ -390,6 +400,7 @@ async fn cmd_run(
         workspace: workspace.clone(),
     });
 
+    let run_profile = config.profile.clone();
     let mut orchestrator = oco_orchestrator_core::OrchestrationLoop::new(config, llm);
 
     // Index workspace if provided
@@ -419,6 +430,31 @@ async fn cmd_run(
                 duration_ms: t.elapsed().as_millis() as u64,
             });
         }
+    }
+
+    // Load and apply mission memory from a previous run if --resume was specified.
+    if let Some(ref resume_id) = resume {
+        let ws_for_resume = workspace.as_deref().unwrap_or(".");
+        let run_dir = resolve_run_dir(resume_id, ws_for_resume)?;
+        let mission_path = run_dir.join("mission.json");
+        if !mission_path.exists() {
+            anyhow::bail!(
+                "no mission.json in run {}. Cannot resume without a mission memory.",
+                run_dir.display()
+            );
+        }
+        let mission = oco_shared_types::MissionMemory::load_from(&mission_path)
+            .map_err(|e| anyhow::anyhow!("failed to load mission memory: {e}"))?;
+        r.emit(UiEvent::Info {
+            message: format!(
+                "Resuming from session {} ({} facts, {} hypotheses, {} questions)",
+                mission.session_id.0,
+                mission.facts.len(),
+                mission.hypotheses.len(),
+                mission.open_questions.len(),
+            ),
+        });
+        orchestrator.with_resume_mission(mission);
     }
 
     // Set up live event channel
@@ -530,6 +566,7 @@ async fn cmd_run(
     if let Err(e) = save_run_artifacts(
         &session_id,
         &state,
+        &run_profile,
         &trace_events,
         run_duration,
         success,
@@ -543,10 +580,11 @@ async fn cmd_run(
     Ok(())
 }
 
-/// Save run artifacts (trace.jsonl, summary.json) to .oco/runs/<id>/
+/// Save run artifacts (trace.jsonl, summary.json, mission.json) to .oco/runs/<id>/
 fn save_run_artifacts(
     session_id: &str,
     state: &oco_orchestrator_core::OrchestrationState,
+    profile: &oco_shared_types::RepoProfile,
     events: &[oco_shared_types::OrchestrationEvent],
     duration_ms: u64,
     success: bool,
@@ -593,7 +631,7 @@ fn save_run_artifacts(
     )?;
 
     // mission.json — durable mission memory for handoff/resume
-    let mission = state.create_mission_memory();
+    let mission = state.create_mission_memory(profile);
     if mission.has_content() {
         mission
             .save_to(&run_dir.join("mission.json"))

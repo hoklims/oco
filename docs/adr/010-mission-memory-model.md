@@ -198,11 +198,15 @@ This sits alongside the existing `trace.jsonl` and `summary.json` run artifacts.
 - Key decisions are merged with exact-string deduplication.
 - Risks and narrative are NOT merged (they belong to the originating session).
 
-**`restore_from_mission()`** (planned) will be the orchestrator-side restore path that:
-1. Loads a `MissionMemory` via `load_from()`.
-2. Populates `WorkingMemory` with facts, hypotheses, and questions from the loaded mission.
-3. Restores `PlannerState` from `MissionPlan`.
-4. Seeds `VerificationState` with unverified files and freshness.
+**`restore_from_mission(&mut self, &MissionMemory)`** on `OrchestrationState` is the orchestrator-side restore path. It:
+1. Replaces `WorkingMemory` facts, hypotheses, and questions from the mission.
+2. Restores `PlannerState` from `MissionPlan`.
+3. Populates `VerificationState.modified_files` from both `modified_files` and `unverified_files`.
+4. Does NOT restore verification runs, raw observations, or action history (irrecoverably lost between sessions).
+
+After restore, `verification.freshness()` returns `Stale` or `None`, forcing re-verification.
+
+**`create_mission_memory(&self, &RepoProfile)`** on `OrchestrationState` builds the artifact. It uses the same trust-verdict logic as `RunSummaryBuilder` (Q3): mandatory strategies from the profile's policy pack, sensitive-path checks from the profile.
 
 ### Schema versioning strategy
 
