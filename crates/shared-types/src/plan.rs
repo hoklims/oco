@@ -19,6 +19,16 @@ use uuid::Uuid;
 use crate::TaskComplexity;
 use crate::agent::AgentId;
 
+/// Maximum allowed sub-plan nesting depth.
+///
+/// Root plan → sub-plan → sub-sub-plan is depth 2, which is the maximum.
+/// This matches Claude Code's 2-level hierarchy (lead → teammates/subagents)
+/// and prevents token explosion from deeply nested plans.
+///
+/// This limit is intentionally fixed, not configurable via `oco.toml`.
+/// See ADR-008 for rationale.
+pub const MAX_SUB_PLAN_DEPTH: u32 = 2;
+
 // ---------------------------------------------------------------------------
 // PlanStep — a node in the execution DAG
 // ---------------------------------------------------------------------------
@@ -527,12 +537,12 @@ impl ExecutionPlan {
             }
         }
 
-        // Validate sub-plan depth (max 2 levels per ADR-008)
+        // Validate sub-plan depth (fixed at MAX_SUB_PLAN_DEPTH per ADR-008).
         // Safe to recurse now — sub-plans are cycle-free after validate() above.
-        if self.max_depth() > 2 {
+        if self.max_depth() > MAX_SUB_PLAN_DEPTH {
             return Err(PlanValidationError::SubPlanTooDeep {
                 depth: self.max_depth(),
-                max: 2,
+                max: MAX_SUB_PLAN_DEPTH,
             });
         }
 
