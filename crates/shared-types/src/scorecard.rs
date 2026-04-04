@@ -241,9 +241,7 @@ impl ScorecardComparison {
             let delta = c_score - b_score;
 
             if delta < -0.01 {
-                let severity = if *dim == ScorecardDimension::Success && delta <= -0.5 {
-                    RegressionSeverity::Critical
-                } else if delta <= -0.5 {
+                let severity = if delta <= -0.5 {
                     RegressionSeverity::Critical
                 } else if delta <= -0.2 {
                     RegressionSeverity::Warning
@@ -319,7 +317,12 @@ impl ScorecardComparison {
             for r in &self.regressions {
                 lines.push(format!(
                     "    {:?} {}: {:.2} -> {:.2} ({:+.2}) [{:?}]",
-                    r.severity, r.dimension.label(), r.baseline_score, r.candidate_score, r.delta, r.severity,
+                    r.severity,
+                    r.dimension.label(),
+                    r.baseline_score,
+                    r.candidate_score,
+                    r.delta,
+                    r.severity,
                 ));
             }
         }
@@ -337,7 +340,11 @@ impl ScorecardComparison {
             }
         }
 
-        lines.push(format!("  Verdict: {} {}", self.verdict.symbol(), self.verdict.label()));
+        lines.push(format!(
+            "  Verdict: {} {}",
+            self.verdict.symbol(),
+            self.verdict.label()
+        ));
         lines.join("\n")
     }
 }
@@ -361,10 +368,7 @@ impl BatchComparison {
     /// Build a batch comparison from parallel baseline/candidate scorecard vectors.
     ///
     /// Pairs are matched by `run_id`. Unmatched scorecards are skipped.
-    pub fn from_paired(
-        baselines: &[RunScorecard],
-        candidates: &[RunScorecard],
-    ) -> Self {
+    pub fn from_paired(baselines: &[RunScorecard], candidates: &[RunScorecard]) -> Self {
         let mut comparisons = Vec::new();
         for baseline in baselines {
             if let Some(candidate) = candidates.iter().find(|c| c.run_id == baseline.run_id) {
@@ -445,7 +449,10 @@ mod tests {
 
     #[test]
     fn dimension_labels_unique() {
-        let labels: Vec<&str> = ScorecardDimension::all().iter().map(|d| d.label()).collect();
+        let labels: Vec<&str> = ScorecardDimension::all()
+            .iter()
+            .map(|d| d.label())
+            .collect();
         let set: std::collections::HashSet<&str> = labels.iter().copied().collect();
         assert_eq!(labels.len(), set.len());
     }
@@ -563,14 +570,8 @@ mod tests {
 
     #[test]
     fn compare_minor_regression() {
-        let baseline = make_scorecard(
-            "base",
-            &[(ScorecardDimension::CostEfficiency, 0.8, "good")],
-        );
-        let candidate = make_scorecard(
-            "cand",
-            &[(ScorecardDimension::CostEfficiency, 0.7, "ok")],
-        );
+        let baseline = make_scorecard("base", &[(ScorecardDimension::CostEfficiency, 0.8, "good")]);
+        let candidate = make_scorecard("cand", &[(ScorecardDimension::CostEfficiency, 0.7, "ok")]);
         let cmp = ScorecardComparison::compare(&baseline, &candidate);
         assert_eq!(cmp.regressions.len(), 1);
         assert_eq!(cmp.regressions[0].severity, RegressionSeverity::Minor);
@@ -578,14 +579,9 @@ mod tests {
 
     #[test]
     fn compare_warning_regression() {
-        let baseline = make_scorecard(
-            "base",
-            &[(ScorecardDimension::TrustVerdict, 0.9, "high")],
-        );
-        let candidate = make_scorecard(
-            "cand",
-            &[(ScorecardDimension::TrustVerdict, 0.6, "medium")],
-        );
+        let baseline = make_scorecard("base", &[(ScorecardDimension::TrustVerdict, 0.9, "high")]);
+        let candidate =
+            make_scorecard("cand", &[(ScorecardDimension::TrustVerdict, 0.6, "medium")]);
         let cmp = ScorecardComparison::compare(&baseline, &candidate);
         let reg = &cmp.regressions[0];
         assert_eq!(reg.severity, RegressionSeverity::Warning);
@@ -673,7 +669,7 @@ mod tests {
         let candidates = vec![
             full_scorecard("scenario-1", 0.85),
             full_scorecard("scenario-2", 0.3), // regression
-            // scenario-3 missing
+                                               // scenario-3 missing
         ];
         let batch = BatchComparison::from_paired(&baselines, &candidates);
         assert_eq!(batch.total_scenarios, 2); // only matched pairs

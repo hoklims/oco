@@ -675,9 +675,7 @@ fn save_run_artifacts(
 
     // scorecard.json — Q5 evaluation scorecard for comparison
     {
-        use oco_shared_types::{
-            CostMetrics, DimensionScore, RunScorecard, ScorecardDimension,
-        };
+        use oco_shared_types::{CostMetrics, DimensionScore, RunScorecard, ScorecardDimension};
 
         let trust_num = match mission.trust_verdict {
             oco_shared_types::TrustVerdict::High => 1.0,
@@ -685,8 +683,7 @@ fn save_run_artifacts(
             oco_shared_types::TrustVerdict::Low => 0.33,
             oco_shared_types::TrustVerdict::None => 0.0,
         };
-        let cost_score =
-            1.0 - (state.session.budget.tokens_used as f64 / 100_000.0).min(1.0);
+        let cost_score = 1.0 - (state.session.budget.tokens_used as f64 / 100_000.0).min(1.0);
 
         let dimensions = vec![
             DimensionScore {
@@ -719,10 +716,7 @@ fn save_run_artifacts(
                         1.0
                     }
                 },
-                detail: format!(
-                    "{} modified files",
-                    state.verification.modified_files.len()
-                ),
+                detail: format!("{} modified files", state.verification.modified_files.len()),
             },
             DimensionScore {
                 dimension: ScorecardDimension::MissionContinuity,
@@ -1658,11 +1652,11 @@ fn cmd_eval_compare(
     // Build scorecards from results
     let baseline_scorecards: Vec<oco_shared_types::RunScorecard> = baseline_results
         .iter()
-        .map(|sr| scorecard_from_scenario_result(sr))
+        .map(scorecard_from_scenario_result)
         .collect();
     let candidate_scorecards: Vec<oco_shared_types::RunScorecard> = candidate_results
         .iter()
-        .map(|sr| scorecard_from_scenario_result(sr))
+        .map(scorecard_from_scenario_result)
         .collect();
 
     let batch = BatchComparison::from_paired(&baseline_scorecards, &candidate_scorecards);
@@ -1672,10 +1666,7 @@ fn cmd_eval_compare(
         r.emit(UiEvent::Info { message: json });
     } else {
         r.emit(UiEvent::Info {
-            message: format!(
-                "Eval Comparison: {} vs {}",
-                baseline_path, candidate_path
-            ),
+            message: format!("Eval Comparison: {} vs {}", baseline_path, candidate_path),
         });
         r.emit(UiEvent::Info {
             message: format!(
@@ -1797,9 +1788,7 @@ fn cmd_runs_compare(
 fn scorecard_from_scenario_result(
     sr: &oco_shared_types::ScenarioResult,
 ) -> oco_shared_types::RunScorecard {
-    use oco_shared_types::{
-        CostMetrics, DimensionScore, RunScorecard, ScorecardDimension,
-    };
+    use oco_shared_types::{CostMetrics, DimensionScore, RunScorecard, ScorecardDimension};
 
     let success_score = if sr.success { 1.0 } else { 0.0 };
     let verification_score = match sr.verification_passed {
@@ -1871,10 +1860,7 @@ fn scorecard_from_scenario_result(
 }
 
 /// Load a scorecard from disk or build one from the run's summary.json.
-fn load_or_build_scorecard(
-    run_dir: &Path,
-    run_id: &str,
-) -> Result<oco_shared_types::RunScorecard> {
+fn load_or_build_scorecard(run_dir: &Path, run_id: &str) -> Result<oco_shared_types::RunScorecard> {
     use oco_shared_types::{
         CostMetrics, DimensionScore, RunScorecard, ScorecardDimension, TrustVerdict,
     };
@@ -1890,10 +1876,7 @@ fn load_or_build_scorecard(
     // Build from summary.json
     let summary_path = run_dir.join("summary.json");
     if !summary_path.exists() {
-        anyhow::bail!(
-            "no scorecard.json or summary.json in {}",
-            run_dir.display()
-        );
+        anyhow::bail!("no scorecard.json or summary.json in {}", run_dir.display());
     }
     let summary: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&summary_path)?)?;
@@ -1940,7 +1923,7 @@ fn load_or_build_scorecard(
         DimensionScore {
             dimension: ScorecardDimension::TrustVerdict,
             score: trust_num,
-            detail: format!("{}", trust_score.label()),
+            detail: trust_score.label().to_string(),
         },
         DimensionScore {
             dimension: ScorecardDimension::VerificationCoverage,
