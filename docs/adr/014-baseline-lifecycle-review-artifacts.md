@@ -60,7 +60,7 @@ pub enum BaselineFreshness {
 }
 ```
 
-A simple classification that maps baseline age to one of four states. `Unknown` handles legacy baselines that predate this feature and have no `created_at` field.
+A simple classification that maps baseline age to one of four states. `Unknown` handles legacy baselines (raw `RunScorecard` files without `created_at` metadata) and future-dated timestamps. `BaselineFreshnessCheck::unknown()` produces an `Unknown` result with a recommendation to use `oco baseline-save`. The `--report` flag and terminal freshness display both support `Unknown` end-to-end, producing valid artifacts without requiring an `EvalBaseline`.
 
 #### 2. `BaselineFreshnessCheck`
 
@@ -94,7 +94,7 @@ pub struct GateReviewArtifact {
 }
 ```
 
-A structured review document that combines the gate result with freshness assessment, a human-readable summary, and actionable recommendations. It produces two output formats:
+A structured review document that combines the gate result with freshness assessment, a human-readable summary, and actionable recommendations. Two constructors: `generate()` takes an `EvalBaseline` reference, `generate_with_name()` takes just a baseline name string — the latter supports raw `RunScorecard` baselines with `Unknown` freshness. It produces two output formats:
 
 - **Markdown** (`to_markdown()`): A formatted document suitable for PR comments, CI artifact archives, or team review. Includes a verdict header, dimension table, freshness status, and recommendation list.
 - **JSON** (`to_json()`): A machine-readable representation for downstream tooling, dashboards, or automated PR annotation bots.
@@ -116,7 +116,7 @@ fresh_days = 14
 stale_days = 30
 ```
 
-When absent, the built-in defaults (14 and 30) apply. Validation ensures `fresh_days < stale_days` when both are set.
+When absent, the built-in defaults (14 and 30) apply. Validation ensures `fresh_days <= stale_days` when both are set. When `fresh_days == stale_days`, the Aging zone is empty — baselines transition directly from Fresh to Stale, which is a valid configuration for teams that want a binary freshness signal.
 
 #### 5. CLI: `--report <dir>` flag
 
