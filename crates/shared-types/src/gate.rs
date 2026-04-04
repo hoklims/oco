@@ -6,6 +6,7 @@
 //!
 //! These types power the `oco eval gate` CLI surface and enable CI integration.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{RegressionSeverity, RunScorecard, ScorecardComparison, ScorecardDimension};
@@ -453,7 +454,7 @@ pub struct EvalBaseline {
     /// Human-readable name (e.g., "v0.5-stable", "main-2026-04-01").
     pub name: String,
     /// When this baseline was created.
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: DateTime<Utc>,
     /// The scorecard snapshot.
     pub scorecard: RunScorecard,
     /// Optional description/notes.
@@ -471,7 +472,7 @@ impl EvalBaseline {
     ) -> Self {
         Self {
             name: name.into(),
-            created_at: chrono::Utc::now(),
+            created_at: Utc::now(),
             scorecard,
             description: None,
             source: source.into(),
@@ -523,6 +524,10 @@ pub struct GateConfig {
     /// Maximum allowed overall regression delta override (negative value).
     /// When set, overrides the preset policy's `max_overall_regression`.
     pub max_overall_regression: Option<f64>,
+    /// Q8: Days before a baseline is considered "aging". Default: 14.
+    pub fresh_days: Option<u32>,
+    /// Q8: Days before a baseline is considered "stale". Default: 30.
+    pub stale_days: Option<u32>,
 }
 
 impl Default for GateConfig {
@@ -532,6 +537,8 @@ impl Default for GateConfig {
             default_policy: "balanced".into(),
             min_overall_score: None,
             max_overall_regression: None,
+            fresh_days: None,
+            stale_days: None,
         }
     }
 }
@@ -580,7 +587,352 @@ impl GateConfig {
                 "max_overall_regression must be <= 0.0, got {max_reg}"
             ));
         }
+        if let (Some(fresh), Some(stale)) = (self.fresh_days, self.stale_days)
+            && fresh > stale
+        {
+            return Err(format!(
+                "fresh_days ({fresh}) must be <= stale_days ({stale})"
+            ));
+        }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Baseline freshness (Q8)
+// ---------------------------------------------------------------------------
+
+/// How fresh a baseline is relative to configured thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BaselineFreshness {
+    /// Within the freshness window — no concerns.
+    Fresh,
+    /// Past the freshness window but not yet stale — update recommended.
+    Aging,
+    /// Past the staleness window — baseline should be refreshed before trusting gate results.
+    Stale,
+    /// Cannot determine age (no `created_at` or no thresholds configured).
+    Unknown,
+}
+
+impl BaselineFreshness {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Aging => "aging",
+            Self::Stale => "stale",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            Self::Fresh => "[FRESH]",
+            Self::Aging => "[AGING]",
+            Self::Stale => "[STALE]",
+            Self::Unknown => "[?]",
+        }
+    }
+
+    /// Whether the gate result should carry a warning about baseline age.
+    pub fn warrants_warning(&self) -> bool {
+        matches!(self, Self::Aging | Self::Stale)
+    }
+}
+
+/// Result of evaluating a baseline's freshness.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaselineFreshnessCheck {
+    pub freshness: BaselineFreshness,
+    /// Age of the baseline in days (fractional).
+    pub age_days: f64,
+    /// Threshold in days: below this the baseline is `Fresh`.
+    pub fresh_threshold_days: u32,
+    /// Threshold in days: above this the baseline is `Stale`.
+    pub stale_threshold_days: u32,
+    /// Human-readable recommendation.
+    pub recommendation: String,
+}
+
+impl BaselineFreshnessCheck {
+    /// Default freshness threshold in days (baseline considered "aging" after this).
+    pub const DEFAULT_FRESH_DAYS: u32 = 14;
+    /// Default staleness threshold in days (baseline considered "stale" after this).
+    pub const DEFAULT_STALE_DAYS: u32 = 30;
+
+    /// Evaluate baseline freshness from its `created_at` timestamp.
+    ///
+    /// `now` is passed explicitly for testability.
+    /// `fresh_days` / `stale_days` can be `None` to use defaults.
+    pub fn evaluate(
+        created_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+        fresh_days: Option<u32>,
+        stale_days: Option<u32>,
+    ) -> Self {
+        let fresh_d = fresh_days.unwrap_or(Self::DEFAULT_FRESH_DAYS);
+        let stale_d = stale_days.unwrap_or(Self::DEFAULT_STALE_DAYS);
+        let age = now.signed_duration_since(created_at);
+        let age_days = age.num_seconds() as f64 / 86_400.0;
+
+        let (freshness, recommendation) = if age_days < 0.0 {
+            // Baseline is in the future — treat as unknown
+            (
+                BaselineFreshness::Unknown,
+                "baseline created_at is in the future".to_string(),
+            )
+        } else if age_days <= fresh_d as f64 {
+            (
+                BaselineFreshness::Fresh,
+                format!("baseline is {age_days:.1} days old (fresh threshold: {fresh_d}d)"),
+            )
+        } else if age_days <= stale_d as f64 {
+            (
+                BaselineFreshness::Aging,
+                format!(
+                    "baseline is {:.1} days old — consider updating (stale after {stale_d}d)",
+                    age_days
+                ),
+            )
+        } else {
+            (
+                BaselineFreshness::Stale,
+                format!(
+                    "baseline is {:.1} days old — stale (threshold: {stale_d}d). Update before trusting gate results.",
+                    age_days
+                ),
+            )
+        };
+
+        Self {
+            freshness,
+            age_days,
+            fresh_threshold_days: fresh_d,
+            stale_threshold_days: stale_d,
+            recommendation,
+        }
+    }
+
+    /// Shortcut: evaluate from an `EvalBaseline` using current time.
+    pub fn from_baseline(
+        baseline: &EvalBaseline,
+        fresh_days: Option<u32>,
+        stale_days: Option<u32>,
+    ) -> Self {
+        Self::evaluate(baseline.created_at, Utc::now(), fresh_days, stale_days)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Review artifact (Q8)
+// ---------------------------------------------------------------------------
+
+/// High-level summary for a gate review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewSummary {
+    pub verdict: GateVerdict,
+    pub baseline_name: String,
+    pub candidate_id: String,
+    /// Human-readable score change, e.g., "0.82 → 0.78 (−0.04)".
+    pub overall_change: String,
+    pub dimensions_passing: usize,
+    pub dimensions_warning: usize,
+    pub dimensions_failing: usize,
+    pub baseline_freshness: BaselineFreshness,
+}
+
+/// Structured review artifact produced by the gate evaluation.
+///
+/// Contains everything a reviewer needs: the gate result, baseline freshness
+/// assessment, a human-readable summary, and actionable recommendations.
+/// Can be serialized to JSON or rendered as Markdown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GateReviewArtifact {
+    /// When this artifact was generated.
+    pub generated_at: DateTime<Utc>,
+    /// The full gate evaluation result.
+    pub gate_result: GateResult,
+    /// Baseline freshness assessment.
+    pub baseline_freshness: BaselineFreshnessCheck,
+    /// High-level summary.
+    pub summary: ReviewSummary,
+    /// Actionable recommendations.
+    pub recommendations: Vec<String>,
+}
+
+impl GateReviewArtifact {
+    /// Generate a review artifact from a gate result and baseline metadata.
+    pub fn generate(
+        gate_result: GateResult,
+        baseline: &EvalBaseline,
+        freshness_check: BaselineFreshnessCheck,
+    ) -> Self {
+        let summary = ReviewSummary {
+            verdict: gate_result.verdict,
+            baseline_name: baseline.name.clone(),
+            candidate_id: gate_result.candidate_id.clone(),
+            overall_change: format!(
+                "{:.2} → {:.2} ({:+.2})",
+                gate_result.baseline_overall,
+                gate_result.candidate_overall,
+                gate_result.overall_delta,
+            ),
+            dimensions_passing: gate_result
+                .dimension_checks
+                .iter()
+                .filter(|c| c.verdict == GateVerdict::Pass)
+                .count(),
+            dimensions_warning: gate_result.warned_dimension_count(),
+            dimensions_failing: gate_result.failed_dimension_count(),
+            baseline_freshness: freshness_check.freshness,
+        };
+
+        let mut recommendations = Vec::new();
+
+        // Freshness recommendations
+        if freshness_check.freshness.warrants_warning() {
+            recommendations.push(format!(
+                "Baseline is {}: {}",
+                freshness_check.freshness.label(),
+                freshness_check.recommendation,
+            ));
+        }
+
+        // Gate-driven recommendations
+        if gate_result.verdict == GateVerdict::Fail {
+            recommendations
+                .push("Gate FAILED — investigate failing dimensions before merging.".to_string());
+        }
+        if gate_result.verdict == GateVerdict::Warn {
+            recommendations.push("Gate produced warnings — review flagged dimensions.".to_string());
+        }
+
+        // Dimension-specific advice
+        for check in &gate_result.dimension_checks {
+            if check.verdict == GateVerdict::Fail {
+                recommendations.push(format!(
+                    "{}: score {:.2} (min {:.2}), delta {:+.2} — requires attention",
+                    check.dimension.label(),
+                    check.candidate_score,
+                    check.min_score,
+                    check.delta,
+                ));
+            }
+        }
+
+        if recommendations.is_empty() {
+            recommendations.push("No action required — gate passed cleanly.".to_string());
+        }
+
+        Self {
+            generated_at: Utc::now(),
+            gate_result,
+            baseline_freshness: freshness_check,
+            summary,
+            recommendations,
+        }
+    }
+
+    /// Render as a Markdown review document.
+    pub fn to_markdown(&self) -> String {
+        let mut md = String::new();
+
+        // Header
+        md.push_str("# Gate Review Report\n\n");
+        md.push_str(&format!(
+            "**Verdict:** {} {}\n\n",
+            self.summary.verdict.symbol(),
+            self.summary.verdict.label().to_uppercase(),
+        ));
+
+        // Summary table
+        md.push_str("## Summary\n\n");
+        md.push_str("| Field | Value |\n");
+        md.push_str("|-------|-------|\n");
+        md.push_str(&format!("| Baseline | {} |\n", self.summary.baseline_name));
+        md.push_str(&format!("| Candidate | {} |\n", self.summary.candidate_id));
+        md.push_str(&format!(
+            "| Overall score | {} |\n",
+            self.summary.overall_change
+        ));
+        md.push_str(&format!(
+            "| Baseline freshness | {} {} |\n",
+            self.baseline_freshness.freshness.symbol(),
+            self.baseline_freshness.freshness.label(),
+        ));
+        md.push_str(&format!(
+            "| Baseline age | {:.1} days |\n",
+            self.baseline_freshness.age_days,
+        ));
+        md.push_str(&format!(
+            "| Dimensions | {} pass, {} warn, {} fail |\n",
+            self.summary.dimensions_passing,
+            self.summary.dimensions_warning,
+            self.summary.dimensions_failing,
+        ));
+        md.push_str(&format!(
+            "| Policy | {:?} (min: {:.2}, max_reg: {:.2}) |\n",
+            self.gate_result.policy.strategy,
+            self.gate_result.policy.min_overall_score,
+            self.gate_result.policy.max_overall_regression,
+        ));
+
+        // Dimension detail table
+        md.push_str("\n## Dimensions\n\n");
+        md.push_str("| Dimension | Baseline | Candidate | Delta | Min | Verdict |\n");
+        md.push_str("|-----------|----------|-----------|-------|-----|--------|\n");
+        for check in &self.gate_result.dimension_checks {
+            md.push_str(&format!(
+                "| {} | {:.2} | {:.2} | {:+.2} | {:.2} | {} |\n",
+                check.dimension.label(),
+                check.baseline_score,
+                check.candidate_score,
+                check.delta,
+                check.min_score,
+                check.verdict.symbol(),
+            ));
+        }
+
+        // Reasons
+        if !self.gate_result.reasons.is_empty() {
+            md.push_str("\n## Reasons\n\n");
+            for reason in &self.gate_result.reasons {
+                md.push_str(&format!("- {reason}\n"));
+            }
+        }
+
+        // Recommendations
+        md.push_str("\n## Recommendations\n\n");
+        for rec in &self.recommendations {
+            md.push_str(&format!("- {rec}\n"));
+        }
+
+        // Footer
+        md.push_str(&format!(
+            "\n---\n*Generated by OCO eval-gate at {}*\n",
+            self.generated_at.format("%Y-%m-%d %H:%M:%S UTC"),
+        ));
+
+        md
+    }
+
+    /// Serialize to pretty-printed JSON.
+    pub fn to_json(&self) -> Result<String, String> {
+        serde_json::to_string_pretty(self)
+            .map_err(|e| format!("failed to serialize review artifact: {e}"))
+    }
+
+    /// Save Markdown to a file.
+    pub fn save_markdown(&self, path: &std::path::Path) -> Result<(), String> {
+        let md = self.to_markdown();
+        std::fs::write(path, md).map_err(|e| format!("failed to write markdown report: {e}"))
+    }
+
+    /// Save JSON to a file.
+    pub fn save_json(&self, path: &std::path::Path) -> Result<(), String> {
+        let json = self.to_json()?;
+        std::fs::write(path, json).map_err(|e| format!("failed to write JSON report: {e}"))
     }
 }
 
@@ -1075,6 +1427,8 @@ mod tests {
             default_policy: "strict".into(),
             min_overall_score: Some(0.6),
             max_overall_regression: Some(-0.1),
+            fresh_days: None,
+            stale_days: None,
         };
         let json = serde_json::to_string_pretty(&cfg).unwrap();
         let parsed: GateConfig = serde_json::from_str(&json).unwrap();
@@ -1098,6 +1452,8 @@ mod tests {
             default_policy: "balanced".into(),
             min_overall_score: Some(0.5),
             max_overall_regression: None,
+            fresh_days: Some(7),
+            stale_days: Some(21),
         };
         let toml_str = toml::to_string_pretty(&cfg).unwrap();
         let parsed: GateConfig = toml::from_str(&toml_str).unwrap();
@@ -1108,5 +1464,303 @@ mod tests {
     fn gate_config_toml_empty_deserializes_to_default() {
         let cfg: GateConfig = toml::from_str("").unwrap();
         assert_eq!(cfg, GateConfig::default());
+    }
+
+    // ── Q8: GateConfig freshness fields ──
+
+    #[test]
+    fn gate_config_freshness_defaults_none() {
+        let cfg = GateConfig::default();
+        assert!(cfg.fresh_days.is_none());
+        assert!(cfg.stale_days.is_none());
+    }
+
+    #[test]
+    fn gate_config_validate_fresh_gt_stale_fails() {
+        let cfg = GateConfig {
+            fresh_days: Some(30),
+            stale_days: Some(14),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("fresh_days"));
+        assert!(err.contains("stale_days"));
+    }
+
+    #[test]
+    fn gate_config_validate_fresh_eq_stale_ok() {
+        let cfg = GateConfig {
+            fresh_days: Some(14),
+            stale_days: Some(14),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn gate_config_validate_only_fresh_ok() {
+        let cfg = GateConfig {
+            fresh_days: Some(7),
+            stale_days: None,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    // ── Q8: BaselineFreshness ──
+
+    #[test]
+    fn freshness_labels() {
+        assert_eq!(BaselineFreshness::Fresh.label(), "fresh");
+        assert_eq!(BaselineFreshness::Aging.label(), "aging");
+        assert_eq!(BaselineFreshness::Stale.label(), "stale");
+        assert_eq!(BaselineFreshness::Unknown.label(), "unknown");
+    }
+
+    #[test]
+    fn freshness_warnings() {
+        assert!(!BaselineFreshness::Fresh.warrants_warning());
+        assert!(BaselineFreshness::Aging.warrants_warning());
+        assert!(BaselineFreshness::Stale.warrants_warning());
+        assert!(!BaselineFreshness::Unknown.warrants_warning());
+    }
+
+    #[test]
+    fn freshness_serde_roundtrip() {
+        for f in [
+            BaselineFreshness::Fresh,
+            BaselineFreshness::Aging,
+            BaselineFreshness::Stale,
+            BaselineFreshness::Unknown,
+        ] {
+            let json = serde_json::to_string(&f).unwrap();
+            let parsed: BaselineFreshness = serde_json::from_str(&json).unwrap();
+            assert_eq!(f, parsed);
+        }
+    }
+
+    // ── Q8: BaselineFreshnessCheck ──
+
+    #[test]
+    fn freshness_check_fresh_baseline() {
+        use chrono::Duration;
+        let now = Utc::now();
+        let created = now - Duration::days(5);
+        let check = BaselineFreshnessCheck::evaluate(created, now, None, None);
+        assert_eq!(check.freshness, BaselineFreshness::Fresh);
+        assert!(check.age_days > 4.9 && check.age_days < 5.1);
+        assert_eq!(check.fresh_threshold_days, 14);
+        assert_eq!(check.stale_threshold_days, 30);
+    }
+
+    #[test]
+    fn freshness_check_aging_baseline() {
+        use chrono::Duration;
+        let now = Utc::now();
+        let created = now - Duration::days(20);
+        let check = BaselineFreshnessCheck::evaluate(created, now, None, None);
+        assert_eq!(check.freshness, BaselineFreshness::Aging);
+        assert!(check.recommendation.contains("consider updating"));
+    }
+
+    #[test]
+    fn freshness_check_stale_baseline() {
+        use chrono::Duration;
+        let now = Utc::now();
+        let created = now - Duration::days(45);
+        let check = BaselineFreshnessCheck::evaluate(created, now, None, None);
+        assert_eq!(check.freshness, BaselineFreshness::Stale);
+        assert!(check.recommendation.contains("stale"));
+    }
+
+    #[test]
+    fn freshness_check_custom_thresholds() {
+        use chrono::Duration;
+        let now = Utc::now();
+        let created = now - Duration::days(10);
+        // Custom: fresh=7, stale=14 — 10 days should be aging
+        let check = BaselineFreshnessCheck::evaluate(created, now, Some(7), Some(14));
+        assert_eq!(check.freshness, BaselineFreshness::Aging);
+        assert_eq!(check.fresh_threshold_days, 7);
+        assert_eq!(check.stale_threshold_days, 14);
+    }
+
+    #[test]
+    fn freshness_check_future_date_unknown() {
+        use chrono::Duration;
+        let now = Utc::now();
+        let future = now + Duration::days(5);
+        let check = BaselineFreshnessCheck::evaluate(future, now, None, None);
+        assert_eq!(check.freshness, BaselineFreshness::Unknown);
+    }
+
+    #[test]
+    fn freshness_check_serde_roundtrip() {
+        use chrono::Duration;
+        let now = Utc::now();
+        let created = now - Duration::days(20);
+        let check = BaselineFreshnessCheck::evaluate(created, now, None, None);
+        let json = serde_json::to_string_pretty(&check).unwrap();
+        let parsed: BaselineFreshnessCheck = serde_json::from_str(&json).unwrap();
+        assert_eq!(check.freshness, parsed.freshness);
+        assert!((check.age_days - parsed.age_days).abs() < 0.01);
+    }
+
+    #[test]
+    fn freshness_from_baseline_shortcut() {
+        use chrono::Duration;
+        let sc = full_scorecard("test", 0.8);
+        let mut baseline = EvalBaseline::from_scorecard("v1", sc, "test");
+        baseline.created_at = Utc::now() - Duration::days(3);
+        let check = BaselineFreshnessCheck::from_baseline(&baseline, None, None);
+        assert_eq!(check.freshness, BaselineFreshness::Fresh);
+    }
+
+    // ── Q8: GateReviewArtifact ──
+
+    #[test]
+    fn review_artifact_generate_pass() {
+        use chrono::Duration;
+        let baseline_sc = full_scorecard("base", 0.8);
+        let candidate_sc = full_scorecard("cand", 0.8);
+        let policy = GatePolicy::default_balanced();
+        let gate_result = GateResult::evaluate(&baseline_sc, &candidate_sc, &policy);
+
+        let mut eval_baseline = EvalBaseline::from_scorecard("v1-stable", baseline_sc, "test");
+        eval_baseline.created_at = Utc::now() - Duration::days(5);
+        let freshness = BaselineFreshnessCheck::from_baseline(&eval_baseline, None, None);
+
+        let artifact = GateReviewArtifact::generate(gate_result, &eval_baseline, freshness);
+        assert_eq!(artifact.summary.verdict, GateVerdict::Pass);
+        assert_eq!(artifact.summary.baseline_name, "v1-stable");
+        assert_eq!(
+            artifact.summary.baseline_freshness,
+            BaselineFreshness::Fresh
+        );
+        assert_eq!(artifact.summary.dimensions_failing, 0);
+    }
+
+    #[test]
+    fn review_artifact_generate_fail_with_stale_baseline() {
+        use chrono::Duration;
+        let baseline_sc = full_scorecard("base", 0.9);
+        let candidate_sc = full_scorecard("cand", 0.2);
+        let policy = GatePolicy::default_balanced();
+        let gate_result = GateResult::evaluate(&baseline_sc, &candidate_sc, &policy);
+
+        let mut eval_baseline = EvalBaseline::from_scorecard("old-baseline", baseline_sc, "test");
+        eval_baseline.created_at = Utc::now() - Duration::days(45);
+        let freshness = BaselineFreshnessCheck::from_baseline(&eval_baseline, None, None);
+
+        let artifact = GateReviewArtifact::generate(gate_result, &eval_baseline, freshness);
+        assert_eq!(artifact.summary.verdict, GateVerdict::Fail);
+        assert_eq!(
+            artifact.summary.baseline_freshness,
+            BaselineFreshness::Stale
+        );
+        // Should have recommendations about staleness and failing
+        assert!(
+            artifact
+                .recommendations
+                .iter()
+                .any(|r| r.contains("stale") || r.contains("Stale"))
+        );
+        assert!(
+            artifact
+                .recommendations
+                .iter()
+                .any(|r| r.contains("FAILED"))
+        );
+    }
+
+    #[test]
+    fn review_artifact_to_markdown() {
+        use chrono::Duration;
+        let baseline_sc = full_scorecard("base", 0.8);
+        let candidate_sc = full_scorecard("cand", 0.7);
+        let policy = GatePolicy::default_balanced();
+        let gate_result = GateResult::evaluate(&baseline_sc, &candidate_sc, &policy);
+
+        let mut eval_baseline = EvalBaseline::from_scorecard("v1", baseline_sc, "test");
+        eval_baseline.created_at = Utc::now() - Duration::days(3);
+        let freshness = BaselineFreshnessCheck::from_baseline(&eval_baseline, None, None);
+
+        let artifact = GateReviewArtifact::generate(gate_result, &eval_baseline, freshness);
+        let md = artifact.to_markdown();
+
+        assert!(md.contains("# Gate Review Report"));
+        assert!(md.contains("## Summary"));
+        assert!(md.contains("## Dimensions"));
+        assert!(md.contains("success"));
+        assert!(md.contains("Generated by OCO"));
+    }
+
+    #[test]
+    fn review_artifact_serde_roundtrip() {
+        use chrono::Duration;
+        let baseline_sc = full_scorecard("base", 0.8);
+        let candidate_sc = full_scorecard("cand", 0.6);
+        let policy = GatePolicy::default_balanced();
+        let gate_result = GateResult::evaluate(&baseline_sc, &candidate_sc, &policy);
+
+        let mut eval_baseline = EvalBaseline::from_scorecard("v1", baseline_sc, "test");
+        eval_baseline.created_at = Utc::now() - Duration::days(10);
+        let freshness = BaselineFreshnessCheck::from_baseline(&eval_baseline, None, None);
+
+        let artifact = GateReviewArtifact::generate(gate_result, &eval_baseline, freshness);
+        let json = artifact.to_json().unwrap();
+        let parsed: GateReviewArtifact = serde_json::from_str(&json).unwrap();
+        assert_eq!(artifact.summary.verdict, parsed.summary.verdict);
+        assert_eq!(artifact.recommendations.len(), parsed.recommendations.len());
+    }
+
+    #[test]
+    fn review_artifact_save_files() {
+        use chrono::Duration;
+        let baseline_sc = full_scorecard("base", 0.8);
+        let candidate_sc = full_scorecard("cand", 0.8);
+        let policy = GatePolicy::default_balanced();
+        let gate_result = GateResult::evaluate(&baseline_sc, &candidate_sc, &policy);
+
+        let mut eval_baseline = EvalBaseline::from_scorecard("v1", baseline_sc, "test");
+        eval_baseline.created_at = Utc::now() - Duration::days(2);
+        let freshness = BaselineFreshnessCheck::from_baseline(&eval_baseline, None, None);
+
+        let artifact = GateReviewArtifact::generate(gate_result, &eval_baseline, freshness);
+
+        let dir = tempfile::tempdir().unwrap();
+        let md_path = dir.path().join("report.md");
+        let json_path = dir.path().join("report.json");
+
+        artifact.save_markdown(&md_path).unwrap();
+        artifact.save_json(&json_path).unwrap();
+
+        let md_content = std::fs::read_to_string(&md_path).unwrap();
+        assert!(md_content.contains("Gate Review Report"));
+
+        let json_content = std::fs::read_to_string(&json_path).unwrap();
+        let parsed: GateReviewArtifact = serde_json::from_str(&json_content).unwrap();
+        assert_eq!(parsed.summary.verdict, GateVerdict::Pass);
+    }
+
+    // ── Q8: ReviewSummary ──
+
+    #[test]
+    fn review_summary_serde_roundtrip() {
+        let summary = ReviewSummary {
+            verdict: GateVerdict::Warn,
+            baseline_name: "test-baseline".to_string(),
+            candidate_id: "test-candidate".to_string(),
+            overall_change: "0.80 → 0.75 (−0.05)".to_string(),
+            dimensions_passing: 5,
+            dimensions_warning: 1,
+            dimensions_failing: 1,
+            baseline_freshness: BaselineFreshness::Aging,
+        };
+        let json = serde_json::to_string_pretty(&summary).unwrap();
+        let parsed: ReviewSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(summary.verdict, parsed.verdict);
+        assert_eq!(summary.baseline_name, parsed.baseline_name);
+        assert_eq!(summary.dimensions_warning, parsed.dimensions_warning);
     }
 }
