@@ -199,15 +199,19 @@ pub fn load_gate_config_strict(workspace: &Path) -> Result<GateConfig, ConfigErr
 
 /// Build a freshness check from the workspace's gate config and a loaded baseline.
 ///
-/// Loads `[gate]` from `oco.toml` in `workspace` (or uses defaults), then
-/// evaluates the baseline's `created_at` against the configured `fresh_days`
-/// and `stale_days` thresholds.
+/// Uses [`load_gate_config_strict`] — returns an error if `oco.toml` exists but
+/// is invalid, consistent with the fail-closed Q7 contract.  Returns defaults
+/// when no config file is present.
 pub fn evaluate_baseline_freshness(
     workspace: &Path,
     baseline: &EvalBaseline,
-) -> BaselineFreshnessCheck {
-    let gate_cfg = load_gate_config(workspace);
-    BaselineFreshnessCheck::from_baseline(baseline, gate_cfg.fresh_days, gate_cfg.stale_days)
+) -> Result<BaselineFreshnessCheck, ConfigError> {
+    let gate_cfg = load_gate_config_strict(workspace)?;
+    Ok(BaselineFreshnessCheck::from_baseline(
+        baseline,
+        gate_cfg.fresh_days,
+        gate_cfg.stale_days,
+    ))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -524,7 +528,7 @@ stale_days = 7
         };
         let baseline = EvalBaseline::from_scorecard("test-baseline", scorecard, "test");
 
-        let check = evaluate_baseline_freshness(dir.path(), &baseline);
+        let check = evaluate_baseline_freshness(dir.path(), &baseline).unwrap();
         assert_eq!(check.freshness, BaselineFreshness::Fresh);
         assert_eq!(
             check.fresh_threshold_days,
@@ -568,7 +572,7 @@ stale_days = 7
         let mut baseline = EvalBaseline::from_scorecard("old-baseline", scorecard, "test");
         baseline.created_at = Utc::now() - Duration::days(5);
 
-        let check = evaluate_baseline_freshness(dir.path(), &baseline);
+        let check = evaluate_baseline_freshness(dir.path(), &baseline).unwrap();
         assert_eq!(check.freshness, BaselineFreshness::Aging);
         assert_eq!(check.fresh_threshold_days, 3);
         assert_eq!(check.stale_threshold_days, 7);
@@ -593,7 +597,7 @@ stale_days = 7
         let mut baseline = EvalBaseline::from_scorecard("stale-baseline", scorecard, "test");
         baseline.created_at = Utc::now() - Duration::days(45);
 
-        let check = evaluate_baseline_freshness(dir.path(), &baseline);
+        let check = evaluate_baseline_freshness(dir.path(), &baseline).unwrap();
         assert_eq!(check.freshness, BaselineFreshness::Stale);
         assert!(check.freshness.warrants_warning());
     }
@@ -617,8 +621,40 @@ stale_days = 7
         let mut baseline = EvalBaseline::from_scorecard("aging-baseline", scorecard, "test");
         baseline.created_at = Utc::now() - Duration::days(20);
 
-        let check = evaluate_baseline_freshness(dir.path(), &baseline);
+        let check = evaluate_baseline_freshness(dir.path(), &baseline).unwrap();
         assert_eq!(check.freshness, BaselineFreshness::Aging);
         assert!(check.freshness.warrants_warning());
+    }
+
+    #[test]
+    fn evaluate_freshness_invalid_config_errors() {
+        use chrono::Utc;
+        use oco_shared_types::{CostMetrics, EvalBaseline, RunScorecard};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+default_policy = "nonexistent"
+"#
+        )
+        .unwrap();
+
+        let scorecard = RunScorecard {
+            run_id: "test".to_string(),
+            computed_at: Utc::now(),
+            dimensions: vec![],
+            overall_score: 0.5,
+            cost: CostMetrics::default(),
+        };
+        let baseline = EvalBaseline::from_scorecard("test", scorecard, "test");
+
+        let result = evaluate_baseline_freshness(dir.path(), &baseline);
+        assert!(result.is_err(), "expected error for invalid config");
     }
 }
