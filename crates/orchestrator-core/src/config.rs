@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oco_shared_types::{Budget, GateConfig, RepoProfile};
+use oco_shared_types::{BaselineFreshnessCheck, Budget, EvalBaseline, GateConfig, RepoProfile};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the orchestrator.
@@ -195,6 +195,19 @@ pub fn load_gate_config_strict(workspace: &Path) -> Result<GateConfig, ConfigErr
     }
     let config = OrchestratorConfig::from_file(&config_path)?;
     Ok(config.gate)
+}
+
+/// Build a freshness check from the workspace's gate config and a loaded baseline.
+///
+/// Loads `[gate]` from `oco.toml` in `workspace` (or uses defaults), then
+/// evaluates the baseline's `created_at` against the configured `fresh_days`
+/// and `stale_days` thresholds.
+pub fn evaluate_baseline_freshness(
+    workspace: &Path,
+    baseline: &EvalBaseline,
+) -> BaselineFreshnessCheck {
+    let gate_cfg = load_gate_config(workspace);
+    BaselineFreshnessCheck::from_baseline(baseline, gate_cfg.fresh_days, gate_cfg.stale_days)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -429,5 +442,183 @@ min_overall_score = 2.0
 
         let result = load_gate_config_strict(dir.path());
         assert!(result.is_err());
+    }
+
+    // ── Q8: fresh_days / stale_days pass-through ──
+
+    #[test]
+    fn gate_config_freshness_fields_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+fresh_days = 7
+stale_days = 21
+"#
+        )
+        .unwrap();
+
+        let config = OrchestratorConfig::from_file(&config_path).unwrap();
+        assert_eq!(config.gate.fresh_days, Some(7));
+        assert_eq!(config.gate.stale_days, Some(21));
+    }
+
+    #[test]
+    fn gate_config_freshness_fields_default_none() {
+        let config = OrchestratorConfig::default();
+        assert!(config.gate.fresh_days.is_none());
+        assert!(config.gate.stale_days.is_none());
+    }
+
+    #[test]
+    fn gate_config_invalid_freshness_fresh_gt_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+fresh_days = 30
+stale_days = 7
+"#
+        )
+        .unwrap();
+
+        let result = OrchestratorConfig::from_file(&config_path);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("fresh_days") && msg.contains("stale_days"),
+            "got: {msg}"
+        );
+    }
+
+    // ── Q8: evaluate_baseline_freshness ──
+
+    #[test]
+    fn evaluate_freshness_no_config_uses_defaults() {
+        use chrono::Utc;
+        use oco_shared_types::{
+            BaselineFreshness, BaselineFreshnessCheck, CostMetrics, EvalBaseline, RunScorecard,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        // No oco.toml — defaults apply (fresh_days=14, stale_days=30)
+
+        let scorecard = RunScorecard {
+            run_id: "test".to_string(),
+            computed_at: Utc::now(),
+            dimensions: vec![],
+            overall_score: 0.5,
+            cost: CostMetrics::default(),
+        };
+        let baseline = EvalBaseline::from_scorecard("test-baseline", scorecard, "test");
+
+        let check = evaluate_baseline_freshness(dir.path(), &baseline);
+        assert_eq!(check.freshness, BaselineFreshness::Fresh);
+        assert_eq!(
+            check.fresh_threshold_days,
+            BaselineFreshnessCheck::DEFAULT_FRESH_DAYS
+        );
+        assert_eq!(
+            check.stale_threshold_days,
+            BaselineFreshnessCheck::DEFAULT_STALE_DAYS
+        );
+    }
+
+    #[test]
+    fn evaluate_freshness_with_custom_thresholds() {
+        use chrono::{Duration, Utc};
+        use oco_shared_types::{BaselineFreshness, CostMetrics, EvalBaseline, RunScorecard};
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+fresh_days = 3
+stale_days = 7
+"#
+        )
+        .unwrap();
+
+        // Create a baseline that is 5 days old (between fresh=3 and stale=7 => Aging)
+        let scorecard = RunScorecard {
+            run_id: "test".to_string(),
+            computed_at: Utc::now() - Duration::days(5),
+            dimensions: vec![],
+            overall_score: 0.5,
+            cost: CostMetrics::default(),
+        };
+        let mut baseline = EvalBaseline::from_scorecard("old-baseline", scorecard, "test");
+        baseline.created_at = Utc::now() - Duration::days(5);
+
+        let check = evaluate_baseline_freshness(dir.path(), &baseline);
+        assert_eq!(check.freshness, BaselineFreshness::Aging);
+        assert_eq!(check.fresh_threshold_days, 3);
+        assert_eq!(check.stale_threshold_days, 7);
+    }
+
+    #[test]
+    fn evaluate_freshness_stale_baseline() {
+        use chrono::{Duration, Utc};
+        use oco_shared_types::{BaselineFreshness, CostMetrics, EvalBaseline, RunScorecard};
+
+        let dir = tempfile::tempdir().unwrap();
+        // No config — default thresholds (fresh=14, stale=30)
+
+        // Create a baseline that is 45 days old (> 30 => Stale)
+        let scorecard = RunScorecard {
+            run_id: "old".to_string(),
+            computed_at: Utc::now() - Duration::days(45),
+            dimensions: vec![],
+            overall_score: 0.5,
+            cost: CostMetrics::default(),
+        };
+        let mut baseline = EvalBaseline::from_scorecard("stale-baseline", scorecard, "test");
+        baseline.created_at = Utc::now() - Duration::days(45);
+
+        let check = evaluate_baseline_freshness(dir.path(), &baseline);
+        assert_eq!(check.freshness, BaselineFreshness::Stale);
+        assert!(check.freshness.warrants_warning());
+    }
+
+    #[test]
+    fn evaluate_freshness_aging_baseline() {
+        use chrono::{Duration, Utc};
+        use oco_shared_types::{BaselineFreshness, CostMetrics, EvalBaseline, RunScorecard};
+
+        let dir = tempfile::tempdir().unwrap();
+        // No config — defaults: fresh=14, stale=30
+
+        // Baseline is 20 days old (between 14 and 30 => Aging)
+        let scorecard = RunScorecard {
+            run_id: "aging".to_string(),
+            computed_at: Utc::now() - Duration::days(20),
+            dimensions: vec![],
+            overall_score: 0.5,
+            cost: CostMetrics::default(),
+        };
+        let mut baseline = EvalBaseline::from_scorecard("aging-baseline", scorecard, "test");
+        baseline.created_at = Utc::now() - Duration::days(20);
+
+        let check = evaluate_baseline_freshness(dir.path(), &baseline);
+        assert_eq!(check.freshness, BaselineFreshness::Aging);
+        assert!(check.freshness.warrants_warning());
     }
 }
