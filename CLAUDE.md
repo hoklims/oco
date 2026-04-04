@@ -46,7 +46,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 | # | Crate | Role |
 |---|-------|------|
-| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase**, **MissionMemory**, **RunScorecard**, **ScorecardComparison**, **BatchComparison**, **GateVerdict**, **GatePolicy**, **GateResult**, **EvalBaseline**, **GateConfig** |
+| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase**, **MissionMemory**, **RunScorecard**, **ScorecardComparison**, **BatchComparison**, **GateVerdict**, **GatePolicy**, **GateResult**, **EvalBaseline**, **GateConfig**, **BaselineFreshness**, **BaselineFreshnessCheck**, **GateReviewArtifact** |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
 | 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer, **call graph extraction** (CallEdge) |
@@ -96,7 +96,10 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - `GatePolicy` — Q6 per-dimension thresholds + strategy (Strict/Balanced/Lenient) + overall min score + max regression. Presets: `strict()`, `default_balanced()`, `lenient()`
 - `GateResult` — Q6 full gate evaluation: `evaluate(baseline, candidate, policy)`, per-dimension checks, reasons, `to_report()`, `failed_dimension_count()`, `warned_dimension_count()`
 - `EvalBaseline` — Q6 named scorecard snapshot with `save_to()`/`load_from()`, `from_scorecard()`, `with_description()`
-- `GateConfig` — Q7 per-repo gate configuration: `baseline_path`, `default_policy`, optional `min_overall_score`/`max_overall_regression` overrides. `resolve_policy()`, `validate()`. Deserialized from `[gate]` in `oco.toml` via `#[serde(default)]`
+- `GateConfig` — Q7 per-repo gate configuration: `baseline_path`, `default_policy`, optional `min_overall_score`/`max_overall_regression` overrides, optional `fresh_days`/`stale_days` freshness thresholds (Q8). `resolve_policy()`, `validate()`. Deserialized from `[gate]` in `oco.toml` via `#[serde(default)]`
+- `BaselineFreshness` — Q8 freshness classification: Fresh/Aging/Stale/Unknown based on baseline age vs configurable thresholds
+- `BaselineFreshnessCheck` — Q8 evaluates `EvalBaseline::created_at` against `fresh_days`/`stale_days` thresholds (defaults: 14/30 days)
+- `GateReviewArtifact` — Q8 structured review document: gate result + freshness check + summary + recommendations. `to_markdown()`, `to_json()`
 
 **Key modules**:
 - `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan)
@@ -160,7 +163,7 @@ cargo test                               # Full suite
 
 ```bash
 cargo test                               # All tests (861+)
-cargo test -p oco-shared-types           # 329 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate, gate config
+cargo test -p oco-shared-types           # 329+ tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate, gate config, baseline freshness, review artifacts
 cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             #  37 tests — parser, indexer, language detection, call graph extraction

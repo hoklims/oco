@@ -55,3 +55,6 @@ default_policy = "balanced"          # "strict", "balanced", or "lenient"
 # Uncomment to override preset thresholds:
 # min_overall_score = 0.5
 # max_overall_regression = -0.12
+# Q8: Baseline freshness thresholds (days). Defaults: fresh=14, stale=30.
+# fresh_days = 14
+# stale_days = 30

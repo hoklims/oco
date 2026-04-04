@@ -50,4 +50,8 @@ esac
 #   oco eval-gate --candidate eval-results.json # Explicit candidate, config baseline+policy
 #   oco eval-gate baseline.json candidate.json  # Full explicit (backward compatible)
 
+# Q8: Generate a review artifact (Markdown + JSON):
+#   oco eval-gate --report ./gate-artifacts
+#   This writes gate-artifacts/gate-report.md and gate-artifacts/gate-report.json
+
 exit $EXIT_CODE
