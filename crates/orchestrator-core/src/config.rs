@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oco_shared_types::{Budget, RepoProfile};
+use oco_shared_types::{Budget, GateConfig, RepoProfile};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the orchestrator.
@@ -31,6 +31,9 @@ pub struct OrchestratorConfig {
     /// Override for session max_steps (0 = use session default).
     #[serde(default)]
     pub max_steps: u32,
+    /// Q7: Per-repo gate configuration (baseline, policy, thresholds).
+    #[serde(default)]
+    pub gate: GateConfig,
 }
 
 impl Default for OrchestratorConfig {
@@ -47,6 +50,7 @@ impl Default for OrchestratorConfig {
             system_prompt: None,
             profile: RepoProfile::default(),
             max_steps: 0,
+            gate: GateConfig::default(),
         }
     }
 }
@@ -83,6 +87,9 @@ impl OrchestratorConfig {
                 "anthropic provider requires api_key or api_key_env".into(),
             ));
         }
+        self.gate
+            .validate()
+            .map_err(ConfigError::ValidationError)?;
         Ok(())
     }
 

@@ -500,6 +500,91 @@ impl EvalBaseline {
 }
 
 // ---------------------------------------------------------------------------
+// Repo gate configuration (Q7)
+// ---------------------------------------------------------------------------
+
+/// Per-repo gate configuration, typically declared in `oco.toml` under `[gate]`.
+///
+/// Allows a repository to express its quality contract — baseline location,
+/// default policy, and optional threshold overrides — so that `oco eval-gate`
+/// can be run with zero additional arguments.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct GateConfig {
+    /// Path to the baseline file, relative to the workspace root.
+    /// Default: `.oco/baseline.json`.
+    pub baseline_path: String,
+    /// Default gate policy name: `strict`, `balanced`, or `lenient`.
+    /// Default: `balanced`.
+    pub default_policy: String,
+    /// Minimum overall composite score override (0.0–1.0).
+    /// When set, overrides the preset policy's `min_overall_score`.
+    pub min_overall_score: Option<f64>,
+    /// Maximum allowed overall regression delta override (negative value).
+    /// When set, overrides the preset policy's `max_overall_regression`.
+    pub max_overall_regression: Option<f64>,
+}
+
+impl Default for GateConfig {
+    fn default() -> Self {
+        Self {
+            baseline_path: ".oco/baseline.json".into(),
+            default_policy: "balanced".into(),
+            min_overall_score: None,
+            max_overall_regression: None,
+        }
+    }
+}
+
+impl GateConfig {
+    /// Resolve the gate policy from this configuration.
+    ///
+    /// Starts from the named preset (`strict`, `balanced`, `lenient`), then
+    /// applies any overrides for `min_overall_score` and `max_overall_regression`.
+    pub fn resolve_policy(&self) -> GatePolicy {
+        let mut policy = match self.default_policy.as_str() {
+            "strict" => GatePolicy::strict(),
+            "lenient" => GatePolicy::lenient(),
+            _ => GatePolicy::default_balanced(),
+        };
+        if let Some(min) = self.min_overall_score {
+            policy.min_overall_score = min;
+        }
+        if let Some(max_reg) = self.max_overall_regression {
+            policy.max_overall_regression = max_reg;
+        }
+        policy
+    }
+
+    /// Validate semantic constraints.
+    pub fn validate(&self) -> Result<(), String> {
+        let valid_policies = ["strict", "balanced", "lenient"];
+        if !valid_policies.contains(&self.default_policy.as_str()) {
+            return Err(format!(
+                "unknown gate policy '{}', expected one of: {}",
+                self.default_policy,
+                valid_policies.join(", ")
+            ));
+        }
+        if let Some(min) = self.min_overall_score {
+            if !(0.0..=1.0).contains(&min) {
+                return Err(format!(
+                    "min_overall_score must be between 0.0 and 1.0, got {min}"
+                ));
+            }
+        }
+        if let Some(max_reg) = self.max_overall_regression {
+            if max_reg > 0.0 {
+                return Err(format!(
+                    "max_overall_regression must be <= 0.0, got {max_reg}"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -887,5 +972,141 @@ mod tests {
             result.verdict == GateVerdict::Fail || result.verdict == GateVerdict::Warn,
             "expected fail or warn with zero scores"
         );
+    }
+
+    // ── GateConfig (Q7) ──
+
+    #[test]
+    fn gate_config_default() {
+        let cfg = GateConfig::default();
+        assert_eq!(cfg.baseline_path, ".oco/baseline.json");
+        assert_eq!(cfg.default_policy, "balanced");
+        assert!(cfg.min_overall_score.is_none());
+        assert!(cfg.max_overall_regression.is_none());
+    }
+
+    #[test]
+    fn gate_config_resolve_policy_balanced() {
+        let cfg = GateConfig::default();
+        let policy = cfg.resolve_policy();
+        assert_eq!(policy.strategy, GateStrategy::Balanced);
+        assert!((policy.min_overall_score - 0.4).abs() < 1e-10);
+    }
+
+    #[test]
+    fn gate_config_resolve_policy_strict() {
+        let cfg = GateConfig {
+            default_policy: "strict".into(),
+            ..Default::default()
+        };
+        let policy = cfg.resolve_policy();
+        assert_eq!(policy.strategy, GateStrategy::Strict);
+    }
+
+    #[test]
+    fn gate_config_resolve_policy_lenient() {
+        let cfg = GateConfig {
+            default_policy: "lenient".into(),
+            ..Default::default()
+        };
+        let policy = cfg.resolve_policy();
+        assert_eq!(policy.strategy, GateStrategy::Lenient);
+    }
+
+    #[test]
+    fn gate_config_resolve_policy_with_overrides() {
+        let cfg = GateConfig {
+            min_overall_score: Some(0.7),
+            max_overall_regression: Some(-0.05),
+            ..Default::default()
+        };
+        let policy = cfg.resolve_policy();
+        assert!((policy.min_overall_score - 0.7).abs() < 1e-10);
+        assert!((policy.max_overall_regression - (-0.05)).abs() < 1e-10);
+        // Strategy still balanced (default)
+        assert_eq!(policy.strategy, GateStrategy::Balanced);
+    }
+
+    #[test]
+    fn gate_config_validate_ok() {
+        let cfg = GateConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn gate_config_validate_bad_policy() {
+        let cfg = GateConfig {
+            default_policy: "ultra".into(),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("unknown gate policy"));
+    }
+
+    #[test]
+    fn gate_config_validate_min_score_out_of_range() {
+        let cfg = GateConfig {
+            min_overall_score: Some(1.5),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
+        let cfg2 = GateConfig {
+            min_overall_score: Some(-0.1),
+            ..Default::default()
+        };
+        assert!(cfg2.validate().is_err());
+    }
+
+    #[test]
+    fn gate_config_validate_max_regression_positive() {
+        let cfg = GateConfig {
+            max_overall_regression: Some(0.1),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("max_overall_regression must be <= 0.0"));
+    }
+
+    #[test]
+    fn gate_config_serde_roundtrip() {
+        let cfg = GateConfig {
+            baseline_path: ".oco/my-baseline.json".into(),
+            default_policy: "strict".into(),
+            min_overall_score: Some(0.6),
+            max_overall_regression: Some(-0.1),
+        };
+        let json = serde_json::to_string_pretty(&cfg).unwrap();
+        let parsed: GateConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn gate_config_serde_defaults_on_missing_fields() {
+        // Minimal JSON with only required-ish fields
+        let json = r#"{ "baseline_path": "b.json" }"#;
+        let cfg: GateConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.baseline_path, "b.json");
+        assert_eq!(cfg.default_policy, "balanced");
+        assert!(cfg.min_overall_score.is_none());
+    }
+
+    #[test]
+    fn gate_config_toml_roundtrip() {
+        let cfg = GateConfig {
+            baseline_path: ".oco/baseline.json".into(),
+            default_policy: "balanced".into(),
+            min_overall_score: Some(0.5),
+            max_overall_regression: None,
+        };
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let parsed: GateConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn gate_config_toml_empty_deserializes_to_default() {
+        let cfg: GateConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg, GateConfig::default());
     }
 }
