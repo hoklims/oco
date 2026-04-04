@@ -83,7 +83,7 @@ The `overall_score` is computed as a weighted average of all dimension scores. E
 | **VerificationCoverage** | 1.5 | 0.0 -- 1.0 | `VerificationState` | Ratio of verified files to modified files. If no files were modified, score is 1.0 (vacuously satisfied). |
 | **MissionContinuity** | 1.0 | 0.0 -- 1.0 | `MissionMemory` artifact | 1.0 if a mission memory was produced with substantive content (non-empty facts or hypotheses); 0.0 if absent or empty. Intermediate values possible based on content richness. |
 | **CostEfficiency** | 1.0 | 0.0 -- 1.0 | `CostMetrics` vs budget | Measures how efficiently the run used its budget. Higher score = less waste. Computed as `1.0 - (tokens_used / token_budget)`, clamped to [0.0, 1.0]. A run that uses 30% of budget scores 0.7. |
-| **ReplanStability** | 0.5 | 0.0 -- 1.0 | Replan count from trace | Penalizes excessive replanning. 0 replans = 1.0, 1 replan = 0.75, 2 replans = 0.5, 3+ replans = 0.0. Stability signals plan quality. |
+| **ReplanStability** | 0.5 | 0.0 -- 1.0 | Replan count from trace | Penalizes excessive replanning. 0 replans = 1.0, 1 replan = 0.66, 2 replans = 0.33, 3+ replans = 0.0. Stability signals plan quality. |
 | **ErrorRate** | 1.0 | 0.0 -- 1.0 | Step outcomes from trace | Ratio of error-free steps to total steps. A run with 10 steps and 2 errors scores 0.8. |
 
 **Total weight**: 10.0. The weights reflect priority: Success and TrustVerdict dominate because a run that fails or produces untrustworthy results is fundamentally flawed regardless of efficiency.

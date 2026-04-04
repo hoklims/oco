@@ -673,93 +673,46 @@ fn save_run_artifacts(
             .map_err(|e| anyhow::anyhow!("failed to save mission memory: {e}"))?;
     }
 
-    // scorecard.json — Q5 evaluation scorecard for comparison
+    // scorecard.json — Q5 evaluation scorecard via canonical ScorecardBuilder
     {
-        use oco_shared_types::{CostMetrics, DimensionScore, RunScorecard, ScorecardDimension};
+        let replan_count = state
+            .memory
+            .planner_state
+            .as_ref()
+            .map(|ps| ps.replan_count)
+            .unwrap_or(0);
 
-        let trust_num = match mission.trust_verdict {
-            oco_shared_types::TrustVerdict::High => 1.0,
-            oco_shared_types::TrustVerdict::Medium => 0.66,
-            oco_shared_types::TrustVerdict::Low => 0.33,
-            oco_shared_types::TrustVerdict::None => 0.0,
-        };
-        let cost_score = 1.0 - (state.session.budget.tokens_used as f64 / 100_000.0).min(1.0);
+        let verified_count = state
+            .verification
+            .runs
+            .iter()
+            .filter(|r| r.passed)
+            .flat_map(|r| r.covered_files.iter())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
 
-        let dimensions = vec![
-            DimensionScore {
-                dimension: ScorecardDimension::Success,
-                score: if success { 1.0 } else { 0.0 },
-                detail: if success { "passed" } else { "failed" }.to_string(),
-            },
-            DimensionScore {
-                dimension: ScorecardDimension::TrustVerdict,
-                score: trust_num,
-                detail: mission.trust_verdict.label().to_string(),
-            },
-            DimensionScore {
-                dimension: ScorecardDimension::VerificationCoverage,
-                score: if state.verification.modified_files.is_empty() {
-                    1.0
-                } else {
-                    let verified = state
-                        .verification
-                        .runs
-                        .iter()
-                        .filter(|r| r.passed)
-                        .flat_map(|r| r.covered_files.iter())
-                        .collect::<std::collections::HashSet<_>>()
-                        .len();
-                    let modified = state.verification.modified_files.len();
-                    if modified > 0 {
-                        (verified as f64 / modified as f64).min(1.0)
-                    } else {
-                        1.0
-                    }
-                },
-                detail: format!("{} modified files", state.verification.modified_files.len()),
-            },
-            DimensionScore {
-                dimension: ScorecardDimension::MissionContinuity,
-                score: if has_mission_content { 1.0 } else { 0.0 },
-                detail: if has_mission_content {
-                    "mission memory produced"
-                } else {
-                    "no mission memory"
-                }
-                .to_string(),
-            },
-            DimensionScore {
-                dimension: ScorecardDimension::CostEfficiency,
-                score: cost_score,
-                detail: format!("{} tokens", state.session.budget.tokens_used),
-            },
-            DimensionScore {
-                dimension: ScorecardDimension::ReplanStability,
-                score: 1.0, // TODO: track replans in state
-                detail: "no replan tracking yet".to_string(),
-            },
-            DimensionScore {
-                dimension: ScorecardDimension::ErrorRate,
-                score: if success { 1.0 } else { 0.5 },
-                detail: "inferred from success".to_string(),
-            },
-        ];
+        let error_count = state
+            .observations
+            .iter()
+            .filter(|o| matches!(o.kind, oco_shared_types::ObservationKind::Error { .. }))
+            .count();
 
-        let overall = RunScorecard::compute_overall(&dimensions);
-        let scorecard = RunScorecard {
-            run_id: session_id.to_string(),
-            computed_at: chrono::Utc::now(),
-            dimensions,
-            overall_score: overall,
-            cost: CostMetrics {
-                steps: state.session.step_count,
-                tokens: state.session.budget.tokens_used,
+        let scorecard = oco_orchestrator_core::ScorecardBuilder::new(session_id)
+            .success(success)
+            .trust_verdict(mission.trust_verdict)
+            .file_counts(state.verification.modified_files.len(), verified_count)
+            .mission_continuity(has_mission_content)
+            .cost(
+                state.session.budget.tokens_used,
+                state.session.step_count,
                 duration_ms,
-                tool_calls: state.session.budget.tool_calls_used,
-                verify_cycles: state.session.budget.verify_cycles_used,
-                replans: 0,
-            },
-        };
+                state.session.budget.tool_calls_used,
+                state.session.budget.verify_cycles_used,
+            )
+            .replans(replan_count)
+            .errors(error_count, state.session.step_count)
+            .build();
+
         atomic_write(
             &run_dir.join("scorecard.json"),
             serde_json::to_string_pretty(&scorecard)?,
@@ -1784,96 +1737,32 @@ fn cmd_runs_compare(
     Ok(())
 }
 
-/// Build a scorecard from a ScenarioResult using inline scoring logic.
+/// Build a scorecard from a ScenarioResult using the canonical ScorecardBuilder.
 fn scorecard_from_scenario_result(
     sr: &oco_shared_types::ScenarioResult,
 ) -> oco_shared_types::RunScorecard {
-    use oco_shared_types::{CostMetrics, DimensionScore, RunScorecard, ScorecardDimension};
-
-    let success_score = if sr.success { 1.0 } else { 0.0 };
-    let verification_score = match sr.verification_passed {
-        Some(true) => 1.0,
-        Some(false) => 0.0,
-        None => 0.5,
-    };
-    let cost_score = 1.0 - (sr.total_tokens as f64 / 100_000.0).min(1.0);
-    let error_rate = if sr.step_count > 0 {
-        sr.errors.len() as f64 / sr.step_count as f64
-    } else {
-        0.0
-    };
-
-    let dimensions = vec![
-        DimensionScore {
-            dimension: ScorecardDimension::Success,
-            score: success_score,
-            detail: if sr.success { "passed" } else { "failed" }.to_string(),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::TrustVerdict,
-            score: 0.5, // No trust verdict in ScenarioResult
-            detail: "not available from scenario result".to_string(),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::VerificationCoverage,
-            score: verification_score,
-            detail: format!("verification_passed={:?}", sr.verification_passed),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::MissionContinuity,
-            score: 0.5, // No mission memory in ScenarioResult
-            detail: "not available from scenario result".to_string(),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::CostEfficiency,
-            score: cost_score,
-            detail: format!("{} tokens", sr.total_tokens),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::ReplanStability,
-            score: 1.0, // No replan info in ScenarioResult
-            detail: "no replan info available".to_string(),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::ErrorRate,
-            score: 1.0 - error_rate,
-            detail: format!("{} errors / {} steps", sr.errors.len(), sr.step_count),
-        },
-    ];
-
-    let overall = RunScorecard::compute_overall(&dimensions);
-
-    RunScorecard {
-        run_id: sr.scenario_name.clone(),
-        computed_at: chrono::Utc::now(),
-        dimensions,
-        overall_score: overall,
-        cost: CostMetrics {
-            steps: sr.step_count,
-            tokens: sr.total_tokens,
-            duration_ms: sr.duration_ms,
-            tool_calls: 0,
-            verify_cycles: 0,
-            replans: 0,
-        },
-    }
+    oco_orchestrator_core::ScorecardBuilder::new(&sr.scenario_name)
+        .with_scenario_result(sr)
+        .build()
 }
 
-/// Load a scorecard from disk or build one from the run's summary.json.
+/// Load a scorecard from disk, or reconstruct honestly from available artifacts.
+///
+/// Priority: scorecard.json > reconstruction from summary.json + mission.json + trace.jsonl.
+/// Dimensions without data are left at the ScorecardBuilder's documented defaults
+/// (which produce honest "no data" details), not fabricated scores.
 fn load_or_build_scorecard(run_dir: &Path, run_id: &str) -> Result<oco_shared_types::RunScorecard> {
-    use oco_shared_types::{
-        CostMetrics, DimensionScore, RunScorecard, ScorecardDimension, TrustVerdict,
-    };
+    use oco_shared_types::TrustVerdict;
 
-    // Try scorecard.json first (future: saved by oco run)
+    // Try scorecard.json first (saved by oco run since Q5).
     let scorecard_path = run_dir.join("scorecard.json");
     if scorecard_path.exists() {
         let content = std::fs::read_to_string(&scorecard_path)?;
-        let sc: RunScorecard = serde_json::from_str(&content)?;
+        let sc: oco_shared_types::RunScorecard = serde_json::from_str(&content)?;
         return Ok(sc);
     }
 
-    // Build from summary.json
+    // Reconstruct from available artifacts.
     let summary_path = run_dir.join("summary.json");
     if !summary_path.exists() {
         anyhow::bail!("no scorecard.json or summary.json in {}", run_dir.display());
@@ -1886,93 +1775,43 @@ fn load_or_build_scorecard(run_dir: &Path, run_id: &str) -> Result<oco_shared_ty
     let steps = summary["steps"].as_u64().unwrap_or(0) as u32;
     let duration_ms = summary["duration_ms"].as_u64().unwrap_or(0);
 
-    // Check mission memory
-    let mission_path = run_dir.join("mission.json");
-    let has_mission = mission_path.exists();
-    let mission_score = if has_mission {
-        match oco_shared_types::MissionMemory::load_from(&mission_path) {
-            Ok(m) if m.has_content() => 1.0,
-            _ => 0.3,
-        }
-    } else {
-        0.0
-    };
-
-    // Derive trust verdict from summary if available
-    let trust_score = match summary.get("trust_verdict").and_then(|v| v.as_str()) {
+    let trust = match summary.get("trust_verdict").and_then(|v| v.as_str()) {
         Some("high") => TrustVerdict::High,
         Some("medium") => TrustVerdict::Medium,
         Some("low") => TrustVerdict::Low,
         _ => TrustVerdict::None,
     };
-    let trust_num = match trust_score {
-        TrustVerdict::High => 1.0,
-        TrustVerdict::Medium => 0.66,
-        TrustVerdict::Low => 0.33,
-        TrustVerdict::None => 0.0,
-    };
 
-    let cost_score = 1.0 - (tokens as f64 / 100_000.0).min(1.0);
+    let mut builder = oco_orchestrator_core::ScorecardBuilder::new(run_id)
+        .success(success)
+        .trust_verdict(trust)
+        .cost(tokens, steps, duration_ms, 0, 0);
 
-    let dimensions = vec![
-        DimensionScore {
-            dimension: ScorecardDimension::Success,
-            score: if success { 1.0 } else { 0.0 },
-            detail: if success { "passed" } else { "failed" }.to_string(),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::TrustVerdict,
-            score: trust_num,
-            detail: trust_score.label().to_string(),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::VerificationCoverage,
-            score: 0.5,
-            detail: "derived from summary".to_string(),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::MissionContinuity,
-            score: mission_score,
-            detail: if has_mission {
-                "mission memory present"
-            } else {
-                "no mission memory"
-            }
-            .to_string(),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::CostEfficiency,
-            score: cost_score,
-            detail: format!("{tokens} tokens"),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::ReplanStability,
-            score: 1.0,
-            detail: "no replan info in summary".to_string(),
-        },
-        DimensionScore {
-            dimension: ScorecardDimension::ErrorRate,
-            score: if success { 1.0 } else { 0.5 },
-            detail: "inferred from success".to_string(),
-        },
-    ];
+    // Mission memory — use the real artifact if present.
+    let mission_path = run_dir.join("mission.json");
+    if mission_path.exists()
+        && let Ok(mission) = oco_shared_types::MissionMemory::load_from(&mission_path)
+    {
+        builder = builder.with_mission_memory(&mission);
+    }
 
-    let overall = RunScorecard::compute_overall(&dimensions);
+    // Replan count — reconstruct from trace.jsonl by counting ReplanTriggered events.
+    let trace_path = run_dir.join("trace.jsonl");
+    if trace_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&trace_path)
+    {
+        let replan_count = content
+            .lines()
+            .filter(|line| line.contains("\"replan_triggered\""))
+            .count() as u32;
+        builder = builder.replans(replan_count);
+    }
 
-    Ok(RunScorecard {
-        run_id: run_id.to_string(),
-        computed_at: chrono::Utc::now(),
-        dimensions,
-        overall_score: overall,
-        cost: CostMetrics {
-            steps,
-            tokens,
-            duration_ms,
-            tool_calls: 0,
-            verify_cycles: 0,
-            replans: 0,
-        },
-    })
+    // Note: VerificationCoverage and ErrorRate are left at builder defaults
+    // because summary.json doesn't carry file-level or error-level data.
+    // The builder will produce honest "no data" details for those dimensions.
+
+    Ok(builder.build())
 }
 
 /// Collect priority files by scanning for files matching keywords in the prompt.

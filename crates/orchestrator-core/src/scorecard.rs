@@ -97,6 +97,63 @@ impl ScorecardBuilder {
         self
     }
 
+    // -- Granular setters for callers that don't have full typed sources --
+
+    /// Set success explicitly.
+    pub fn success(mut self, success: bool) -> Self {
+        self.success = Some(success);
+        self
+    }
+
+    /// Set trust verdict explicitly.
+    pub fn trust_verdict(mut self, verdict: TrustVerdict) -> Self {
+        self.trust_verdict = Some(verdict);
+        self
+    }
+
+    /// Set file counts for verification coverage computation.
+    pub fn file_counts(mut self, modified: usize, verified: usize) -> Self {
+        self.files_modified = Some(modified);
+        self.files_verified = Some(verified);
+        self
+    }
+
+    /// Set mission continuity explicitly.
+    pub fn mission_continuity(mut self, has_content: bool) -> Self {
+        self.has_mission_content = Some(has_content);
+        self
+    }
+
+    /// Set cost metrics explicitly.
+    pub fn cost(
+        mut self,
+        tokens: u64,
+        steps: u32,
+        duration_ms: u64,
+        tool_calls: u32,
+        verify_cycles: u32,
+    ) -> Self {
+        self.total_tokens = Some(tokens);
+        self.total_steps = Some(steps);
+        self.duration_ms = Some(duration_ms);
+        self.tool_calls = Some(tool_calls);
+        self.verify_cycles = Some(verify_cycles);
+        self
+    }
+
+    /// Set replan count explicitly.
+    pub fn replans(mut self, count: u32) -> Self {
+        self.replans = Some(count);
+        self
+    }
+
+    /// Set error data explicitly.
+    pub fn errors(mut self, error_count: usize, step_count: u32) -> Self {
+        self.error_count = Some(error_count);
+        self.step_count_for_errors = Some(step_count);
+        self
+    }
+
     /// Build the final [`RunScorecard`].
     pub fn build(self) -> RunScorecard {
         let dimensions = vec![
@@ -681,5 +738,81 @@ mod tests {
                 dim
             );
         }
+    }
+
+    // -- Granular setter tests --
+
+    #[test]
+    fn builder_granular_setters_match_typed_sources() {
+        // Build via typed source
+        let result = make_scenario_result(true, 30000, 10, vec!["e1".into()]);
+        let via_typed = ScorecardBuilder::new("typed")
+            .with_scenario_result(&result)
+            .build();
+
+        // Build via granular setters (same data)
+        let via_granular = ScorecardBuilder::new("granular")
+            .success(true)
+            .cost(30000, 10, 5000, 0, 0)
+            .errors(1, 10)
+            .build();
+
+        // Dimensions that both paths populate should produce identical scores.
+        assert_eq!(
+            via_typed.dimension_score(ScorecardDimension::Success),
+            via_granular.dimension_score(ScorecardDimension::Success),
+        );
+        assert_eq!(
+            via_typed.dimension_score(ScorecardDimension::CostEfficiency),
+            via_granular.dimension_score(ScorecardDimension::CostEfficiency),
+        );
+        assert_eq!(
+            via_typed.dimension_score(ScorecardDimension::ErrorRate),
+            via_granular.dimension_score(ScorecardDimension::ErrorRate),
+        );
+    }
+
+    #[test]
+    fn builder_granular_replans_wired() {
+        let sc = ScorecardBuilder::new("r").replans(2).build();
+        let score = sc
+            .dimension_score(ScorecardDimension::ReplanStability)
+            .unwrap();
+        assert!((score - 0.33).abs() < 1e-6);
+        assert_eq!(sc.cost.replans, 2);
+    }
+
+    #[test]
+    fn builder_granular_file_counts() {
+        let sc = ScorecardBuilder::new("f").file_counts(4, 3).build();
+        let score = sc
+            .dimension_score(ScorecardDimension::VerificationCoverage)
+            .unwrap();
+        assert!((score - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn builder_granular_trust_verdict() {
+        let sc = ScorecardBuilder::new("t")
+            .trust_verdict(TrustVerdict::Low)
+            .build();
+        let score = sc
+            .dimension_score(ScorecardDimension::TrustVerdict)
+            .unwrap();
+        assert!((score - 0.33).abs() < 1e-6);
+    }
+
+    #[test]
+    fn builder_granular_mission_continuity() {
+        let sc_yes = ScorecardBuilder::new("y").mission_continuity(true).build();
+        assert_eq!(
+            sc_yes.dimension_score(ScorecardDimension::MissionContinuity),
+            Some(1.0)
+        );
+        let sc_no = ScorecardBuilder::new("n").mission_continuity(false).build();
+        assert_eq!(
+            sc_no.dimension_score(ScorecardDimension::MissionContinuity),
+            Some(0.0)
+        );
     }
 }
