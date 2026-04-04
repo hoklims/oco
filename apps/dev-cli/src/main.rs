@@ -2621,9 +2621,7 @@ fn cmd_baseline_history(
         } else {
             history
         };
-        let json_str = limited
-            .to_json()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let json_str = limited.to_json().map_err(|e| anyhow::anyhow!("{e}"))?;
         println!("{json_str}");
     } else if markdown {
         println!("{}", history.to_markdown());
@@ -2631,7 +2629,11 @@ fn cmd_baseline_history(
         // Terminal output — show recent entries
         let recent = history.recent(limit);
         r.emit(UiEvent::Info {
-            message: format!("Baseline History ({} total, showing {})", history.len(), recent.len()),
+            message: format!(
+                "Baseline History ({} total, showing {})",
+                history.len(),
+                recent.len()
+            ),
         });
         for entry in &recent {
             println!();

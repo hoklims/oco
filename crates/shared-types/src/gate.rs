@@ -1091,12 +1091,8 @@ impl BaselineDiffSummary {
         let mut lines = Vec::new();
         lines.push(format!("Baseline Diff: {}", self.summary));
         lines.push(String::new());
-        lines.push(
-            "  Dimension                Old       New      Delta".to_string(),
-        );
-        lines.push(
-            "  ---------------------------------------------------".to_string(),
-        );
+        lines.push("  Dimension                Old       New      Delta".to_string());
+        lines.push("  ---------------------------------------------------".to_string());
         for d in &self.dimension_deltas {
             let marker = if d.delta > 0.01 {
                 "+"
@@ -1215,13 +1211,10 @@ impl PromotionRecord {
             md.push_str(&format!("| Gate verdict | {} |\n", gv.symbol()));
         }
         if let Some(bf) = self.baseline_freshness {
-            md.push_str(&format!(
-                "| Old baseline freshness | {} |\n",
-                bf.symbol(),
-            ));
+            md.push_str(&format!("| Old baseline freshness | {} |\n", bf.symbol(),));
         }
         md.push_str(&format!("| Score change | {} |\n", self.diff.summary));
-        md.push_str("\n");
+        md.push('\n');
         md.push_str(&self.diff.to_markdown());
         md
     }
@@ -1300,8 +1293,7 @@ impl BaselineHistory {
     pub fn save_to(&self, path: &std::path::Path) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("failed to serialize baseline history: {e}"))?;
-        std::fs::write(path, json)
-            .map_err(|e| format!("failed to write baseline history: {e}"))
+        std::fs::write(path, json).map_err(|e| format!("failed to write baseline history: {e}"))
     }
 
     /// Load from a JSON file. Returns an empty history if the file doesn't exist.
@@ -1311,8 +1303,7 @@ impl BaselineHistory {
         }
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("failed to read baseline history: {e}"))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("failed to parse baseline history: {e}"))
+        serde_json::from_str(&content).map_err(|e| format!("failed to parse baseline history: {e}"))
     }
 
     /// Format all entries as a human-readable report.
@@ -1321,10 +1312,7 @@ impl BaselineHistory {
             return "No baseline promotions recorded.".to_string();
         }
         let mut lines = Vec::new();
-        lines.push(format!(
-            "Baseline History ({} entries)",
-            self.entries.len()
-        ));
+        lines.push(format!("Baseline History ({} entries)", self.entries.len()));
         lines.push("=".repeat(50));
         for entry in self.entries.iter().rev() {
             lines.push(String::new());
@@ -1347,7 +1335,7 @@ impl BaselineHistory {
         for entry in self.entries.iter().rev() {
             md.push_str(&format!("---\n\n**#{}**\n\n", entry.sequence));
             md.push_str(&entry.promotion.to_markdown());
-            md.push_str("\n");
+            md.push('\n');
         }
         md
     }

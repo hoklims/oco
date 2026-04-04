@@ -333,9 +333,8 @@ pub fn promote_baseline(
 
     // Ensure parent directory exists
     if let Some(parent) = baseline_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            ConfigError::IoError(parent.display().to_string(), e.to_string())
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ConfigError::IoError(parent.display().to_string(), e.to_string()))?;
     }
 
     // Save new baseline
@@ -350,9 +349,8 @@ pub fn promote_baseline(
     // Append to history
     let history_path = workspace.join(DEFAULT_HISTORY_PATH);
     if let Some(parent) = history_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            ConfigError::IoError(parent.display().to_string(), e.to_string())
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ConfigError::IoError(parent.display().to_string(), e.to_string()))?;
     }
     let mut history = BaselineHistory::load_from(&history_path)
         .map_err(|e| ConfigError::IoError(history_path.display().to_string(), e))?;
@@ -1288,7 +1286,10 @@ default_policy = "balanced"
 
         assert_eq!(record.new_baseline_name, "v1-stable");
         assert_eq!(record.old_baseline_name, "(none)");
-        assert_eq!(record.recommendation, oco_shared_types::PromotionRecommendation::Promote);
+        assert_eq!(
+            record.recommendation,
+            oco_shared_types::PromotionRecommendation::Promote
+        );
 
         // Baseline file should exist
         let baseline_path = dir.path().join(".oco/baseline.json");
