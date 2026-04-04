@@ -35,7 +35,7 @@ pub use llm::RetryingLlmProvider;
 pub use llm_router::LlmRouter;
 pub use loop_runner::OrchestrationLoop;
 pub use replay::{LoadedTrace, ReplayControls, ReplayRegistry, ReplaySession};
-pub use review_packet::build_review_packet;
+pub use review_packet::{build_review_packet, build_review_packet_with_config};
 pub use runtime::OrchestratorRuntime;
 pub use scorecard::ScorecardBuilder;
 pub use state::OrchestrationState;

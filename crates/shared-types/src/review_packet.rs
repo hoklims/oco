@@ -256,17 +256,35 @@ impl ReviewPacket {
         MergeReadiness::Unknown
     }
 
-    /// Build a review packet from its component parts.
+    /// Build a review packet from its component parts using default config.
     ///
-    /// This is the primary constructor. The `ReviewPacketBuilder` in
-    /// `orchestrator-core` provides a higher-level API that loads artifacts
-    /// from disk.
+    /// This is the primary constructor. For per-repo merge readiness
+    /// configuration, use [`build_with_config`](Self::build_with_config).
     pub fn build(
         run_id: String,
         scorecard: Option<RunScorecard>,
         gate_result: Option<GateResult>,
         mission: Option<&MissionMemory>,
         baseline_freshness: Option<BaselineFreshnessCheck>,
+    ) -> Self {
+        Self::build_with_config(
+            run_id,
+            scorecard,
+            gate_result,
+            mission,
+            baseline_freshness,
+            &MergeReadinessConfig::default(),
+        )
+    }
+
+    /// Build a review packet with per-repo merge readiness configuration.
+    pub fn build_with_config(
+        run_id: String,
+        scorecard: Option<RunScorecard>,
+        gate_result: Option<GateResult>,
+        mission: Option<&MissionMemory>,
+        baseline_freshness: Option<BaselineFreshnessCheck>,
+        merge_config: &MergeReadinessConfig,
     ) -> Self {
         // Extract trust verdict from multiple sources (prefer mission, fall back to scorecard dim)
         let trust_verdict = mission.map(|m| m.trust_verdict).or_else(|| {
@@ -332,11 +350,12 @@ impl ReviewPacket {
 
         let has_open_risks = !open_risks.risks.is_empty();
 
-        let merge_readiness = Self::compute_merge_readiness(
+        let merge_readiness = Self::compute_merge_readiness_with_config(
             trust_verdict,
             gate_verdict,
             freshness_classification,
             has_open_risks,
+            merge_config,
         );
 
         Self {

@@ -6,7 +6,7 @@
 use chrono::Utc;
 use oco_shared_types::{
     CostMetrics, DimensionScore, MissionMemory, RunScorecard, RunSummary, ScenarioResult,
-    ScorecardDimension, TrustVerdict,
+    ScorecardDimension, ScorecardWeights, TrustVerdict,
 };
 
 // ---------------------------------------------------------------------------
@@ -36,6 +36,9 @@ pub struct ScorecardBuilder {
     step_count_for_errors: Option<u32>,
     tool_calls: Option<u32>,
     verify_cycles: Option<u32>,
+
+    // -- Per-repo weight overrides --
+    weights: Option<ScorecardWeights>,
 }
 
 impl ScorecardBuilder {
@@ -57,6 +60,7 @@ impl ScorecardBuilder {
             step_count_for_errors: None,
             tool_calls: None,
             verify_cycles: None,
+            weights: None,
         }
     }
 
@@ -154,6 +158,15 @@ impl ScorecardBuilder {
         self
     }
 
+    /// Set per-repo scorecard weight overrides.
+    ///
+    /// When provided, `build()` uses these weights instead of the hardcoded
+    /// defaults for the overall score computation.
+    pub fn with_weights(mut self, weights: ScorecardWeights) -> Self {
+        self.weights = Some(weights);
+        self
+    }
+
     /// Build the final [`RunScorecard`].
     pub fn build(self) -> RunScorecard {
         let dimensions = vec![
@@ -166,7 +179,8 @@ impl ScorecardBuilder {
             self.score_error_rate(),
         ];
 
-        let overall_score = RunScorecard::compute_overall(&dimensions);
+        let overall_score =
+            RunScorecard::compute_overall_with_weights(&dimensions, self.weights.as_ref());
 
         let cost = CostMetrics {
             steps: self.total_steps.unwrap_or(0),
@@ -814,5 +828,64 @@ mod tests {
             sc_no.dimension_score(ScorecardDimension::MissionContinuity),
             Some(0.0)
         );
+    }
+
+    // ── with_weights ──
+
+    #[test]
+    fn builder_with_weights_changes_overall() {
+        // Build without custom weights
+        let sc_default = ScorecardBuilder::new("default")
+            .success(true) // Success=1.0 (default weight 3.0)
+            .trust_verdict(TrustVerdict::Low) // TrustVerdict=0.33 (default weight 2.0)
+            .build();
+
+        // Build with custom weights: make trust_verdict much heavier
+        let weights = ScorecardWeights {
+            success: Some(1.0),
+            trust_verdict: Some(10.0),
+            ..Default::default()
+        };
+        let sc_custom = ScorecardBuilder::new("custom")
+            .success(true)
+            .trust_verdict(TrustVerdict::Low)
+            .with_weights(weights)
+            .build();
+
+        // Dimension scores should be identical
+        assert_eq!(
+            sc_default.dimension_score(ScorecardDimension::Success),
+            sc_custom.dimension_score(ScorecardDimension::Success),
+        );
+        assert_eq!(
+            sc_default.dimension_score(ScorecardDimension::TrustVerdict),
+            sc_custom.dimension_score(ScorecardDimension::TrustVerdict),
+        );
+
+        // But overall scores should differ because weights are different
+        assert!(
+            (sc_default.overall_score - sc_custom.overall_score).abs() > 0.01,
+            "custom weights should change overall: default={}, custom={}",
+            sc_default.overall_score,
+            sc_custom.overall_score,
+        );
+
+        // With trust_verdict heavily weighted and low (0.33), custom overall should be lower
+        assert!(
+            sc_custom.overall_score < sc_default.overall_score,
+            "heavier trust weight with low trust should lower overall"
+        );
+    }
+
+    #[test]
+    fn builder_without_weights_matches_default() {
+        let sc = ScorecardBuilder::new("no-weights")
+            .success(true)
+            .trust_verdict(TrustVerdict::High)
+            .build();
+
+        // Manually compute expected overall with default weights
+        let expected = RunScorecard::compute_overall(&sc.dimensions);
+        assert!((sc.overall_score - expected).abs() < 1e-10);
     }
 }

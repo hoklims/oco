@@ -1922,17 +1922,22 @@ fn cmd_eval_compare(
 /// both sections when no config file exists.
 fn load_review_pack_config(
     ws: &Path,
-) -> Result<(oco_shared_types::GateConfig, oco_shared_types::ReviewConfig)> {
+) -> Result<(
+    oco_shared_types::GateConfig,
+    oco_shared_types::ReviewConfig,
+    oco_shared_types::ScorecardWeights,
+)> {
     let config_path = ws.join("oco.toml");
     if !config_path.exists() {
         return Ok((
             oco_shared_types::GateConfig::default(),
             oco_shared_types::ReviewConfig::default(),
+            oco_shared_types::ScorecardWeights::default(),
         ));
     }
     let config = oco_orchestrator_core::OrchestratorConfig::from_file(&config_path)
         .map_err(|e| anyhow::anyhow!("cannot load oco.toml: {e}"))?;
-    Ok((config.gate, config.review))
+    Ok((config.gate, config.review, config.scorecard))
 }
 
 /// Generate a unified review packet for a run (Q9).
@@ -1951,9 +1956,16 @@ fn cmd_runs_review_pack(
         .unwrap_or_else(|| id.clone());
 
     let ws = Path::new(&workspace);
-    let (gate_cfg, review_cfg) = load_review_pack_config(ws)?;
+    let (gate_cfg, review_cfg, scorecard_weights) = load_review_pack_config(ws)?;
 
-    let packet = oco_orchestrator_core::build_review_packet(&run_dir, &run_id, &gate_cfg, ws)?;
+    let packet = oco_orchestrator_core::build_review_packet_with_config(
+        &run_dir,
+        &run_id,
+        &gate_cfg,
+        ws,
+        &scorecard_weights,
+        &review_cfg.merge_readiness,
+    )?;
 
     // Resolve output format: CLI flags override config default_format.
     let use_json = json_output || (!markdown_output && review_cfg.default_format == "json");
