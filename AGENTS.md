@@ -4,15 +4,37 @@
 
 ```bash
 cargo build                              # Build all crates
-cargo test                               # Run full test suite (110+ tests)
+cargo test                               # Run full test suite (1000+ tests)
 cargo run -p oco-dev-cli -- --help       # CLI help
 
 oco index ./path                         # Index a workspace
 oco search "query" --workspace ./path    # Full-text search
-oco run "request" --workspace ./path     # Orchestrate an action
+oco run "request" --workspace ./path     # Orchestrate an action (live trace)
 oco serve --port 3000                    # Start HTTP/MCP server
 oco doctor --workspace ./path            # Check plugin health
 oco eval scenarios.jsonl                 # Run evaluation scenarios
+oco runs list                            # List past runs
+oco runs show last                       # Replay last run's trace
+oco runs show last --mission             # Show mission memory (handoff artifact)
+oco runs handoff last                    # Human-readable handoff document
+oco runs handoff last --json             # Machine-readable mission memory
+oco eval-compare base.json cand.json    # Compare two eval runs (Q5 scorecard)
+oco runs compare <id1> <id2>            # Compare two runs' scorecards
+oco eval-gate baseline.json cand.json   # Quality gate: pass/warn/fail (Q6)
+oco eval-gate                            # Q7: uses repo config ([gate] in oco.toml)
+oco baseline-save last --name v1-stable # Save baseline from last run
+oco baseline-promote last --name v2     # Q11: promote (aborts on Reject)
+oco baseline-history                    # Q11: view promotion audit trail
+oco baseline-history-prune --keep 10    # Prune old history entries
+oco runs review-pack last              # Q9: unified review packet
+```
+
+### CLI Output Modes
+
+```bash
+oco doctor                               # Human: colors, icons, structured
+oco --format jsonl doctor                 # Machine: 1 JSON event per line
+oco --quiet doctor                        # Quiet: only final result/errors
 ```
 
 ## Architecture
@@ -23,18 +45,40 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 | # | Crate | Role |
 |---|-------|------|
-| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, ReplayScenario, TelemetryEvent |
+| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, ExecutionPlan, CapabilityRegistry, TeamCoordinator, OrchestrationEvent, MissionMemory, RunScorecard, GateResult, ReviewPacket, PromotionRecord, BaselineHistory, ScorecardWeights, MergeReadinessConfig |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
-| 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer |
-| 5 | `retrieval` | SQLite FTS5, in-memory vector search, hybrid RRF ranking |
+| 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer, call graph extraction |
+| 5 | `retrieval` | SQLite FTS5 (Mutex\<Connection\>), in-memory vector search, hybrid RRF ranking, call graph storage & BFS traversal |
 | 6 | `tool-runtime` | Shell/file executors, observation normalizer |
 | 7 | `verifier` | Test/build/lint/typecheck runners with auto-detection |
 | 8 | `telemetry` | Tracing init, decision trace collector, event recording |
-| 9 | `context-engine` | Context assembly, dedup, compression, staleness decay, category budgets |
-| 10 | `orchestrator-core` | State machine, action loop, LLM providers, runtime, eval runner, repo profiles |
-| 11 | `mcp-server` | Axum HTTP + MCP server, session management |
-| 12 | `dev-cli` | CLI binary (index, search, run, serve, eval, doctor) |
+| 9 | `context-engine` | Context assembly, dedup, compression, staleness decay, category budgets, step-scoped filtering |
+| 10 | **`planner`** | Task decomposition: DirectPlanner (Trivial/Low) + LlmPlanner (Medium+) → ExecutionPlan DAG |
+| 11 | `orchestrator-core` | State machine, action loop, GraphRunner (DAG execution), LlmRouter, AgentTeamsExecutor, LLM providers, runtime, eval runner, repo profiles, scorecard builder, gate config, review packet builder, baseline promotion |
+| 12 | `mcp-server` | Axum HTTP + MCP server, session management, HTTP hook endpoints, oco_routes/oco_impact tools |
+| 13 | **`claude-adapter`** | Boundary layer: ClaudeVersion detection, 24 hook events, HookDecision, ClaudeCapabilities, IntegrationMode, DoctorCheck |
+| 14 | `dev-cli` | CLI binary (index, search, run, serve, eval, eval-compare, eval-gate, baseline-save, baseline-promote, baseline-history, baseline-history-prune, doctor, runs) |
+| — | `architecture-tests` | Architecture fitness tests — enforces crate dependency DAG, layer violations, foundation isolation |
+
+### Orchestration v2 — Emergent Plan Engine
+
+Each Medium+ task gets a unique `ExecutionPlan` (DAG of steps) generated by the Planner. No templates — the plan emerges from the task, repo context, and available capabilities.
+
+```
+User Request → Classifier → Trivial/Low: flat loop (unchanged)
+                           → Medium+: Planner → ExecutionPlan DAG → GraphRunner
+                              ├── Inline steps → existing loop_runner
+                              ├── Subagent steps → isolated context (HubSpoke)
+                              ├── Teammate steps → Agent Teams protocol (Mesh)
+                              └── MCP steps → direct tool call
+                              ├── Verify gates after implementation steps
+                              ├── Replan on failure (max 3 attempts)
+                              ├── Multi-model routing (opus/sonnet/haiku per step)
+                              └── Effort-level routing (low/medium/high per step)
+```
+
+Sub-plans nest up to `MAX_SUB_PLAN_DEPTH = 2` levels (fixed, see ADR-008).
 
 ### Python (`py/`)
 
@@ -50,16 +94,23 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 ### Rust
 - **Edition 2024**, workspace dependencies in root `Cargo.toml`
 - **No `unwrap()` in production code** — use `?`, `anyhow::Result`, or `thiserror`
-- **Clippy clean** — `cargo clippy -- -D warnings`
+- **Clippy clean** — `cargo clippy --tests -- -D warnings`
+- **Format check** — `cargo fmt --check`; always run `cargo fmt` before pushing
 - Errors: typed with `thiserror` per crate, `anyhow` at binary boundaries
 - Imports: workspace crate aliases (`oco-shared-types`, etc.)
 
 ### Design Principles
 - **Deterministic policy** — no LLM calls for routing decisions
+- **Emergent orchestration** — each plan is unique, generated from task + repo + capabilities
 - **Structured observations** — all tool/retrieval outputs normalized before entering state
 - **Bounded loops** — max steps enforced via token/time/tool budgets
-- **Provider-agnostic** — works with Anthropic, Ollama, or stub provider
+- **Budget pre-reservation** — parallel batches check estimated cost before launch
+- **Provider-agnostic** — works with Anthropic, Ollama, Claude Code CLI, or stub provider
+- **Multi-model routing** — opus for architecture, sonnet for implementation, haiku for exploration
 - **Local-first** — no cloud dependencies required (ML worker optional)
+- **Event-driven UI** — core emits `OrchestrationEvent` via channel, CLI renders via `Renderer` trait (Terminal/JSONL/Quiet)
+- **Run artifacts** — every `oco run` persists `trace.jsonl` + `summary.json` to `.oco/runs/<id>/`
+- **Agent Teams native** — supports Claude Code Agent Teams (Mesh), Subagents (HubSpoke), and Pipeline (Factory) communication
 
 ### Git
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
@@ -68,24 +119,40 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 ## Testing
 
+### Pre-push checklist (CI mirrors this)
+
 ```bash
-cargo test                               # All tests
-cargo test -p oco-shared-types           # 14 tests — domain types, verification, memory, profiles
-cargo test -p oco-policy-engine          # 30 tests — classifier, selector, budget, gates
-cargo test -p oco-context-engine         # 15 tests — assembler, dedup, compression, staleness
-cargo test -p oco-code-intel             # 16 tests — parser, indexer, language detection
-cargo test -p oco-retrieval              #  9 tests — FTS5, vector, hybrid ranking
-cargo test -p oco-telemetry              #  2 tests — event recording, JSONL export
-cargo test -p oco-orchestrator-core      #  8 tests — eval, integration
+cargo fmt                                # Format first
+cargo clippy --tests -- -D warnings      # Lint including test code
+cargo test                               # Full suite
+```
+
+```bash
+cargo test                               # All tests (1000+)
+cargo test -p oco-shared-types           # 440+ tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, elicitation, effort level, scorecard, gate, review packet, promotion, history, configurable weights, merge readiness config
+cargo test -p oco-policy-engine          #  79 tests — classifier, selector, budget, gates, zero-limit budgets
+cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
+cargo test -p oco-code-intel             #  37 tests — parser, indexer, language detection, call graph extraction
+cargo test -p oco-retrieval              #  26 tests — FTS5, vector, hybrid ranking, call graph storage & BFS traversal
+cargo test -p oco-telemetry              #  22 tests — event recording, JSONL export, hook telemetry
+cargo test -p oco-claude-adapter         #  70 tests — version detection, 24 hook events, capability matrix, integration modes, doctor checks
+cargo test -p oco-planner               #  52 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, sub-plan parsing
+cargo test -p oco-orchestrator-core      # 159 tests — eval, integration, loop runner, graph runner, LLM router, agent teams, scorecard builder, gate config, review packet builder, baseline promotion
+cargo test -p oco-mcp-server             #  37+ tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools
+cargo test -p oco-verifier               #  48 tests — test/build/lint/typecheck runners, auto-detection, tiered e2e
+cargo test -p oco-architecture-tests     #   4 tests — dependency DAG, layer violations, foundation isolation, coverage
 ```
 
 ## LLM Providers
 
-| Provider | Config (`oco.toml`) | Requirements |
-|----------|-------------------|--------------|
-| `stub` | `provider = "stub"` | None — returns placeholder responses |
-| `anthropic` | `provider = "anthropic"` | `ANTHROPIC_API_KEY` env var |
-| `ollama` | `provider = "ollama"` | Local Ollama server at `localhost:11434` |
+| Provider | CLI flag | Requirements |
+|----------|----------|--------------|
+| `claude-code` | `--provider claude-code` **(default)** | `claude` CLI on PATH (installed with Claude Code) |
+| `anthropic` | `--provider anthropic` | `ANTHROPIC_API_KEY` env var |
+| `ollama` | `--provider ollama` | Local Ollama server at `localhost:11434` |
+| `stub` | `--provider stub` | None — returns placeholder responses (dev/test) |
+
+**Default**: `claude-code` — delegates to the Claude Code CLI (`claude --bare -p --output-format json`).
 
 ## Configuration
 
@@ -95,12 +162,16 @@ Key sections:
 - **Server** — bind address, port, max sessions
 - **Budget** — token limits, tool call caps, duration, verify cycles
 - **LLM** — provider, model, API key env var, retries
+- **Profile** — policy pack, risk level, sensitive paths
+- **Scorecard** — per-dimension weight overrides (Q5, configurable)
+- **Gate** — baseline path, default policy, threshold overrides, freshness thresholds (Q7/Q8)
+- **Review** — auto-save, default format, output dir, merge readiness config (Q10)
 
-## Codex Integration
+## Claude Code Integration
 
-This repo includes a `.Codex/` directory with project-specific tooling:
+This repo includes a `.claude/` directory with project-specific tooling:
 
-- **Skills** — `/oco-inspect-repo-area`, `/oco-investigate-bug`, `/oco-safe-refactor`, `/oco-trace-stack`, `/oco-verify-fix`
+- **Skills** — `/oco` (meta-skill orchestrator), `/oco-inspect-repo-area`, `/oco-investigate-bug`, `/oco-safe-refactor`, `/oco-trace-stack`, `/oco-verify-fix`
 - **Agents** — `codebase-investigator`, `patch-verifier`, `refactor-reviewer`
 - **MCP bridge** — Exposes OCO tools (search, trace, verify, findings) as MCP resources
 - **Hooks** — Pre/post tool-use validation, session init, stop handlers
@@ -112,9 +183,24 @@ oco/
 ├── apps/
 │   ├── dev-cli/                  # CLI binary
 │   └── vscode-extension/         # VS Code extension
-├── crates/                       # 11 Rust crates (see table above)
+├── crates/                       # 14 Rust crates (see table above)
+│   ├── shared-types/             # Domain types + ExecutionPlan + CapabilityRegistry + Team + Scorecard + Gate + Review + Promotion
+│   ├── planner/                  # DirectPlanner + LlmPlanner
+│   ├── orchestrator-core/        # State machine + GraphRunner + LlmRouter + AgentTeamsExecutor
+│   ├── context-engine/           # Context assembly + StepContextBuilder
+│   ├── policy-engine/            # Action selection + classification
+│   ├── code-intel/               # Tree-sitter parsing
+│   ├── retrieval/                # FTS5 + vector search
+│   ├── tool-runtime/             # Shell/file executors
+│   ├── verifier/                 # Test/build/lint runners
+│   ├── telemetry/                # Tracing + events
+│   ├── mcp-server/               # HTTP + MCP server + Claude Code hook endpoints
+│   ├── claude-adapter/           # Claude Code boundary layer (version, events, capabilities)
+│   ├── shared-proto/             # Protobuf defs
+│   ├── architecture-tests/       # Architecture fitness tests (DAG enforcement)
+│   └── ...
 ├── docs/
-│   ├── adr/                      # Architecture Decision Records
+│   ├── adr/                      # 16 Architecture Decision Records
 │   ├── architecture/             # System overview
 │   └── specs/                    # Feature specifications
 ├── examples/                     # Sample repo, traces, config template
@@ -125,7 +211,7 @@ oco/
 │   ├── jsonschema/               # Config schema
 │   └── proto/                    # Protobuf definitions
 ├── scripts/                      # Bootstrap, CI, dev helpers
-├── .Codex/                      # Codex skills, hooks, MCP bridge
+├── .claude/                      # Claude Code skills, hooks, MCP bridge
 ├── Cargo.toml                    # Workspace root
 ├── oco.toml                      # Runtime configuration
 └── pyproject.toml                # Python workspace
