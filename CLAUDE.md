@@ -32,6 +32,10 @@ oco runs review-pack last              # Q9: unified review packet (terminal)
 oco runs review-pack last --json       # Q9: JSON review packet
 oco runs review-pack last --markdown   # Q9: Markdown review document
 oco runs review-pack last --save       # Q9: save to run directory
+oco baseline-promote last --name v2    # Q11: promote candidate to baseline
+oco baseline-promote res.json --name v2 --reason "CI passed" --json
+oco baseline-history                   # Q11: view promotion audit trail
+oco baseline-history --json --limit 5  # Q11: JSON audit trail (recent 5)
 ```
 
 ### CLI Output Modes
@@ -50,7 +54,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 | # | Crate | Role |
 |---|-------|------|
-| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase**, **MissionMemory**, **RunScorecard**, **ScorecardComparison**, **BatchComparison**, **GateVerdict**, **GatePolicy**, **GateResult**, **EvalBaseline**, **GateConfig**, **BaselineFreshness**, **BaselineFreshnessCheck**, **GateReviewArtifact**, **ReviewPacket**, **MergeReadiness**, **ReviewConfig** |
+| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase**, **MissionMemory**, **RunScorecard**, **ScorecardComparison**, **BatchComparison**, **GateVerdict**, **GatePolicy**, **GateResult**, **EvalBaseline**, **GateConfig**, **BaselineFreshness**, **BaselineFreshnessCheck**, **GateReviewArtifact**, **ReviewPacket**, **MergeReadiness**, **ReviewConfig**, **PromotionRecommendation**, **BaselineDiffSummary**, **PromotionRecord**, **BaselineHistoryEntry**, **BaselineHistory** |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
 | 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer, **call graph extraction** (CallEdge) |
@@ -107,6 +111,11 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - `ReviewPacket` — Q9 unified merge-readiness bundle: aggregates scorecard, gate result, mission memory, baseline freshness. `build()`, `to_review_text()`, `to_markdown()`, `to_json()`, `save_to()`
 - `MergeReadiness` — Q9 Ready/ConditionallyReady/NotReady/Unknown verdict. Computed from trust, gate, freshness, and open risks
 - `ReviewConfig` — Q10 per-repo review packet configuration: `auto_save`, `default_format`, `output_dir`. `validate()`, `is_json()`, `is_markdown()`. Deserialized from `[review]` in `oco.toml` via `#[serde(default)]`
+- `PromotionRecommendation` — Q11 Promote/Review/Reject, derived from gate verdict + freshness via `from_gate_and_freshness()`
+- `BaselineDiffSummary` — Q11 per-dimension deltas between old/new baseline. `compute()`, `to_report()`, `to_markdown()`
+- `PromotionRecord` — Q11 durable promotion artifact: timestamps, source, reason, recommendation, gate verdict, freshness, diff. `to_summary()`, `to_markdown()`
+- `BaselineHistoryEntry` — Q11 wrapper with sequence number
+- `BaselineHistory` — Q11 append-only audit trail, schema_version=1. `append()`, `recent()`, `save_to()`/`load_from()`, `to_report()`, `to_markdown()`, `to_json()`
 
 **Key modules**:
 - `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan)
@@ -117,6 +126,7 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - `shared-types/elicitation.rs` — `ElicitationRequest`/`ElicitationResponse` for interactive MCP decisions
 - `context-engine/step_scope.rs` — `StepContextBuilder` with dependency outputs, error context (Manus pattern), shared memory
 - `orchestrator-core/scorecard.rs` — `ScorecardBuilder` constructs `RunScorecard` from `ScenarioResult`/`RunSummary`/`MissionMemory`
+- `orchestrator-core/config.rs` — Q11 `promote_baseline()` (load old → backup → save new → append history), `load_baseline_history()`
 
 ### Python (`py/`)
 
@@ -169,8 +179,8 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (900+)
-cargo test -p oco-shared-types           # 388+ tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate, gate config, baseline freshness, review artifacts, review packet, review config
+cargo test                               # All tests (930+)
+cargo test -p oco-shared-types           # 417+ tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate, gate config, baseline freshness, review artifacts, review packet, review config, promotion, diff, history
 cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             #  37 tests — parser, indexer, language detection, call graph extraction
@@ -178,7 +188,7 @@ cargo test -p oco-retrieval              #  19 tests — FTS5, vector, hybrid ra
 cargo test -p oco-telemetry              #  13 tests — event recording, JSONL export, hook telemetry
 cargo test -p oco-claude-adapter         #  70 tests — version detection, 24 hook events, capability matrix, integration modes, doctor checks
 cargo test -p oco-planner               #  52 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, sub-plan parsing
-cargo test -p oco-orchestrator-core      # 144 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution, mission memory, scorecard builder, gate config, gate config strict, review packet builder, review config
+cargo test -p oco-orchestrator-core      # 148 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution, mission memory, scorecard builder, gate config, gate config strict, review packet builder, review config, baseline promotion
 cargo test -p oco-mcp-server             #  37 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools
 cargo test -p oco-verifier               #  32 tests — test/build/lint/typecheck runners, auto-detection
 cargo test -p oco-architecture-tests     #   4 tests — dependency DAG, layer violations, foundation isolation, coverage

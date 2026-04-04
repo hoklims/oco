@@ -67,3 +67,16 @@ auto_save = false                        # Save review packets automatically (JS
 default_format = "terminal"              # Default output: "terminal", "markdown", or "json"
 # Uncomment to save review packets to a fixed directory:
 # output_dir = ".oco/reviews"
+
+# Baseline promotion (Q11).
+# Promotion uses the [gate] section above for baseline_path and policy.
+# The audit trail is stored at .oco/baseline-history.json (automatic).
+#
+# Promote a new baseline:
+#   oco baseline-promote last --name v2-stable --reason "CI passed"
+#   oco baseline-promote results.json --name v2 --json
+#
+# View audit trail:
+#   oco baseline-history
+#   oco baseline-history --json
+#   oco baseline-history --markdown --limit 5
