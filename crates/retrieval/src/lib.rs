@@ -18,6 +18,6 @@ pub mod vector;
 
 pub use call_graph::{CallGraphIndex, ImpactResult, RouteNode, StoredCallEdge};
 pub use error::{Result, RetrievalError};
-pub use fts::{FtsIndex, FtsResult};
+pub use fts::{FtsIndex, FtsResult, IncrementalPlan};
 pub use hybrid::{HybridRetriever, RetrievalResult};
 pub use vector::{InMemoryVectorBackend, VectorBackend, VectorResult};
