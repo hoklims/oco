@@ -459,44 +459,68 @@ impl MissionMemory {
     /// Merge facts, hypotheses, and questions from a previous mission memory.
     ///
     /// Used when resuming: the previous mission's knowledge is carried forward.
-    /// Duplicate facts (by content) are deduplicated.
+    /// Duplicate facts (by content) are deduplicated using normalized comparison
+    /// (trim, collapse whitespace, case-insensitive).
     pub fn merge_from_previous(&mut self, previous: &MissionMemory) {
-        // Merge facts — deduplicate by content
-        let existing_facts: std::collections::HashSet<String> =
-            self.facts.iter().map(|f| f.content.clone()).collect();
+        // Merge facts — deduplicate by normalized content
+        let existing_facts: std::collections::HashSet<String> = self
+            .facts
+            .iter()
+            .map(|f| normalize_for_dedup(&f.content))
+            .collect();
         for fact in &previous.facts {
-            if !existing_facts.contains(&fact.content) {
+            if !existing_facts.contains(&normalize_for_dedup(&fact.content)) {
                 self.facts.push(fact.clone());
             }
         }
 
-        // Merge hypotheses — deduplicate by content
-        let existing_hyp: std::collections::HashSet<String> =
-            self.hypotheses.iter().map(|h| h.content.clone()).collect();
+        // Merge hypotheses — deduplicate by normalized content
+        let existing_hyp: std::collections::HashSet<String> = self
+            .hypotheses
+            .iter()
+            .map(|h| normalize_for_dedup(&h.content))
+            .collect();
         for hyp in &previous.hypotheses {
-            if !existing_hyp.contains(&hyp.content) {
+            if !existing_hyp.contains(&normalize_for_dedup(&hyp.content)) {
                 self.hypotheses.push(hyp.clone());
             }
         }
 
-        // Merge open questions — deduplicate
-        let existing_q: std::collections::HashSet<String> =
-            self.open_questions.iter().cloned().collect();
+        // Merge open questions — deduplicate by normalized value
+        let existing_q: std::collections::HashSet<String> = self
+            .open_questions
+            .iter()
+            .map(|q| normalize_for_dedup(q))
+            .collect();
         for q in &previous.open_questions {
-            if !existing_q.contains(q) {
+            if !existing_q.contains(&normalize_for_dedup(q)) {
                 self.open_questions.push(q.clone());
             }
         }
 
-        // Carry forward key decisions
-        let existing_dec: std::collections::HashSet<String> =
-            self.key_decisions.iter().cloned().collect();
+        // Carry forward key decisions — deduplicate by normalized value
+        let existing_dec: std::collections::HashSet<String> = self
+            .key_decisions
+            .iter()
+            .map(|d| normalize_for_dedup(d))
+            .collect();
         for d in &previous.key_decisions {
-            if !existing_dec.contains(d) {
+            if !existing_dec.contains(&normalize_for_dedup(d)) {
                 self.key_decisions.push(d.clone());
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Normalize a string for deduplication: trim, collapse consecutive whitespace
+/// to a single space, and lowercase. This is a deterministic textual
+/// normalization — no semantic or fuzzy matching.
+fn normalize_for_dedup(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
 // ---------------------------------------------------------------------------
@@ -882,6 +906,150 @@ mod tests {
         // key decision merged
         assert_eq!(current.key_decisions.len(), 1);
         assert_eq!(current.key_decisions[0], "decision X");
+    }
+
+    #[test]
+    fn merge_dedup_trims_whitespace() {
+        let mut current = make_empty_mission("current");
+        current.facts.push(MissionFact {
+            content: "fact A".to_string(),
+            source: None,
+            established_at: Utc::now(),
+        });
+        current.open_questions.push("q1".to_string());
+        current
+            .key_decisions
+            .push("chose direct fix".to_string());
+
+        let mut previous = make_empty_mission("previous");
+        previous.facts.push(MissionFact {
+            content: "  fact A  ".to_string(), // whitespace-padded duplicate
+            source: None,
+            established_at: Utc::now(),
+        });
+        previous.facts.push(MissionFact {
+            content: "fact  A".to_string(), // internal whitespace duplicate
+            source: None,
+            established_at: Utc::now(),
+        });
+        previous
+            .open_questions
+            .push("  q1  ".to_string());
+        previous
+            .key_decisions
+            .push("chose  direct  fix".to_string());
+
+        current.merge_from_previous(&previous);
+
+        assert_eq!(current.facts.len(), 1, "whitespace-only variants should be deduplicated");
+        assert_eq!(current.open_questions.len(), 1);
+        assert_eq!(current.key_decisions.len(), 1);
+    }
+
+    #[test]
+    fn merge_dedup_case_insensitive() {
+        let mut current = make_empty_mission("current");
+        current.facts.push(MissionFact {
+            content: "JWT middleware validates on every request".to_string(),
+            source: None,
+            established_at: Utc::now(),
+        });
+        current.hypotheses.push(MissionHypothesis {
+            content: "Session cookie is not HttpOnly".to_string(),
+            confidence_pct: 70,
+            supporting_evidence: vec![],
+        });
+        current
+            .open_questions
+            .push("Does rate limiter handle clock skew?".to_string());
+        current
+            .key_decisions
+            .push("Chose direct fix over refactor".to_string());
+
+        let mut previous = make_empty_mission("previous");
+        previous.facts.push(MissionFact {
+            content: "jwt middleware validates on every request".to_string(), // lowercase dup
+            source: Some("other-source".to_string()),
+            established_at: Utc::now(),
+        });
+        previous.hypotheses.push(MissionHypothesis {
+            content: "session cookie is not httponly".to_string(), // lowercase dup
+            confidence_pct: 80,
+            supporting_evidence: vec![],
+        });
+        previous
+            .open_questions
+            .push("does rate limiter handle clock skew?".to_string());
+        previous
+            .key_decisions
+            .push("chose direct fix over refactor".to_string());
+
+        current.merge_from_previous(&previous);
+
+        assert_eq!(current.facts.len(), 1, "case-different facts should be deduplicated");
+        assert_eq!(current.hypotheses.len(), 1, "case-different hypotheses should be deduplicated");
+        assert_eq!(current.open_questions.len(), 1, "case-different questions should be deduplicated");
+        assert_eq!(current.key_decisions.len(), 1, "case-different decisions should be deduplicated");
+    }
+
+    #[test]
+    fn merge_preserves_genuinely_different_content() {
+        let mut current = make_empty_mission("current");
+        current.facts.push(MissionFact {
+            content: "fact A".to_string(),
+            source: None,
+            established_at: Utc::now(),
+        });
+        current.hypotheses.push(MissionHypothesis {
+            content: "hypothesis X".to_string(),
+            confidence_pct: 50,
+            supporting_evidence: vec![],
+        });
+        current.open_questions.push("question 1".to_string());
+        current.key_decisions.push("decision alpha".to_string());
+
+        let mut previous = make_empty_mission("previous");
+        previous.facts.push(MissionFact {
+            content: "fact B".to_string(),
+            source: None,
+            established_at: Utc::now(),
+        });
+        previous.hypotheses.push(MissionHypothesis {
+            content: "hypothesis Y".to_string(),
+            confidence_pct: 60,
+            supporting_evidence: vec![],
+        });
+        previous.open_questions.push("question 2".to_string());
+        previous
+            .key_decisions
+            .push("decision beta".to_string());
+
+        current.merge_from_previous(&previous);
+
+        assert_eq!(current.facts.len(), 2, "genuinely different facts should both be kept");
+        assert_eq!(current.hypotheses.len(), 2, "genuinely different hypotheses should both be kept");
+        assert_eq!(current.open_questions.len(), 2, "genuinely different questions should both be kept");
+        assert_eq!(current.key_decisions.len(), 2, "genuinely different decisions should both be kept");
+    }
+
+    /// Helper to build a minimal empty mission memory for merge tests.
+    fn make_empty_mission(name: &str) -> MissionMemory {
+        MissionMemory {
+            schema_version: MISSION_SCHEMA_VERSION,
+            session_id: SessionId::new(),
+            created_at: Utc::now(),
+            mission: name.to_string(),
+            facts: vec![],
+            hypotheses: vec![],
+            open_questions: vec![],
+            plan: MissionPlan::default(),
+            verification: MissionVerificationStatus::default(),
+            modified_files: vec![],
+            key_decisions: vec![],
+            risks: vec![],
+            trust_verdict: TrustVerdict::None,
+            narrative: String::new(),
+        }
     }
 
     // -- has_content --
