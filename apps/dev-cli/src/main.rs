@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use ui::{CheckStatus, OutputFormat, Renderer, UiEvent};
+use ui::{CheckStatus, OutputFormat, Renderer, UiEvent, UiStepSummary};
 
 #[derive(Parser)]
 #[command(name = "oco", version, about = "Open Context Orchestrator — Dev CLI")]
@@ -721,6 +721,116 @@ async fn cmd_run(
                         resource,
                         utilization * 100.0
                     ),
+                });
+            }
+            oco_shared_types::OrchestrationEvent::PlanGenerated {
+                plan_id,
+                step_count,
+                parallel_group_count,
+                critical_path_length,
+                estimated_total_tokens,
+                ref strategy,
+                ref team,
+                ref steps,
+            } => {
+                r.emit(UiEvent::PlanOverview {
+                    step_count,
+                    parallel_groups: parallel_group_count,
+                    critical_path_length,
+                    estimated_tokens: estimated_total_tokens as u32,
+                    budget_tokens: 0, // not available here
+                    strategy: strategy.clone(),
+                    team: team
+                        .as_ref()
+                        .map(|t| (t.name.clone(), t.topology.clone(), t.member_count)),
+                    steps: steps
+                        .iter()
+                        .map(|s| UiStepSummary {
+                            id: s.id,
+                            name: s.name.clone(),
+                            role: s.role.clone(),
+                            execution_mode: s.execution_mode.clone(),
+                            depends_on: s.depends_on.clone(),
+                            verify_after: s.verify_after,
+                            estimated_tokens: s.estimated_tokens,
+                            preferred_model: s.preferred_model.clone(),
+                        })
+                        .collect(),
+                });
+                let _ = plan_id; // referenced in trace_events
+            }
+            oco_shared_types::OrchestrationEvent::PlanStepStarted {
+                ref step_name,
+                ref role,
+                ref execution_mode,
+                ..
+            } => {
+                r.emit(UiEvent::PlanStepStarted {
+                    step_name: step_name.clone(),
+                    role: role.clone(),
+                    execution_mode: execution_mode.clone(),
+                });
+            }
+            oco_shared_types::OrchestrationEvent::PlanStepCompleted {
+                ref step_name,
+                success,
+                duration_ms,
+                tokens_used,
+                ..
+            } => {
+                r.emit(UiEvent::PlanStepCompleted {
+                    step_name: step_name.clone(),
+                    success,
+                    duration_ms,
+                    tokens_used,
+                });
+            }
+            oco_shared_types::OrchestrationEvent::PlanProgress {
+                completed,
+                total,
+                ref active_steps,
+                budget_used_pct,
+                ..
+            } => {
+                r.emit(UiEvent::PlanProgress {
+                    completed,
+                    total,
+                    active_steps: active_steps.iter().map(|(_, name)| name.clone()).collect(),
+                    budget_used_pct,
+                });
+            }
+            oco_shared_types::OrchestrationEvent::VerifyGateResult {
+                ref step_name,
+                ref checks,
+                overall_passed,
+                replan_triggered,
+                ..
+            } => {
+                r.emit(UiEvent::PlanVerifyGateResult {
+                    step_name: step_name.clone(),
+                    checks: checks
+                        .iter()
+                        .map(|c| (c.check_type.clone(), c.passed, c.summary.clone()))
+                        .collect(),
+                    overall_passed,
+                    replan_triggered,
+                });
+            }
+            oco_shared_types::OrchestrationEvent::ReplanTriggered {
+                ref failed_step_name,
+                attempt,
+                max_attempts,
+                steps_preserved,
+                steps_removed,
+                steps_added,
+            } => {
+                r.emit(UiEvent::PlanReplanTriggered {
+                    failed_step: failed_step_name.clone(),
+                    attempt,
+                    max_attempts,
+                    steps_preserved,
+                    steps_removed,
+                    steps_added,
                 });
             }
             _ => {}

@@ -954,6 +954,8 @@ impl OrchestrationLoop {
 
         let executor = Arc::new(LoopStepExecutor {
             llm: self.llm.clone(),
+            workspace_root: self.runtime.as_ref().map(|rt| rt.workspace_root.clone()),
+            verifier_timeout: 30,
         });
 
         // Build a planner for replans (GraphRunner needs it)
@@ -970,7 +972,9 @@ impl OrchestrationLoop {
         let event_tx = self.event_tx.clone();
         let budget = state.session.budget.max_total_tokens;
 
-        let mut runner = GraphRunner::new(executor, replan_planner).with_budget(budget);
+        let mut runner = GraphRunner::new(executor, replan_planner)
+            .with_budget(budget)
+            .with_user_request(state.session.user_request.clone());
         if let Some(tx) = event_tx {
             runner = runner.with_event_channel(tx);
         }
@@ -1029,15 +1033,49 @@ impl OrchestrationLoop {
             ));
         }
 
-        // Update working memory planner state after plan execution (#62 wiring)
+        // Update working memory planner state after plan execution (#62 wiring).
+        // Use actual replan_count from GraphRunner, not a hardcoded zero.
+        let actual_replan_count = runner.replan_count();
         state
             .memory
             .update_planner_state(oco_shared_types::PlannerState {
                 current_step: None,
-                replan_count: 0,
+                replan_count: actual_replan_count,
                 phase: Some("completed".into()),
                 lease_id: None,
             });
+
+        // Feed working memory with step-level findings from the completed plan.
+        for step in &completed_plan.steps {
+            match &step.status {
+                oco_shared_types::StepStatus::Completed => {
+                    if let Some(ref output) = step.output {
+                        let entry = MemoryEntry::new(
+                            format!(
+                                "Plan step '{}' completed: {}",
+                                step.name,
+                                truncate(output, 200)
+                            ),
+                            0.8,
+                        )
+                        .with_source("plan_step".into())
+                        .with_severity(MemorySeverity::Info);
+                        state.memory.add_finding(entry);
+                    }
+                }
+                oco_shared_types::StepStatus::Failed { reason } => {
+                    let entry = MemoryEntry::new(
+                        format!("Plan step '{}' failed: {}", step.name, reason),
+                        0.9,
+                    )
+                    .with_source("plan_step".into())
+                    .with_tags(vec!["failure".into()])
+                    .with_severity(MemorySeverity::Error);
+                    state.memory.add_finding(entry);
+                }
+                _ => {}
+            }
+        }
 
         Ok(())
     }
@@ -1275,9 +1313,13 @@ impl OrchestrationLoop {
 /// Step executor that bridges the GraphRunner to the existing LLM + runtime.
 ///
 /// For inline steps, calls the LLM with the step description as prompt.
-/// For verification, returns a stub pass (the full verifier runs in the flat loop).
+/// For verification, delegates to the real `VerificationDispatcher`.
 struct LoopStepExecutor {
     llm: Arc<dyn LlmProvider>,
+    /// Workspace root for running verification commands.
+    workspace_root: Option<PathBuf>,
+    /// Verification timeout in seconds (mirrors the runtime's verifier config).
+    verifier_timeout: u64,
 }
 
 #[async_trait::async_trait]
@@ -1332,16 +1374,59 @@ impl StepExecutor for LoopStepExecutor {
     }
 
     async fn verify_step(&self, step: &PlanStep) -> Result<StepResult, OrchestratorError> {
-        // Stub verification — the real verifier runs when the full loop calls execute_verify.
-        // In plan mode, verify gates signal pass/fail; the GraphRunner handles replan on failure.
-        Ok(StepResult {
-            step_id: step.id,
-            success: true,
-            output: format!("Verification passed for step: {}", step.name),
-            duration_ms: 0,
-            tokens_used: 0,
-        })
+        let start = Instant::now();
+
+        let Some(ref workspace) = self.workspace_root else {
+            // No workspace — cannot run verification, skip gracefully.
+            return Ok(StepResult {
+                step_id: step.id,
+                success: true,
+                output: "Verification skipped: no workspace configured".into(),
+                duration_ms: 0,
+                tokens_used: 0,
+            });
+        };
+
+        let verifier = oco_verifier::VerificationDispatcher::new(self.verifier_timeout);
+        let ws = workspace.to_string_lossy().to_string();
+
+        // Default to RunTests — the most common and meaningful gate.
+        let result = verifier
+            .dispatch(oco_shared_types::VerificationStrategy::RunTests, None, &ws)
+            .await;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(output) => Ok(StepResult {
+                step_id: step.id,
+                success: output.passed,
+                output: if output.passed {
+                    format!("Verification passed for step: {}", step.name)
+                } else {
+                    format!(
+                        "Verification failed for step '{}': {}",
+                        step.name,
+                        output.failures.join("; ")
+                    )
+                },
+                duration_ms,
+                tokens_used: 0,
+            }),
+            Err(e) => Ok(StepResult {
+                step_id: step.id,
+                success: false,
+                output: format!("Verification error for step '{}': {e}", step.name),
+                duration_ms,
+                tokens_used: 0,
+            }),
+        }
     }
+}
+
+/// Truncate a string to `max_len` chars, appending "…" if truncated.
+fn truncate(s: &str, max_len: usize) -> &str {
+    if s.len() <= max_len { s } else { &s[..max_len] }
 }
 
 /// Update working memory based on the latest observation and action.

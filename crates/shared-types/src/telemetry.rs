@@ -249,6 +249,10 @@ pub enum OrchestrationEvent {
         total: usize,
         active_steps: Vec<(Uuid, String)>,
         budget_used_pct: f32,
+        /// Tokens consumed so far during graph execution.
+        tokens_used: u64,
+        /// Total token budget for this graph execution.
+        tokens_budget: u64,
     },
 
     /// A verify gate was evaluated after a step.
