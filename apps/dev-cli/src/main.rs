@@ -1849,14 +1849,15 @@ fn cmd_eval_compare(
         serde_json::from_value(candidate_envelope["results"].clone())
             .map_err(|e| anyhow::anyhow!("failed to parse candidate results: {e}"))?;
 
-    // Build scorecards from results
+    // Build scorecards from results (no workspace context → default weights)
+    let default_weights = oco_shared_types::ScorecardWeights::default();
     let baseline_scorecards: Vec<oco_shared_types::RunScorecard> = baseline_results
         .iter()
-        .map(scorecard_from_scenario_result)
+        .map(|sr| scorecard_from_scenario_result(sr, &default_weights))
         .collect();
     let candidate_scorecards: Vec<oco_shared_types::RunScorecard> = candidate_results
         .iter()
-        .map(scorecard_from_scenario_result)
+        .map(|sr| scorecard_from_scenario_result(sr, &default_weights))
         .collect();
 
     let batch = BatchComparison::from_paired(&baseline_scorecards, &candidate_scorecards);
@@ -2141,9 +2142,11 @@ fn cmd_runs_compare(
 /// Build a scorecard from a ScenarioResult using the canonical ScorecardBuilder.
 fn scorecard_from_scenario_result(
     sr: &oco_shared_types::ScenarioResult,
+    weights: &oco_shared_types::ScorecardWeights,
 ) -> oco_shared_types::RunScorecard {
     oco_orchestrator_core::ScorecardBuilder::new(&sr.scenario_name)
         .with_scenario_result(sr)
+        .with_weights(weights.clone())
         .build()
 }
 
@@ -2294,7 +2297,7 @@ fn cmd_eval_gate(
         let run_dir = resolve_run_dir("last", &workspace)?;
         load_or_build_scorecard(&run_dir, "last", &weights)?
     } else {
-        load_candidate_scorecard(&effective_candidate)?
+        load_candidate_scorecard(&effective_candidate, &weights)?
     };
 
     // Evaluate gate
@@ -2456,7 +2459,13 @@ fn load_baseline_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard>
 }
 
 /// Load a candidate scorecard from various sources.
-fn load_candidate_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard> {
+///
+/// `weights` are applied when reconstructing from eval results or summary.json.
+/// Pre-existing scorecard.json and EvalBaseline files already have weights baked in.
+fn load_candidate_scorecard(
+    path: &str,
+    weights: &oco_shared_types::ScorecardWeights,
+) -> Result<oco_shared_types::RunScorecard> {
     let p = PathBuf::from(path);
 
     // If it's a directory (run dir), load scorecard.json from it
@@ -2467,13 +2476,13 @@ fn load_candidate_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard
             let sc: oco_shared_types::RunScorecard = serde_json::from_str(&content)?;
             return Ok(sc);
         }
-        // Fall back to reconstruct from summary (no workspace context → default weights)
+        // Fall back to reconstruct from summary
         return load_or_build_scorecard(
             &p,
             &p.file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default(),
-            &oco_shared_types::ScorecardWeights::default(),
+            weights,
         );
     }
 
@@ -2510,7 +2519,7 @@ fn load_candidate_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard
 
         let scorecards: Vec<oco_shared_types::RunScorecard> = scenario_results
             .iter()
-            .map(scorecard_from_scenario_result)
+            .map(|sr| scorecard_from_scenario_result(sr, weights))
             .collect();
 
         return oco_shared_types::RunScorecard::aggregate(&scorecards)
@@ -2562,7 +2571,7 @@ fn cmd_baseline_save(
         (sc, format!("run:{source}"))
     } else {
         // Try loading as a file
-        let sc = load_candidate_scorecard(&source)?;
+        let sc = load_candidate_scorecard(&source, &weights)?;
         (sc, format!("file:{source}"))
     };
 
@@ -2611,7 +2620,7 @@ fn cmd_baseline_promote(
         let sc = load_or_build_scorecard(&run_dir, &source, &weights)?;
         (sc, format!("run:{source}"))
     } else {
-        let sc = load_candidate_scorecard(&source)?;
+        let sc = load_candidate_scorecard(&source, &weights)?;
         (sc, format!("file:{source}"))
     };
 
