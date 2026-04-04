@@ -255,7 +255,9 @@ impl OrchestrationState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oco_shared_types::{MissionFact, MissionHypothesis, MissionPlan, MemoryEntry, PlannerState};
+    use oco_shared_types::{
+        MemoryEntry, MissionFact, MissionHypothesis, MissionPlan, PlannerState,
+    };
 
     fn test_session() -> Session {
         Session::new("fix the auth bug".into(), None)

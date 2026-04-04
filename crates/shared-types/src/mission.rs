@@ -183,7 +183,8 @@ impl MissionMemory {
             })
             .collect();
 
-        let open_questions: Vec<String> = memory.questions.iter().map(|q| q.content.clone()).collect();
+        let open_questions: Vec<String> =
+            memory.questions.iter().map(|q| q.content.clone()).collect();
 
         // Build plan from working memory
         let plan = MissionPlan {
@@ -436,20 +437,20 @@ impl MissionMemory {
         if !path.exists() {
             return Err(MissionLoadError::NotFound(path.display().to_string()));
         }
-        let json = std::fs::read_to_string(path)
-            .map_err(|e| MissionLoadError::Io(e.to_string()))?;
+        let json =
+            std::fs::read_to_string(path).map_err(|e| MissionLoadError::Io(e.to_string()))?;
 
         // Check schema version before full deserialization
-        let raw: serde_json::Value = serde_json::from_str(&json)
-            .map_err(|e| MissionLoadError::Parse(e.to_string()))?;
+        let raw: serde_json::Value =
+            serde_json::from_str(&json).map_err(|e| MissionLoadError::Parse(e.to_string()))?;
 
-        if let Some(version) = raw.get("schema_version").and_then(|v| v.as_u64()) {
-            if version as u32 > MISSION_SCHEMA_VERSION {
-                return Err(MissionLoadError::IncompatibleSchema {
-                    found: version as u32,
-                    expected: MISSION_SCHEMA_VERSION,
-                });
-            }
+        if let Some(version) = raw.get("schema_version").and_then(|v| v.as_u64())
+            && version as u32 > MISSION_SCHEMA_VERSION
+        {
+            return Err(MissionLoadError::IncompatibleSchema {
+                found: version as u32,
+                expected: MISSION_SCHEMA_VERSION,
+            });
         }
 
         serde_json::from_value(raw).map_err(|e| MissionLoadError::Parse(e.to_string()))
@@ -571,7 +572,9 @@ mod tests {
             key_decisions: vec!["Chose direct fix over refactor".to_string()],
             risks: vec!["Cookie change may break existing sessions".to_string()],
             trust_verdict: TrustVerdict::Medium,
-            narrative: "Auth bug investigation in progress. HttpOnly flag missing on session cookie.".to_string(),
+            narrative:
+                "Auth bug investigation in progress. HttpOnly flag missing on session cookie."
+                    .to_string(),
         }
     }
 
@@ -625,7 +628,10 @@ mod tests {
         memory.add_hypothesis(MemoryEntry::new("cookie might be stale".to_string(), 0.6));
 
         // Add a question
-        memory.add_question(MemoryEntry::new("which middleware runs first?".to_string(), 0.5));
+        memory.add_question(MemoryEntry::new(
+            "which middleware runs first?".to_string(),
+            0.5,
+        ));
 
         // Set plan
         memory.update_plan(vec!["fix middleware".to_string(), "test".to_string()]);

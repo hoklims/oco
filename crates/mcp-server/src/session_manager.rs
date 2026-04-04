@@ -366,10 +366,7 @@ impl SessionManager {
     /// Returns `None` if the session doesn't exist, has no orchestration state,
     /// or if the mission memory has no substantive content. The created mission
     /// memory is also stored on the session for later retrieval.
-    pub async fn get_mission_memory(
-        &self,
-        id: &str,
-    ) -> Option<oco_shared_types::MissionMemory> {
+    pub async fn get_mission_memory(&self, id: &str) -> Option<oco_shared_types::MissionMemory> {
         let session = self.sessions.get(id).map(|e| e.value().clone())?;
         let mut guard = session.lock().await;
         let state = guard.orchestration_state.as_ref()?;
