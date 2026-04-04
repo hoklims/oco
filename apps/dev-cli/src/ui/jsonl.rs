@@ -324,6 +324,53 @@ impl Renderer for JsonlRenderer {
                 serde_json::json!({ "verdict": verdict, "freshness": freshness }),
             ),
 
+            UiEvent::ScorecardSummary {
+                run_id,
+                overall_score,
+                dimension_count,
+            } => self.emit_json(
+                "scorecard_summary",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "overall_score": overall_score,
+                    "dimension_count": dimension_count,
+                }),
+            ),
+            UiEvent::ComparisonResult {
+                baseline_id,
+                candidate_id,
+                overall_delta,
+                regressions,
+                improvements,
+                verdict,
+            } => self.emit_json(
+                "comparison_result",
+                serde_json::json!({
+                    "baseline_id": baseline_id,
+                    "candidate_id": candidate_id,
+                    "overall_delta": overall_delta,
+                    "regressions": regressions,
+                    "improvements": improvements,
+                    "verdict": verdict,
+                }),
+            ),
+            UiEvent::ComparisonDetail {
+                dimension,
+                baseline_score,
+                candidate_score,
+                delta,
+                kind,
+            } => self.emit_json(
+                "comparison_detail",
+                serde_json::json!({
+                    "dimension": dimension,
+                    "baseline_score": baseline_score,
+                    "candidate_score": candidate_score,
+                    "delta": delta,
+                    "kind": kind,
+                }),
+            ),
+
             UiEvent::Info { message } => {
                 self.emit_json("info", serde_json::json!({ "message": message }))
             }

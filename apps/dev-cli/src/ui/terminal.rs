@@ -592,6 +592,68 @@ impl Renderer for TerminalRenderer {
                 ));
             }
 
+            // ── Scorecard Comparison (Q5) ─────────────────
+            UiEvent::ScorecardSummary {
+                run_id,
+                overall_score,
+                dimension_count,
+            } => {
+                let _ = self.term.write_line(&format!(
+                    "  {} {}: score={:.2} ({} dimensions)",
+                    self.icon_bullet(),
+                    style(&run_id).bold(),
+                    style(format!("{overall_score:.2}")).cyan(),
+                    dimension_count,
+                ));
+            }
+
+            UiEvent::ComparisonResult {
+                baseline_id,
+                candidate_id,
+                overall_delta,
+                regressions,
+                improvements,
+                verdict,
+            } => {
+                let _ = self.term.write_line("");
+                let (icon, verdict_styled) = match verdict.as_str() {
+                    "improved" => (self.icon_pass(), style(&verdict).green().bold()),
+                    "stable" => (self.icon_bullet(), style(&verdict).dim()),
+                    _ => (self.icon_fail(), style(&verdict).red().bold()),
+                };
+                let _ = self.term.write_line(&format!(
+                    "  {} Compare: {} vs {} -> {} (delta: {:+.2})",
+                    icon,
+                    style(&baseline_id).dim(),
+                    style(&candidate_id).dim(),
+                    verdict_styled,
+                    overall_delta,
+                ));
+                let _ = self.term.write_line(&format!(
+                    "    {} regression(s), {} improvement(s)",
+                    style(regressions).red(),
+                    style(improvements).green(),
+                ));
+            }
+
+            UiEvent::ComparisonDetail {
+                dimension,
+                baseline_score,
+                candidate_score,
+                delta,
+                kind,
+            } => {
+                let icon = if kind == "improvement" {
+                    style(self.icon_pass()).green()
+                } else {
+                    style(self.icon_fail()).red()
+                };
+                let _ = self.term.write_line(&format!(
+                    "    {} {:<25} {:.2} -> {:.2} ({:+.2})",
+                    icon, dimension, baseline_score, candidate_score, delta,
+                ));
+            }
+
             // ── Generic ───────────────────────────────────
             UiEvent::Info { message } => {
                 let _ = self.term.write_line(&message);

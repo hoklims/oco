@@ -140,6 +140,16 @@ enum Commands {
         #[arg(long, default_value = "claude-code")]
         provider: String,
     },
+    /// Compare two evaluation result files (Q5 scorecard comparison)
+    EvalCompare {
+        /// Baseline results file (JSON from `oco eval --output`)
+        baseline: String,
+        /// Candidate results file (JSON from `oco eval --output`)
+        candidate: String,
+        /// Output as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Check plugin health and configuration
     Doctor {
         /// Workspace path to check
@@ -179,6 +189,19 @@ enum RunsAction {
     Handoff {
         /// Run/session ID (or "last" for most recent)
         id: String,
+        /// Workspace path (to find .oco/runs/)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Output as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compare two runs' scorecards (Q5 regression detection)
+    Compare {
+        /// First run ID (or "last" for most recent)
+        baseline: String,
+        /// Second run ID
+        candidate: String,
         /// Workspace path (to find .oco/runs/)
         #[arg(long, default_value = ".")]
         workspace: String,
@@ -259,6 +282,11 @@ async fn main() -> Result<()> {
             output,
             provider,
         } => cmd_eval(&mut *r, out_format, scenarios, output, provider).await?,
+        Commands::EvalCompare {
+            baseline,
+            candidate,
+            json,
+        } => cmd_eval_compare(&mut *r, baseline, candidate, json)?,
         Commands::Doctor { workspace } => cmd_doctor(&mut *r, workspace)?,
         Commands::Runs { action } => match action {
             RunsAction::Show {
@@ -278,6 +306,12 @@ async fn main() -> Result<()> {
                 workspace,
                 json,
             } => cmd_runs_handoff(&mut *r, id, workspace, json)?,
+            RunsAction::Compare {
+                baseline,
+                candidate,
+                workspace,
+                json,
+            } => cmd_runs_compare(&mut *r, baseline, candidate, workspace, json)?,
         },
     }
 
@@ -632,10 +666,110 @@ fn save_run_artifacts(
 
     // mission.json — durable mission memory for handoff/resume
     let mission = state.create_mission_memory(profile);
-    if mission.has_content() {
+    let has_mission_content = mission.has_content();
+    if has_mission_content {
         mission
             .save_to(&run_dir.join("mission.json"))
             .map_err(|e| anyhow::anyhow!("failed to save mission memory: {e}"))?;
+    }
+
+    // scorecard.json — Q5 evaluation scorecard for comparison
+    {
+        use oco_shared_types::{
+            CostMetrics, DimensionScore, RunScorecard, ScorecardDimension,
+        };
+
+        let trust_num = match mission.trust_verdict {
+            oco_shared_types::TrustVerdict::High => 1.0,
+            oco_shared_types::TrustVerdict::Medium => 0.66,
+            oco_shared_types::TrustVerdict::Low => 0.33,
+            oco_shared_types::TrustVerdict::None => 0.0,
+        };
+        let cost_score =
+            1.0 - (state.session.budget.tokens_used as f64 / 100_000.0).min(1.0);
+
+        let dimensions = vec![
+            DimensionScore {
+                dimension: ScorecardDimension::Success,
+                score: if success { 1.0 } else { 0.0 },
+                detail: if success { "passed" } else { "failed" }.to_string(),
+            },
+            DimensionScore {
+                dimension: ScorecardDimension::TrustVerdict,
+                score: trust_num,
+                detail: mission.trust_verdict.label().to_string(),
+            },
+            DimensionScore {
+                dimension: ScorecardDimension::VerificationCoverage,
+                score: if state.verification.modified_files.is_empty() {
+                    1.0
+                } else {
+                    let verified = state
+                        .verification
+                        .runs
+                        .iter()
+                        .filter(|r| r.passed)
+                        .flat_map(|r| r.covered_files.iter())
+                        .collect::<std::collections::HashSet<_>>()
+                        .len();
+                    let modified = state.verification.modified_files.len();
+                    if modified > 0 {
+                        (verified as f64 / modified as f64).min(1.0)
+                    } else {
+                        1.0
+                    }
+                },
+                detail: format!(
+                    "{} modified files",
+                    state.verification.modified_files.len()
+                ),
+            },
+            DimensionScore {
+                dimension: ScorecardDimension::MissionContinuity,
+                score: if has_mission_content { 1.0 } else { 0.0 },
+                detail: if has_mission_content {
+                    "mission memory produced"
+                } else {
+                    "no mission memory"
+                }
+                .to_string(),
+            },
+            DimensionScore {
+                dimension: ScorecardDimension::CostEfficiency,
+                score: cost_score,
+                detail: format!("{} tokens", state.session.budget.tokens_used),
+            },
+            DimensionScore {
+                dimension: ScorecardDimension::ReplanStability,
+                score: 1.0, // TODO: track replans in state
+                detail: "no replan tracking yet".to_string(),
+            },
+            DimensionScore {
+                dimension: ScorecardDimension::ErrorRate,
+                score: if success { 1.0 } else { 0.5 },
+                detail: "inferred from success".to_string(),
+            },
+        ];
+
+        let overall = RunScorecard::compute_overall(&dimensions);
+        let scorecard = RunScorecard {
+            run_id: session_id.to_string(),
+            computed_at: chrono::Utc::now(),
+            dimensions,
+            overall_score: overall,
+            cost: CostMetrics {
+                steps: state.session.step_count,
+                tokens: state.session.budget.tokens_used,
+                duration_ms,
+                tool_calls: state.session.budget.tool_calls_used,
+                verify_cycles: state.session.budget.verify_cycles_used,
+                replans: 0,
+            },
+        };
+        atomic_write(
+            &run_dir.join("scorecard.json"),
+            serde_json::to_string_pretty(&scorecard)?,
+        )?;
     }
 
     Ok(())
@@ -1490,6 +1624,372 @@ fn cmd_runs_handoff(
     }
 
     Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Q5: Scorecard comparison commands
+// ═══════════════════════════════════════════════════════════
+
+/// Compare two eval result files and show regression analysis.
+fn cmd_eval_compare(
+    r: &mut dyn Renderer,
+    baseline_path: String,
+    candidate_path: String,
+    json_output: bool,
+) -> Result<()> {
+    use oco_shared_types::{BatchComparison, ScenarioResult};
+
+    // Load baseline results
+    let baseline_content = std::fs::read_to_string(&baseline_path)
+        .map_err(|e| anyhow::anyhow!("failed to read baseline '{}': {e}", baseline_path))?;
+    let baseline_envelope: serde_json::Value = serde_json::from_str(&baseline_content)?;
+    let baseline_results: Vec<ScenarioResult> =
+        serde_json::from_value(baseline_envelope["results"].clone())
+            .map_err(|e| anyhow::anyhow!("failed to parse baseline results: {e}"))?;
+
+    // Load candidate results
+    let candidate_content = std::fs::read_to_string(&candidate_path)
+        .map_err(|e| anyhow::anyhow!("failed to read candidate '{}': {e}", candidate_path))?;
+    let candidate_envelope: serde_json::Value = serde_json::from_str(&candidate_content)?;
+    let candidate_results: Vec<ScenarioResult> =
+        serde_json::from_value(candidate_envelope["results"].clone())
+            .map_err(|e| anyhow::anyhow!("failed to parse candidate results: {e}"))?;
+
+    // Build scorecards from results
+    let baseline_scorecards: Vec<oco_shared_types::RunScorecard> = baseline_results
+        .iter()
+        .map(|sr| scorecard_from_scenario_result(sr))
+        .collect();
+    let candidate_scorecards: Vec<oco_shared_types::RunScorecard> = candidate_results
+        .iter()
+        .map(|sr| scorecard_from_scenario_result(sr))
+        .collect();
+
+    let batch = BatchComparison::from_paired(&baseline_scorecards, &candidate_scorecards);
+
+    if json_output {
+        let json = serde_json::to_string_pretty(&batch)?;
+        r.emit(UiEvent::Info { message: json });
+    } else {
+        r.emit(UiEvent::Info {
+            message: format!(
+                "Eval Comparison: {} vs {}",
+                baseline_path, candidate_path
+            ),
+        });
+        r.emit(UiEvent::Info {
+            message: format!(
+                "  {} scenario(s) compared: {} improved, {} stable, {} regressed",
+                batch.total_scenarios,
+                batch.improved_count,
+                batch.stable_count,
+                batch.regressed_count,
+            ),
+        });
+
+        for cmp in &batch.comparisons {
+            r.emit(UiEvent::ComparisonResult {
+                baseline_id: cmp.baseline_id.clone(),
+                candidate_id: cmp.candidate_id.clone(),
+                overall_delta: cmp.overall_delta,
+                regressions: cmp.regressions.len(),
+                improvements: cmp.improvements.len(),
+                verdict: cmp.verdict.label().to_string(),
+            });
+
+            for reg in &cmp.regressions {
+                r.emit(UiEvent::ComparisonDetail {
+                    dimension: reg.dimension.label().to_string(),
+                    baseline_score: reg.baseline_score,
+                    candidate_score: reg.candidate_score,
+                    delta: reg.delta,
+                    kind: "regression".to_string(),
+                });
+            }
+            for imp in &cmp.improvements {
+                r.emit(UiEvent::ComparisonDetail {
+                    dimension: imp.dimension.label().to_string(),
+                    baseline_score: imp.baseline_score,
+                    candidate_score: imp.candidate_score,
+                    delta: imp.delta,
+                    kind: "improvement".to_string(),
+                });
+            }
+        }
+
+        // Overall verdict
+        let verdict_str = batch.overall_verdict.label();
+        let symbol = batch.overall_verdict.symbol();
+        r.emit(UiEvent::Info {
+            message: format!("\n  Overall: {symbol} {verdict_str}"),
+        });
+    }
+
+    Ok(())
+}
+
+/// Compare two runs' scorecards from their persisted artifacts.
+fn cmd_runs_compare(
+    r: &mut dyn Renderer,
+    baseline_id: String,
+    candidate_id: String,
+    workspace: String,
+    json_output: bool,
+) -> Result<()> {
+    use oco_shared_types::ScorecardComparison;
+
+    let baseline_dir = resolve_run_dir(&baseline_id, &workspace)?;
+    let candidate_dir = resolve_run_dir(&candidate_id, &workspace)?;
+
+    let baseline_sc = load_or_build_scorecard(&baseline_dir, &baseline_id)?;
+    let candidate_sc = load_or_build_scorecard(&candidate_dir, &candidate_id)?;
+
+    let comparison = ScorecardComparison::compare(&baseline_sc, &candidate_sc);
+
+    if json_output {
+        let json = serde_json::to_string_pretty(&comparison)?;
+        r.emit(UiEvent::Info { message: json });
+    } else {
+        r.emit(UiEvent::ScorecardSummary {
+            run_id: baseline_sc.run_id.clone(),
+            overall_score: baseline_sc.overall_score,
+            dimension_count: baseline_sc.dimensions.len(),
+        });
+        r.emit(UiEvent::ScorecardSummary {
+            run_id: candidate_sc.run_id.clone(),
+            overall_score: candidate_sc.overall_score,
+            dimension_count: candidate_sc.dimensions.len(),
+        });
+
+        r.emit(UiEvent::ComparisonResult {
+            baseline_id: comparison.baseline_id.clone(),
+            candidate_id: comparison.candidate_id.clone(),
+            overall_delta: comparison.overall_delta,
+            regressions: comparison.regressions.len(),
+            improvements: comparison.improvements.len(),
+            verdict: comparison.verdict.label().to_string(),
+        });
+
+        for reg in &comparison.regressions {
+            r.emit(UiEvent::ComparisonDetail {
+                dimension: reg.dimension.label().to_string(),
+                baseline_score: reg.baseline_score,
+                candidate_score: reg.candidate_score,
+                delta: reg.delta,
+                kind: "regression".to_string(),
+            });
+        }
+        for imp in &comparison.improvements {
+            r.emit(UiEvent::ComparisonDetail {
+                dimension: imp.dimension.label().to_string(),
+                baseline_score: imp.baseline_score,
+                candidate_score: imp.candidate_score,
+                delta: imp.delta,
+                kind: "improvement".to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Build a scorecard from a ScenarioResult using inline scoring logic.
+fn scorecard_from_scenario_result(
+    sr: &oco_shared_types::ScenarioResult,
+) -> oco_shared_types::RunScorecard {
+    use oco_shared_types::{
+        CostMetrics, DimensionScore, RunScorecard, ScorecardDimension,
+    };
+
+    let success_score = if sr.success { 1.0 } else { 0.0 };
+    let verification_score = match sr.verification_passed {
+        Some(true) => 1.0,
+        Some(false) => 0.0,
+        None => 0.5,
+    };
+    let cost_score = 1.0 - (sr.total_tokens as f64 / 100_000.0).min(1.0);
+    let error_rate = if sr.step_count > 0 {
+        sr.errors.len() as f64 / sr.step_count as f64
+    } else {
+        0.0
+    };
+
+    let dimensions = vec![
+        DimensionScore {
+            dimension: ScorecardDimension::Success,
+            score: success_score,
+            detail: if sr.success { "passed" } else { "failed" }.to_string(),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::TrustVerdict,
+            score: 0.5, // No trust verdict in ScenarioResult
+            detail: "not available from scenario result".to_string(),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::VerificationCoverage,
+            score: verification_score,
+            detail: format!("verification_passed={:?}", sr.verification_passed),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::MissionContinuity,
+            score: 0.5, // No mission memory in ScenarioResult
+            detail: "not available from scenario result".to_string(),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::CostEfficiency,
+            score: cost_score,
+            detail: format!("{} tokens", sr.total_tokens),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::ReplanStability,
+            score: 1.0, // No replan info in ScenarioResult
+            detail: "no replan info available".to_string(),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::ErrorRate,
+            score: 1.0 - error_rate,
+            detail: format!("{} errors / {} steps", sr.errors.len(), sr.step_count),
+        },
+    ];
+
+    let overall = RunScorecard::compute_overall(&dimensions);
+
+    RunScorecard {
+        run_id: sr.scenario_name.clone(),
+        computed_at: chrono::Utc::now(),
+        dimensions,
+        overall_score: overall,
+        cost: CostMetrics {
+            steps: sr.step_count,
+            tokens: sr.total_tokens,
+            duration_ms: sr.duration_ms,
+            tool_calls: 0,
+            verify_cycles: 0,
+            replans: 0,
+        },
+    }
+}
+
+/// Load a scorecard from disk or build one from the run's summary.json.
+fn load_or_build_scorecard(
+    run_dir: &Path,
+    run_id: &str,
+) -> Result<oco_shared_types::RunScorecard> {
+    use oco_shared_types::{
+        CostMetrics, DimensionScore, RunScorecard, ScorecardDimension, TrustVerdict,
+    };
+
+    // Try scorecard.json first (future: saved by oco run)
+    let scorecard_path = run_dir.join("scorecard.json");
+    if scorecard_path.exists() {
+        let content = std::fs::read_to_string(&scorecard_path)?;
+        let sc: RunScorecard = serde_json::from_str(&content)?;
+        return Ok(sc);
+    }
+
+    // Build from summary.json
+    let summary_path = run_dir.join("summary.json");
+    if !summary_path.exists() {
+        anyhow::bail!(
+            "no scorecard.json or summary.json in {}",
+            run_dir.display()
+        );
+    }
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&summary_path)?)?;
+
+    let success = summary["success"].as_bool().unwrap_or(false);
+    let tokens = summary["tokens_used"].as_u64().unwrap_or(0);
+    let steps = summary["steps"].as_u64().unwrap_or(0) as u32;
+    let duration_ms = summary["duration_ms"].as_u64().unwrap_or(0);
+
+    // Check mission memory
+    let mission_path = run_dir.join("mission.json");
+    let has_mission = mission_path.exists();
+    let mission_score = if has_mission {
+        match oco_shared_types::MissionMemory::load_from(&mission_path) {
+            Ok(m) if m.has_content() => 1.0,
+            _ => 0.3,
+        }
+    } else {
+        0.0
+    };
+
+    // Derive trust verdict from summary if available
+    let trust_score = match summary.get("trust_verdict").and_then(|v| v.as_str()) {
+        Some("high") => TrustVerdict::High,
+        Some("medium") => TrustVerdict::Medium,
+        Some("low") => TrustVerdict::Low,
+        _ => TrustVerdict::None,
+    };
+    let trust_num = match trust_score {
+        TrustVerdict::High => 1.0,
+        TrustVerdict::Medium => 0.66,
+        TrustVerdict::Low => 0.33,
+        TrustVerdict::None => 0.0,
+    };
+
+    let cost_score = 1.0 - (tokens as f64 / 100_000.0).min(1.0);
+
+    let dimensions = vec![
+        DimensionScore {
+            dimension: ScorecardDimension::Success,
+            score: if success { 1.0 } else { 0.0 },
+            detail: if success { "passed" } else { "failed" }.to_string(),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::TrustVerdict,
+            score: trust_num,
+            detail: format!("{}", trust_score.label()),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::VerificationCoverage,
+            score: 0.5,
+            detail: "derived from summary".to_string(),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::MissionContinuity,
+            score: mission_score,
+            detail: if has_mission {
+                "mission memory present"
+            } else {
+                "no mission memory"
+            }
+            .to_string(),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::CostEfficiency,
+            score: cost_score,
+            detail: format!("{tokens} tokens"),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::ReplanStability,
+            score: 1.0,
+            detail: "no replan info in summary".to_string(),
+        },
+        DimensionScore {
+            dimension: ScorecardDimension::ErrorRate,
+            score: if success { 1.0 } else { 0.5 },
+            detail: "inferred from success".to_string(),
+        },
+    ];
+
+    let overall = RunScorecard::compute_overall(&dimensions);
+
+    Ok(RunScorecard {
+        run_id: run_id.to_string(),
+        computed_at: chrono::Utc::now(),
+        dimensions,
+        overall_score: overall,
+        cost: CostMetrics {
+            steps,
+            tokens,
+            duration_ms,
+            tool_calls: 0,
+            verify_cycles: 0,
+            replans: 0,
+        },
+    })
 }
 
 /// Collect priority files by scanning for files matching keywords in the prompt.

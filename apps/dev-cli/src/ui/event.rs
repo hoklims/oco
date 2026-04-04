@@ -182,6 +182,28 @@ pub enum UiEvent {
         freshness: String,
     },
 
+    // ── Scorecard Comparison (Q5) ─────────────────────────
+    ScorecardSummary {
+        run_id: String,
+        overall_score: f64,
+        dimension_count: usize,
+    },
+    ComparisonResult {
+        baseline_id: String,
+        candidate_id: String,
+        overall_delta: f64,
+        regressions: usize,
+        improvements: usize,
+        verdict: String,
+    },
+    ComparisonDetail {
+        dimension: String,
+        baseline_score: f64,
+        candidate_score: f64,
+        delta: f64,
+        kind: String, // "regression" or "improvement"
+    },
+
     // ── Generic ───────────────────────────────────────────
     Info {
         message: String,
