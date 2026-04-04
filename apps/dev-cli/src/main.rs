@@ -331,8 +331,7 @@ async fn main() -> Result<()> {
             json,
             workspace,
         } => {
-            let exit_code =
-                cmd_eval_gate(&mut *r, baseline, candidate, policy, json, workspace)?;
+            let exit_code = cmd_eval_gate(&mut *r, baseline, candidate, policy, json, workspace)?;
             if exit_code != 0 {
                 std::process::exit(exit_code);
             }

@@ -87,9 +87,7 @@ impl OrchestratorConfig {
                 "anthropic provider requires api_key or api_key_env".into(),
             ));
         }
-        self.gate
-            .validate()
-            .map_err(ConfigError::ValidationError)?;
+        self.gate.validate().map_err(ConfigError::ValidationError)?;
         Ok(())
     }
 

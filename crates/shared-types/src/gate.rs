@@ -566,19 +566,19 @@ impl GateConfig {
                 valid_policies.join(", ")
             ));
         }
-        if let Some(min) = self.min_overall_score {
-            if !(0.0..=1.0).contains(&min) {
-                return Err(format!(
-                    "min_overall_score must be between 0.0 and 1.0, got {min}"
-                ));
-            }
+        if let Some(min) = self.min_overall_score
+            && !(0.0..=1.0).contains(&min)
+        {
+            return Err(format!(
+                "min_overall_score must be between 0.0 and 1.0, got {min}"
+            ));
         }
-        if let Some(max_reg) = self.max_overall_regression {
-            if max_reg > 0.0 {
-                return Err(format!(
-                    "max_overall_regression must be <= 0.0, got {max_reg}"
-                ));
-            }
+        if let Some(max_reg) = self.max_overall_regression
+            && max_reg > 0.0
+        {
+            return Err(format!(
+                "max_overall_regression must be <= 0.0, got {max_reg}"
+            ));
         }
         Ok(())
     }

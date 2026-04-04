@@ -308,18 +308,12 @@ async fn get_session_mission(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(
-                    serde_json::json!({ "error": format!("session not found: {session_id}") }),
-                ),
-            )
+                Json(serde_json::json!({ "error": format!("session not found: {session_id}") })),
+            );
         }
     };
 
-    match state
-        .session_manager
-        .get_mission_memory(&resolved_id)
-        .await
-    {
+    match state.session_manager.get_mission_memory(&resolved_id).await {
         Some(mm) => (
             StatusCode::OK,
             Json(serde_json::to_value(mm).unwrap_or_default()),
