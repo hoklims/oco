@@ -150,30 +150,37 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Run a quality gate: compare candidate against baseline with pass/warn/fail verdict (Q6)
+    /// Run a quality gate: compare candidate against baseline with pass/warn/fail verdict (Q6/Q7)
+    ///
+    /// Q7: When baseline or policy are omitted, reads [gate] config from oco.toml.
     EvalGate {
-        /// Baseline file (baseline.json from `oco baseline save`, or scorecard.json)
-        baseline: String,
+        /// Baseline file (omit to use repo config's baseline_path)
+        baseline: Option<String>,
         /// Candidate file (scorecard.json, eval results JSON, or a run directory)
-        candidate: String,
-        /// Gate policy: strict, balanced (default), lenient
-        #[arg(long, default_value = "balanced")]
-        policy: String,
+        candidate: Option<String>,
+        /// Gate policy: strict, balanced, lenient (omit to use repo config)
+        #[arg(long)]
+        policy: Option<String>,
         /// Output full result as JSON
         #[arg(long)]
         json: bool,
+        /// Workspace path (to find oco.toml and .oco/)
+        #[arg(long, default_value = ".")]
+        workspace: String,
     },
-    /// Save a baseline from a run's scorecard or eval results (Q6)
+    /// Save a baseline from a run's scorecard or eval results (Q6/Q7)
+    ///
+    /// Q7: When --output is omitted, uses the baseline_path from repo config.
     BaselineSave {
         /// Source: run ID ("last"), eval results file, or scorecard.json path
         source: String,
         /// Baseline name (e.g., "v0.5-stable")
         #[arg(long)]
         name: String,
-        /// Output path for the baseline file
-        #[arg(long, default_value = ".oco/baseline.json")]
-        output: String,
-        /// Workspace path (for resolving run IDs)
+        /// Output path (omit to use repo config's baseline_path)
+        #[arg(long)]
+        output: Option<String>,
+        /// Workspace path (for resolving run IDs and repo config)
         #[arg(long, default_value = ".")]
         workspace: String,
         /// Optional description
@@ -322,8 +329,10 @@ async fn main() -> Result<()> {
             candidate,
             policy,
             json,
+            workspace,
         } => {
-            let exit_code = cmd_eval_gate(&mut *r, baseline, candidate, policy, json)?;
+            let exit_code =
+                cmd_eval_gate(&mut *r, baseline, candidate, policy, json, workspace)?;
             if exit_code != 0 {
                 std::process::exit(exit_code);
             }
@@ -1365,6 +1374,49 @@ fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
         });
     }
 
+    // Q7: Check gate configuration
+    {
+        let config = oco_orchestrator_core::OrchestratorConfig::load_from_dir(&ws_path);
+        let gate = &config.gate;
+        match gate.validate() {
+            Ok(()) => {
+                r.emit(UiEvent::DoctorCheck {
+                    name: "gate config".into(),
+                    status: CheckStatus::Pass,
+                    detail: Some(format!(
+                        "policy={}, baseline={}",
+                        gate.default_policy, gate.baseline_path
+                    )),
+                });
+            }
+            Err(e) => {
+                r.emit(UiEvent::DoctorCheck {
+                    name: "gate config".into(),
+                    status: CheckStatus::Fail,
+                    detail: Some(format!("invalid: {e}")),
+                });
+                issues += 1;
+            }
+        }
+        let baseline_full = ws_path.join(&gate.baseline_path);
+        if baseline_full.exists() {
+            r.emit(UiEvent::DoctorCheck {
+                name: "gate baseline".into(),
+                status: CheckStatus::Pass,
+                detail: Some(gate.baseline_path.clone()),
+            });
+        } else {
+            r.emit(UiEvent::DoctorCheck {
+                name: "gate baseline".into(),
+                status: CheckStatus::Warn,
+                detail: Some(format!(
+                    "{} not found — run `oco baseline-save` first",
+                    gate.baseline_path
+                )),
+            });
+        }
+    }
+
     // Detect repo profile
     let profile = oco_shared_types::RepoProfile::detect(&ws_path);
     r.emit(UiEvent::DoctorProfile {
@@ -1868,27 +1920,53 @@ fn load_or_build_scorecard(run_dir: &Path, run_id: &str) -> Result<oco_shared_ty
 
 /// Run a quality gate: compare candidate against baseline with pass/warn/fail verdict.
 /// Returns the exit code (0=pass, 1=warn, 2=fail).
+///
+/// Q7: When `baseline_path` or `policy_name` are `None`, reads `[gate]` from `oco.toml`.
 fn cmd_eval_gate(
     r: &mut dyn Renderer,
-    baseline_path: String,
-    candidate_path: String,
-    policy_name: String,
+    baseline_path: Option<String>,
+    candidate_path: Option<String>,
+    policy_name: Option<String>,
     json_output: bool,
+    workspace: String,
 ) -> Result<i32> {
     use oco_shared_types::{GatePolicy, GateResult};
 
-    // Resolve policy
-    let policy = match policy_name.as_str() {
-        "strict" => GatePolicy::strict(),
-        "lenient" => GatePolicy::lenient(),
-        _ => GatePolicy::default_balanced(),
+    // Load repo gate config from oco.toml (Q7)
+    let ws = Path::new(&workspace);
+    let repo_config = oco_orchestrator_core::OrchestratorConfig::load_from_dir(ws);
+    let gate_cfg = &repo_config.gate;
+
+    // Resolve policy: explicit CLI arg > repo config > balanced default
+    let policy = if let Some(ref name) = policy_name {
+        match name.as_str() {
+            "strict" => GatePolicy::strict(),
+            "lenient" => GatePolicy::lenient(),
+            _ => GatePolicy::default_balanced(),
+        }
+    } else {
+        gate_cfg.resolve_policy()
     };
 
-    // Load baseline scorecard — supports both EvalBaseline and raw RunScorecard
-    let baseline_sc = load_baseline_scorecard(&baseline_path)?;
+    // Resolve baseline path: explicit CLI arg > repo config
+    let effective_baseline = baseline_path.unwrap_or_else(|| {
+        let cfg_path = ws.join(&gate_cfg.baseline_path);
+        cfg_path.to_string_lossy().to_string()
+    });
 
-    // Load candidate scorecard — supports scorecard.json, eval results, or run dir
-    let candidate_sc = load_candidate_scorecard(&candidate_path)?;
+    // Resolve candidate: explicit CLI arg > "last" run
+    let effective_candidate = candidate_path.unwrap_or_else(|| "last".to_string());
+
+    // Load baseline scorecard — supports both EvalBaseline and raw RunScorecard
+    let baseline_sc = load_baseline_scorecard(&effective_baseline)?;
+
+    // Load candidate scorecard — supports scorecard.json, eval results, run dir, or "last"
+    let candidate_sc = if effective_candidate == "last" {
+        let run_dir = resolve_run_dir("last", &workspace)?;
+        load_or_build_scorecard(&run_dir, "last")?
+    } else {
+        load_candidate_scorecard(&effective_candidate)?
+    };
 
     // Evaluate gate
     let result = GateResult::evaluate(&baseline_sc, &candidate_sc, &policy);
@@ -2022,17 +2100,26 @@ fn load_candidate_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard
 }
 
 /// Save a baseline from a run's scorecard or eval results.
+///
+/// Q7: When `output` is `None`, reads baseline_path from repo config.
 fn cmd_baseline_save(
     r: &mut dyn Renderer,
     source: String,
     name: String,
-    output: String,
+    output: Option<String>,
     workspace: String,
     description: Option<String>,
 ) -> Result<()> {
     use oco_shared_types::EvalBaseline;
 
-    let output_path = PathBuf::from(&output);
+    // Q7: resolve output path from repo config when not explicitly provided
+    let effective_output = output.unwrap_or_else(|| {
+        let ws = Path::new(&workspace);
+        let repo_config = oco_orchestrator_core::OrchestratorConfig::load_from_dir(ws);
+        let cfg_path = ws.join(&repo_config.gate.baseline_path);
+        cfg_path.to_string_lossy().to_string()
+    });
+    let output_path = PathBuf::from(&effective_output);
 
     // Ensure parent directory exists
     if let Some(parent) = output_path.parent() {
