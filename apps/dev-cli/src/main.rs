@@ -2041,47 +2041,47 @@ fn cmd_eval_gate(
             warned_count: result.warned_dimension_count(),
         });
 
-        // Q8: Show baseline freshness status in terminal (non-JSON) mode
-        if let Some(eval_baseline) = load_eval_baseline(&effective_baseline)? {
-            let freshness = BaselineFreshnessCheck::from_baseline(
-                &eval_baseline,
-                gate_cfg.fresh_days,
-                gate_cfg.stale_days,
-            );
-            r.emit(UiEvent::BaselineFreshness {
-                freshness: freshness.freshness.label().to_string(),
-                age_days: freshness.age_days,
-                recommendation: freshness.recommendation.clone(),
-            });
-        }
+        // Q8: Show baseline freshness status in terminal (non-JSON) mode.
+        // Works for both EvalBaseline (with created_at) and raw RunScorecard (Unknown).
+        let freshness = resolve_freshness(&effective_baseline, &gate_cfg)?;
+        r.emit(UiEvent::BaselineFreshness {
+            freshness: freshness.freshness.label().to_string(),
+            age_days: freshness.age_days,
+            recommendation: freshness.recommendation.clone(),
+        });
     }
 
-    // Q8: Generate review artifact report if --report is provided
+    // Q8: Generate review artifact report if --report is provided.
+    // Supports both EvalBaseline and raw RunScorecard baselines (Unknown freshness).
     if let Some(ref dir) = report_dir {
         let report_path = PathBuf::from(dir);
 
-        // Ensure the output directory exists
         if !report_path.exists() {
             std::fs::create_dir_all(&report_path)
                 .map_err(|e| anyhow::anyhow!("failed to create report directory '{}': {e}", dir))?;
         }
 
-        // Load the baseline as EvalBaseline for freshness metadata
-        let eval_baseline = load_eval_baseline(&effective_baseline)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "cannot generate review report: baseline '{}' is a raw RunScorecard \
-                     without metadata (save it via `oco baseline-save` first)",
-                effective_baseline,
-            )
-        })?;
+        let (baseline_name, freshness) = match load_eval_baseline(&effective_baseline)? {
+            Some(eval_baseline) => {
+                let name = eval_baseline.name.clone();
+                let fc = BaselineFreshnessCheck::from_baseline(
+                    &eval_baseline,
+                    gate_cfg.fresh_days,
+                    gate_cfg.stale_days,
+                );
+                (name, fc)
+            }
+            None => {
+                // Raw RunScorecard — use run_id as name, Unknown freshness
+                (
+                    result.baseline_id.clone(),
+                    BaselineFreshnessCheck::unknown(),
+                )
+            }
+        };
 
-        let freshness = BaselineFreshnessCheck::from_baseline(
-            &eval_baseline,
-            gate_cfg.fresh_days,
-            gate_cfg.stale_days,
-        );
-
-        let artifact = GateReviewArtifact::generate(result.clone(), &eval_baseline, freshness);
+        let artifact =
+            GateReviewArtifact::generate_with_name(result.clone(), &baseline_name, freshness);
 
         let md_path = report_path.join("gate-report.md");
         let json_path = report_path.join("gate-report.json");
@@ -2122,6 +2122,21 @@ fn load_eval_baseline(path: &str) -> Result<Option<oco_shared_types::EvalBaselin
 
     // Raw RunScorecard — no baseline metadata available
     Ok(None)
+}
+
+/// Resolve baseline freshness: EvalBaseline → real check, raw RunScorecard → Unknown.
+fn resolve_freshness(
+    baseline_path: &str,
+    gate_cfg: &oco_shared_types::GateConfig,
+) -> Result<oco_shared_types::BaselineFreshnessCheck> {
+    match load_eval_baseline(baseline_path)? {
+        Some(eval_baseline) => Ok(oco_shared_types::BaselineFreshnessCheck::from_baseline(
+            &eval_baseline,
+            gate_cfg.fresh_days,
+            gate_cfg.stale_days,
+        )),
+        None => Ok(oco_shared_types::BaselineFreshnessCheck::unknown()),
+    }
 }
 
 /// Load a scorecard from a baseline file (EvalBaseline JSON) or a raw RunScorecard JSON.
