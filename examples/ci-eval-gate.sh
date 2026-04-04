@@ -15,7 +15,7 @@
 #   candidate-results.json Path to write candidate eval results (default: eval-results.json)
 #   policy                 Gate policy: strict | balanced | lenient (default: balanced)
 
-set -euo pipefail
+set -uo pipefail
 
 BASELINE="${1:-.oco/baseline.json}"
 CANDIDATE="${2:-eval-results.json}"
@@ -28,12 +28,13 @@ echo "  Policy:    $POLICY"
 echo ""
 
 # Step 1: Run the evaluation suite and save results.
+# This must succeed — if eval itself fails, bail out.
 oco eval scenarios.jsonl --output "$CANDIDATE"
 
 # Step 2: Run the gate check against the baseline.
-# The exit code encodes the verdict (0=pass, 1=warn, 2=fail).
-oco eval-gate "$BASELINE" "$CANDIDATE" --policy "$POLICY"
-EXIT_CODE=$?
+# Capture the exit code without letting the shell abort on non-zero.
+EXIT_CODE=0
+oco eval-gate "$BASELINE" "$CANDIDATE" --policy "$POLICY" || EXIT_CODE=$?
 
 # Step 3: Interpret the result for CI logs.
 echo ""

@@ -18,7 +18,7 @@ ADR-011 introduced `RunScorecard` and `ScorecardComparison`, giving OCO the abil
 
 Teams need:
 
-1. **Preset policies** with sensible defaults so that `oco eval gate` works out of the box.
+1. **Preset policies** with sensible defaults so that `oco eval-gate` works out of the box.
 2. **Per-dimension thresholds** so that critical dimensions (Success, TrustVerdict) are held to stricter standards than secondary ones (CostEfficiency, ReplanStability).
 3. **A clear verdict** with exit codes that CI pipelines can branch on without parsing output.
 4. **A reviewable artifact** that shows exactly which thresholds were checked, which passed, and which failed -- so that a human reviewer can audit the gate decision.
@@ -131,7 +131,7 @@ pub struct EvalBaseline {
 }
 ```
 
-Baselines are persisted as JSON files (via `save_to()` / `load_from()`) and can be committed to the repository. The `oco eval gate` command loads a baseline file and evaluates a candidate scorecard against it.
+Baselines are persisted as JSON files (via `save_to()` / `load_from()`) and can be committed to the repository. The `oco eval-gate` command loads a baseline file and evaluates a candidate scorecard against it.
 
 ### Report generation
 
@@ -161,18 +161,18 @@ Eval Gate: baseline-v0.5 vs candidate-v0.6
 
 ### CI integration
 
-The CLI surface `oco eval gate <baseline.json> <candidate-results.json> --policy <name>`:
+The CLI surface `oco eval-gate <baseline.json> <candidate.json> --policy <name>`:
 
-1. Loads the baseline from a JSON file.
-2. Loads or computes the candidate scorecard.
+1. Loads the baseline from a JSON file (`EvalBaseline` or raw `RunScorecard`).
+2. Loads or computes the candidate scorecard. When the candidate is an `oco eval --output` file containing multiple scenario results, all scenarios are aggregated into a single suite-level scorecard (per-dimension score = average across scenarios, cost metrics = sum). The `run_id` indicates `eval-suite (N scenarios)`.
 3. Applies the named policy (strict/balanced/lenient).
-4. Prints the gate report (human mode) or emits a JSON `GateResult` (JSONL mode).
+4. Prints the gate report (human mode) or emits a JSON `GateResult` (`--json`).
 5. Exits with the verdict's exit code: 0 (pass), 1 (warn), 2 (fail).
 
 CI pipelines can gate on the exit code:
 
 ```yaml
-- run: oco eval gate .oco/baseline.json eval-results.json --policy balanced
+- run: oco eval-gate .oco/baseline.json eval-results.json --policy balanced
   # Exit 0 = pass, 1 = warn (optional block), 2 = fail (block merge)
 ```
 
@@ -180,7 +180,7 @@ CI pipelines can gate on the exit code:
 
 ### Positive
 
-- **CI-ready out of the box**: Three preset policies cover the common needs. Teams can run `oco eval gate` with `--policy balanced` immediately and get meaningful pass/warn/fail decisions without writing custom threshold logic.
+- **CI-ready out of the box**: Three preset policies cover the common needs. Teams can run `oco eval-gate` with `--policy balanced` immediately and get meaningful pass/warn/fail decisions without writing custom threshold logic.
 - **Reviewable artifacts**: `GateResult` is a structured JSON document that records every threshold check, every dimension verdict, and every reason. PR reviewers can inspect exactly why a gate passed or failed.
 - **Deterministic**: Gate evaluation is a pure function of two scorecards and a policy. No LLM calls, no network dependencies, no randomness. The same inputs always produce the same verdict.
 - **Asymmetric dimension importance**: The Balanced strategy correctly distinguishes between a Success regression (blocks) and a CostEfficiency regression (warns). This matches how teams actually triage regressions.

@@ -147,6 +147,58 @@ impl RunScorecard {
             0.0
         }
     }
+
+    /// Aggregate multiple scorecards into a single suite-level scorecard.
+    ///
+    /// Rule: for each dimension, average the scores across all scorecards.
+    /// For cost metrics, sum them.  The `run_id` indicates the aggregate
+    /// and how many scorecards contributed.
+    ///
+    /// Returns `None` if the input slice is empty.
+    pub fn aggregate(scorecards: &[RunScorecard]) -> Option<RunScorecard> {
+        if scorecards.is_empty() {
+            return None;
+        }
+
+        let n = scorecards.len() as f64;
+
+        // Average each dimension score.
+        let dimensions: Vec<DimensionScore> = ScorecardDimension::all()
+            .iter()
+            .map(|dim| {
+                let sum: f64 = scorecards
+                    .iter()
+                    .map(|sc| sc.dimension_score(*dim).unwrap_or(0.0))
+                    .sum();
+                let avg = sum / n;
+                DimensionScore {
+                    dimension: *dim,
+                    score: avg,
+                    detail: format!("avg of {} scorecards", scorecards.len()),
+                }
+            })
+            .collect();
+
+        let overall_score = Self::compute_overall(&dimensions);
+
+        // Sum cost metrics.
+        let cost = CostMetrics {
+            steps: scorecards.iter().map(|s| s.cost.steps).sum(),
+            tokens: scorecards.iter().map(|s| s.cost.tokens).sum(),
+            duration_ms: scorecards.iter().map(|s| s.cost.duration_ms).sum(),
+            tool_calls: scorecards.iter().map(|s| s.cost.tool_calls).sum(),
+            verify_cycles: scorecards.iter().map(|s| s.cost.verify_cycles).sum(),
+            replans: scorecards.iter().map(|s| s.cost.replans).sum(),
+        };
+
+        Some(RunScorecard {
+            run_id: format!("eval-suite ({} scenarios)", scorecards.len()),
+            computed_at: Utc::now(),
+            dimensions,
+            overall_score,
+            cost,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -715,5 +767,82 @@ mod tests {
             let parsed: RegressionSeverity = serde_json::from_str(&json).unwrap();
             assert_eq!(sev, parsed);
         }
+    }
+
+    // ── RunScorecard::aggregate ──
+
+    #[test]
+    fn aggregate_empty_returns_none() {
+        assert!(RunScorecard::aggregate(&[]).is_none());
+    }
+
+    #[test]
+    fn aggregate_single_preserves_scores() {
+        let sc = full_scorecard("solo", 0.8);
+        let agg = RunScorecard::aggregate(std::slice::from_ref(&sc)).unwrap();
+        assert!(agg.run_id.contains("1 scenarios"));
+        for dim in ScorecardDimension::all() {
+            let original = sc.dimension_score(*dim).unwrap();
+            let aggregated = agg.dimension_score(*dim).unwrap();
+            assert!(
+                (original - aggregated).abs() < 1e-10,
+                "dim {:?}: expected {original}, got {aggregated}",
+                dim
+            );
+        }
+    }
+
+    #[test]
+    fn aggregate_averages_dimension_scores() {
+        let a = full_scorecard("a", 0.6);
+        let b = full_scorecard("b", 0.8);
+        let agg = RunScorecard::aggregate(&[a, b]).unwrap();
+        assert!(agg.run_id.contains("2 scenarios"));
+        for dim in ScorecardDimension::all() {
+            let score = agg.dimension_score(*dim).unwrap();
+            assert!(
+                (score - 0.7).abs() < 1e-10,
+                "dim {:?}: expected 0.7, got {score}",
+                dim
+            );
+        }
+    }
+
+    #[test]
+    fn aggregate_sums_cost_metrics() {
+        let mut a = full_scorecard("a", 0.8);
+        a.cost = CostMetrics {
+            steps: 10,
+            tokens: 20000,
+            duration_ms: 5000,
+            tool_calls: 5,
+            verify_cycles: 1,
+            replans: 0,
+        };
+        let mut b = full_scorecard("b", 0.8);
+        b.cost = CostMetrics {
+            steps: 15,
+            tokens: 30000,
+            duration_ms: 8000,
+            tool_calls: 7,
+            verify_cycles: 2,
+            replans: 1,
+        };
+        let agg = RunScorecard::aggregate(&[a, b]).unwrap();
+        assert_eq!(agg.cost.steps, 25);
+        assert_eq!(agg.cost.tokens, 50000);
+        assert_eq!(agg.cost.duration_ms, 13000);
+        assert_eq!(agg.cost.tool_calls, 12);
+        assert_eq!(agg.cost.verify_cycles, 3);
+        assert_eq!(agg.cost.replans, 1);
+    }
+
+    #[test]
+    fn aggregate_overall_is_recomputed() {
+        let a = full_scorecard("a", 0.4);
+        let b = full_scorecard("b", 1.0);
+        let agg = RunScorecard::aggregate(&[a, b]).unwrap();
+        // Average of 0.4 and 1.0 = 0.7 for all dimensions, so overall = 0.7
+        assert!((agg.overall_score - 0.7).abs() < 1e-10);
     }
 }
