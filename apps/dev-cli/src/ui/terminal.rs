@@ -654,6 +654,95 @@ impl Renderer for TerminalRenderer {
                 ));
             }
 
+            // ── Eval Gate (Q6) ────────────────────────────
+            UiEvent::GateHeader {
+                baseline_id,
+                candidate_id,
+                policy,
+            } => {
+                let _ = self.term.write_line(&format!(
+                    "\n  {} Eval Gate: {} vs {}",
+                    style(self.icon_bullet()).cyan().bold(),
+                    style(&baseline_id).bold(),
+                    style(&candidate_id).bold(),
+                ));
+                let _ = self.term.write_line(&format!(
+                    "  Policy: {}",
+                    style(&policy).dim(),
+                ));
+                let _ = self.term.write_line("");
+                let _ = self.term.write_line(
+                    &format!(
+                        "  {:<24} {:>8}  {:>9}  {:>6}  {:>5}  {}",
+                        "Dimension", "Baseline", "Candidate", "Delta", "Min", "Verdict"
+                    ),
+                );
+                let _ = self.term.write_line(
+                    "  -----------------------------------------------------------------------",
+                );
+            }
+
+            UiEvent::GateDimensionCheck {
+                dimension,
+                baseline_score,
+                candidate_score,
+                delta,
+                min_score,
+                verdict,
+            } => {
+                let verdict_styled = match verdict.as_str() {
+                    "pass" => style("[PASS]").green(),
+                    "warn" => style("[WARN]").yellow(),
+                    _ => style("[FAIL]").red().bold(),
+                };
+                let _ = self.term.write_line(&format!(
+                    "  {:<24} {:>7.2}   {:>8.2}  {:>+6.2}  {:>5.2}  {}",
+                    dimension,
+                    baseline_score,
+                    candidate_score,
+                    delta,
+                    min_score,
+                    verdict_styled,
+                ));
+            }
+
+            UiEvent::GateVerdict {
+                verdict,
+                exit_code,
+                reasons,
+                failed_count,
+                warned_count,
+            } => {
+                let _ = self.term.write_line("");
+                if !reasons.is_empty() {
+                    let _ = self.term.write_line(&format!(
+                        "  Reasons ({}):",
+                        reasons.len()
+                    ));
+                    for reason in &reasons {
+                        let _ = self.term.write_line(&format!(
+                            "    {} {}",
+                            style("-").dim(),
+                            reason,
+                        ));
+                    }
+                    let _ = self.term.write_line("");
+                }
+                let (icon, verdict_styled) = match verdict.as_str() {
+                    "pass" => (self.icon_pass(), style(&verdict).green().bold()),
+                    "warn" => (self.icon_warn(), style(&verdict).yellow().bold()),
+                    _ => (self.icon_fail(), style(&verdict).red().bold()),
+                };
+                let _ = self.term.write_line(&format!(
+                    "  {} Verdict: {} ({} failed, {} warned, exit code {})",
+                    icon,
+                    verdict_styled,
+                    style(failed_count).red(),
+                    style(warned_count).yellow(),
+                    exit_code,
+                ));
+            }
+
             // ── Generic ───────────────────────────────────
             UiEvent::Info { message } => {
                 let _ = self.term.write_line(&message);

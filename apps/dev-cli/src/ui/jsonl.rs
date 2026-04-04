@@ -371,6 +371,54 @@ impl Renderer for JsonlRenderer {
                 }),
             ),
 
+            // ── Eval Gate (Q6) ────────────────────────────
+            UiEvent::GateHeader {
+                baseline_id,
+                candidate_id,
+                policy,
+            } => self.emit_json(
+                "gate_header",
+                serde_json::json!({
+                    "baseline_id": baseline_id,
+                    "candidate_id": candidate_id,
+                    "policy": policy,
+                }),
+            ),
+            UiEvent::GateDimensionCheck {
+                dimension,
+                baseline_score,
+                candidate_score,
+                delta,
+                min_score,
+                verdict,
+            } => self.emit_json(
+                "gate_dimension_check",
+                serde_json::json!({
+                    "dimension": dimension,
+                    "baseline_score": baseline_score,
+                    "candidate_score": candidate_score,
+                    "delta": delta,
+                    "min_score": min_score,
+                    "verdict": verdict,
+                }),
+            ),
+            UiEvent::GateVerdict {
+                verdict,
+                exit_code,
+                reasons,
+                failed_count,
+                warned_count,
+            } => self.emit_json(
+                "gate_verdict",
+                serde_json::json!({
+                    "verdict": verdict,
+                    "exit_code": exit_code,
+                    "reasons": reasons,
+                    "failed_count": failed_count,
+                    "warned_count": warned_count,
+                }),
+            ),
+
             UiEvent::Info { message } => {
                 self.emit_json("info", serde_json::json!({ "message": message }))
             }

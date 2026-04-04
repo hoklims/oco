@@ -150,6 +150,36 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Run a quality gate: compare candidate against baseline with pass/warn/fail verdict (Q6)
+    EvalGate {
+        /// Baseline file (baseline.json from `oco baseline save`, or scorecard.json)
+        baseline: String,
+        /// Candidate file (scorecard.json, eval results JSON, or a run directory)
+        candidate: String,
+        /// Gate policy: strict, balanced (default), lenient
+        #[arg(long, default_value = "balanced")]
+        policy: String,
+        /// Output full result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save a baseline from a run's scorecard or eval results (Q6)
+    BaselineSave {
+        /// Source: run ID ("last"), eval results file, or scorecard.json path
+        source: String,
+        /// Baseline name (e.g., "v0.5-stable")
+        #[arg(long)]
+        name: String,
+        /// Output path for the baseline file
+        #[arg(long, default_value = ".oco/baseline.json")]
+        output: String,
+        /// Workspace path (for resolving run IDs)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Optional description
+        #[arg(long)]
+        description: Option<String>,
+    },
     /// Check plugin health and configuration
     Doctor {
         /// Workspace path to check
@@ -287,6 +317,24 @@ async fn main() -> Result<()> {
             candidate,
             json,
         } => cmd_eval_compare(&mut *r, baseline, candidate, json)?,
+        Commands::EvalGate {
+            baseline,
+            candidate,
+            policy,
+            json,
+        } => {
+            let exit_code = cmd_eval_gate(&mut *r, baseline, candidate, policy, json)?;
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+        }
+        Commands::BaselineSave {
+            source,
+            name,
+            output,
+            workspace,
+            description,
+        } => cmd_baseline_save(&mut *r, source, name, output, workspace, description)?,
         Commands::Doctor { workspace } => cmd_doctor(&mut *r, workspace)?,
         Commands::Runs { action } => match action {
             RunsAction::Show {
@@ -1812,6 +1860,197 @@ fn load_or_build_scorecard(run_dir: &Path, run_id: &str) -> Result<oco_shared_ty
     // The builder will produce honest "no data" details for those dimensions.
 
     Ok(builder.build())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Q6: Eval gate and baseline commands
+// ════════════════════════════════════════════════════════���══
+
+/// Run a quality gate: compare candidate against baseline with pass/warn/fail verdict.
+/// Returns the exit code (0=pass, 1=warn, 2=fail).
+fn cmd_eval_gate(
+    r: &mut dyn Renderer,
+    baseline_path: String,
+    candidate_path: String,
+    policy_name: String,
+    json_output: bool,
+) -> Result<i32> {
+    use oco_shared_types::{GatePolicy, GateResult};
+
+    // Resolve policy
+    let policy = match policy_name.as_str() {
+        "strict" => GatePolicy::strict(),
+        "lenient" => GatePolicy::lenient(),
+        _ => GatePolicy::default_balanced(),
+    };
+
+    // Load baseline scorecard — supports both EvalBaseline and raw RunScorecard
+    let baseline_sc = load_baseline_scorecard(&baseline_path)?;
+
+    // Load candidate scorecard — supports scorecard.json, eval results, or run dir
+    let candidate_sc = load_candidate_scorecard(&candidate_path)?;
+
+    // Evaluate gate
+    let result = GateResult::evaluate(&baseline_sc, &candidate_sc, &policy);
+
+    if json_output {
+        let json = serde_json::to_string_pretty(&result)?;
+        r.emit(UiEvent::Info { message: json });
+    } else {
+        // Structured output via UI events
+        r.emit(UiEvent::GateHeader {
+            baseline_id: result.baseline_id.clone(),
+            candidate_id: result.candidate_id.clone(),
+            policy: format!("{:?}", policy.strategy),
+        });
+
+        for check in &result.dimension_checks {
+            r.emit(UiEvent::GateDimensionCheck {
+                dimension: check.dimension.label().to_string(),
+                baseline_score: check.baseline_score,
+                candidate_score: check.candidate_score,
+                delta: check.delta,
+                min_score: check.min_score,
+                verdict: check.verdict.label().to_string(),
+            });
+        }
+
+        r.emit(UiEvent::GateVerdict {
+            verdict: result.verdict.label().to_string(),
+            exit_code: result.verdict.exit_code(),
+            reasons: result.reasons.clone(),
+            failed_count: result.failed_dimension_count(),
+            warned_count: result.warned_dimension_count(),
+        });
+    }
+
+    Ok(result.verdict.exit_code())
+}
+
+/// Load a scorecard from a baseline file (EvalBaseline JSON) or a raw RunScorecard JSON.
+fn load_baseline_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read baseline '{}': {e}", path))?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("failed to parse baseline JSON: {e}"))?;
+
+    // Try EvalBaseline first (has "scorecard" field)
+    if value.get("scorecard").is_some() && value.get("name").is_some() {
+        let baseline: oco_shared_types::EvalBaseline = serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("failed to parse as EvalBaseline: {e}"))?;
+        return Ok(baseline.scorecard);
+    }
+
+    // Try raw RunScorecard (has "run_id" and "dimensions")
+    if value.get("run_id").is_some() && value.get("dimensions").is_some() {
+        let sc: oco_shared_types::RunScorecard = serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("failed to parse as RunScorecard: {e}"))?;
+        return Ok(sc);
+    }
+
+    anyhow::bail!(
+        "baseline file '{}' is neither an EvalBaseline nor a RunScorecard",
+        path
+    )
+}
+
+/// Load a candidate scorecard from various sources.
+fn load_candidate_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard> {
+    let p = PathBuf::from(path);
+
+    // If it's a directory (run dir), load scorecard.json from it
+    if p.is_dir() {
+        let scorecard_path = p.join("scorecard.json");
+        if scorecard_path.exists() {
+            let content = std::fs::read_to_string(&scorecard_path)?;
+            let sc: oco_shared_types::RunScorecard = serde_json::from_str(&content)?;
+            return Ok(sc);
+        }
+        // Fall back to reconstruct from summary
+        return load_or_build_scorecard(&p, &p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+    }
+
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read candidate '{}': {e}", path))?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("failed to parse candidate JSON: {e}"))?;
+
+    // Try EvalBaseline format
+    if value.get("scorecard").is_some() && value.get("name").is_some() {
+        let baseline: oco_shared_types::EvalBaseline = serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("failed to parse as EvalBaseline: {e}"))?;
+        return Ok(baseline.scorecard);
+    }
+
+    // Try raw RunScorecard
+    if value.get("run_id").is_some() && value.get("dimensions").is_some() {
+        let sc: oco_shared_types::RunScorecard = serde_json::from_value(value)?;
+        return Ok(sc);
+    }
+
+    // Try eval results envelope (has "results" array) — build scorecard from first result
+    if let Some(results) = value.get("results").and_then(|r| r.as_array()) {
+        if let Some(first) = results.first() {
+            let sr: oco_shared_types::ScenarioResult = serde_json::from_value(first.clone())
+                .map_err(|e| anyhow::anyhow!("failed to parse eval result: {e}"))?;
+            return Ok(scorecard_from_scenario_result(&sr));
+        }
+    }
+
+    anyhow::bail!(
+        "candidate file '{}' is not a recognized format (EvalBaseline, RunScorecard, or eval results)",
+        path
+    )
+}
+
+/// Save a baseline from a run's scorecard or eval results.
+fn cmd_baseline_save(
+    r: &mut dyn Renderer,
+    source: String,
+    name: String,
+    output: String,
+    workspace: String,
+    description: Option<String>,
+) -> Result<()> {
+    use oco_shared_types::EvalBaseline;
+
+    let output_path = PathBuf::from(&output);
+
+    // Ensure parent directory exists
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let (scorecard, source_label) = if source == "last" || uuid::Uuid::parse_str(&source).is_ok() {
+        // Load from run dir
+        let run_dir = resolve_run_dir(&source, &workspace)?;
+        let sc = load_or_build_scorecard(&run_dir, &source)?;
+        (sc, format!("run:{source}"))
+    } else {
+        // Try loading as a file
+        let sc = load_candidate_scorecard(&source)?;
+        (sc, format!("file:{source}"))
+    };
+
+    let mut baseline = EvalBaseline::from_scorecard(name.clone(), scorecard, source_label);
+    if let Some(desc) = description {
+        baseline = baseline.with_description(desc);
+    }
+
+    baseline
+        .save_to(&output_path)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    r.emit(UiEvent::Success {
+        message: format!(
+            "Baseline '{}' saved to {} (overall: {:.2})",
+            name,
+            output_path.display(),
+            baseline.scorecard.overall_score,
+        ),
+    });
+
+    Ok(())
 }
 
 /// Collect priority files by scanning for files matching keywords in the prompt.

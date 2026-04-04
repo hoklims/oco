@@ -204,6 +204,31 @@ pub enum UiEvent {
         kind: String, // "regression" or "improvement"
     },
 
+    // ── Eval Gate (Q6) ────────────────────────────────────
+    /// Header for gate evaluation report.
+    GateHeader {
+        baseline_id: String,
+        candidate_id: String,
+        policy: String,
+    },
+    /// Per-dimension gate check result.
+    GateDimensionCheck {
+        dimension: String,
+        baseline_score: f64,
+        candidate_score: f64,
+        delta: f64,
+        min_score: f64,
+        verdict: String, // "pass", "warn", "fail"
+    },
+    /// Final gate verdict.
+    GateVerdict {
+        verdict: String,
+        exit_code: i32,
+        reasons: Vec<String>,
+        failed_count: usize,
+        warned_count: usize,
+    },
+
     // ── Generic ───────────────────────────────────────────
     Info {
         message: String,
