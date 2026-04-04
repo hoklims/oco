@@ -28,6 +28,10 @@ oco eval-gate --candidate results.json   # Q7: explicit candidate, config baseli
 oco baseline-save last --name v1-stable # Save baseline from last run
 oco baseline-save results.json --name v2 --output .oco/baseline.json
 oco baseline-save last --name v2        # Q7: output defaults to config baseline_path
+oco runs review-pack last              # Q9: unified review packet (terminal)
+oco runs review-pack last --json       # Q9: JSON review packet
+oco runs review-pack last --markdown   # Q9: Markdown review document
+oco runs review-pack last --save       # Q9: save to run directory
 ```
 
 ### CLI Output Modes
@@ -46,7 +50,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 | # | Crate | Role |
 |---|-------|------|
-| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase**, **MissionMemory**, **RunScorecard**, **ScorecardComparison**, **BatchComparison**, **GateVerdict**, **GatePolicy**, **GateResult**, **EvalBaseline**, **GateConfig**, **BaselineFreshness**, **BaselineFreshnessCheck**, **GateReviewArtifact** |
+| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase**, **MissionMemory**, **RunScorecard**, **ScorecardComparison**, **BatchComparison**, **GateVerdict**, **GatePolicy**, **GateResult**, **EvalBaseline**, **GateConfig**, **BaselineFreshness**, **BaselineFreshnessCheck**, **GateReviewArtifact**, **ReviewPacket**, **MergeReadiness** |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
 | 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer, **call graph extraction** (CallEdge) |
@@ -100,6 +104,8 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - `BaselineFreshness` — Q8 freshness classification: Fresh/Aging/Stale/Unknown based on baseline age vs configurable thresholds
 - `BaselineFreshnessCheck` — Q8 evaluates `EvalBaseline::created_at` against `fresh_days`/`stale_days` thresholds (defaults: 14/30 days)
 - `GateReviewArtifact` — Q8 structured review document: gate result + freshness check + summary + recommendations. `to_markdown()`, `to_json()`
+- `ReviewPacket` — Q9 unified merge-readiness bundle: aggregates scorecard, gate result, mission memory, baseline freshness. `build()`, `to_review_text()`, `to_markdown()`, `to_json()`, `save_to()`
+- `MergeReadiness` — Q9 Ready/ConditionallyReady/NotReady/Unknown verdict. Computed from trust, gate, freshness, and open risks
 
 **Key modules**:
 - `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan)
@@ -162,8 +168,8 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (861+)
-cargo test -p oco-shared-types           # 329+ tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate, gate config, baseline freshness, review artifacts
+cargo test                               # All tests (888+)
+cargo test -p oco-shared-types           # 352+ tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate, gate config, baseline freshness, review artifacts, review packet
 cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             #  37 tests — parser, indexer, language detection, call graph extraction
@@ -171,7 +177,7 @@ cargo test -p oco-retrieval              #  19 tests — FTS5, vector, hybrid ra
 cargo test -p oco-telemetry              #  13 tests — event recording, JSONL export, hook telemetry
 cargo test -p oco-claude-adapter         #  70 tests — version detection, 24 hook events, capability matrix, integration modes, doctor checks
 cargo test -p oco-planner               #  52 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, sub-plan parsing
-cargo test -p oco-orchestrator-core      # 121 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution, mission memory, scorecard builder, gate config, gate config strict
+cargo test -p oco-orchestrator-core      # 125 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution, mission memory, scorecard builder, gate config, gate config strict, review packet builder
 cargo test -p oco-mcp-server             #  37 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools
 cargo test -p oco-verifier               #  32 tests — test/build/lint/typecheck runners, auto-detection
 cargo test -p oco-architecture-tests     #   4 tests — dependency DAG, layer violations, foundation isolation, coverage
