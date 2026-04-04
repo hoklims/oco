@@ -232,7 +232,7 @@ pub enum UiEvent {
     // ── Baseline Freshness (Q8) ─────────────────────────
     BaselineFreshness {
         freshness: String, // "fresh", "aging", "stale", "unknown"
-        age_days: f64,
+        age_days: Option<f64>,
         recommendation: String,
     },
 

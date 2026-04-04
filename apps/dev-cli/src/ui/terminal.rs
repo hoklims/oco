@@ -744,9 +744,13 @@ impl Renderer for TerminalRenderer {
                     "stale" => (self.icon_fail(), style(&freshness).red().bold()),
                     _ => (self.icon_bullet(), style(&freshness).dim()),
                 };
+                let age_str = match age_days {
+                    Some(d) => format!("{d:.1} days old"),
+                    None => "age unknown".to_string(),
+                };
                 let _ = self.term.write_line(&format!(
-                    "  {} Baseline freshness: {} ({:.1} days old)",
-                    icon, freshness_styled, age_days,
+                    "  {} Baseline freshness: {} ({})",
+                    icon, freshness_styled, age_str,
                 ));
                 let _ = self
                     .term

@@ -67,9 +67,10 @@ A simple classification that maps baseline age to one of four states. `Unknown` 
 ```rust
 pub struct BaselineFreshnessCheck {
     pub freshness: BaselineFreshness,
-    pub baseline_age_days: Option<u64>,
+    pub age_days: Option<f64>,       // None when age is unknown
     pub fresh_threshold_days: u32,   // default: 14
     pub stale_threshold_days: u32,   // default: 30
+    pub recommendation: String,
 }
 ```
 

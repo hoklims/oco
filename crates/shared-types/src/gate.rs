@@ -645,8 +645,9 @@ impl BaselineFreshness {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaselineFreshnessCheck {
     pub freshness: BaselineFreshness,
-    /// Age of the baseline in days (fractional).
-    pub age_days: f64,
+    /// Age of the baseline in days (fractional). `None` when age is unknown
+    /// (e.g., raw `RunScorecard` baselines without `created_at`).
+    pub age_days: Option<f64>,
     /// Threshold in days: below this the baseline is `Fresh`.
     pub fresh_threshold_days: u32,
     /// Threshold in days: above this the baseline is `Stale`.
@@ -676,38 +677,40 @@ impl BaselineFreshnessCheck {
         let age = now.signed_duration_since(created_at);
         let age_days = age.num_seconds() as f64 / 86_400.0;
 
-        let (freshness, recommendation) = if age_days < 0.0 {
-            // Baseline is in the future — treat as unknown
+        let (freshness, effective_age, recommendation) = if age_days < 0.0 {
+            // Baseline is in the future — treat as unknown, age is meaningless
             (
                 BaselineFreshness::Unknown,
+                None,
                 "baseline created_at is in the future".to_string(),
             )
         } else if age_days <= fresh_d as f64 {
             (
                 BaselineFreshness::Fresh,
+                Some(age_days),
                 format!("baseline is {age_days:.1} days old (fresh threshold: {fresh_d}d)"),
             )
         } else if age_days <= stale_d as f64 {
             (
                 BaselineFreshness::Aging,
+                Some(age_days),
                 format!(
-                    "baseline is {:.1} days old — consider updating (stale after {stale_d}d)",
-                    age_days
+                    "baseline is {age_days:.1} days old — consider updating (stale after {stale_d}d)",
                 ),
             )
         } else {
             (
                 BaselineFreshness::Stale,
+                Some(age_days),
                 format!(
-                    "baseline is {:.1} days old — stale (threshold: {stale_d}d). Update before trusting gate results.",
-                    age_days
+                    "baseline is {age_days:.1} days old — stale (threshold: {stale_d}d). Update before trusting gate results.",
                 ),
             )
         };
 
         Self {
             freshness,
-            age_days,
+            age_days: effective_age,
             fresh_threshold_days: fresh_d,
             stale_threshold_days: stale_d,
             recommendation,
@@ -728,7 +731,7 @@ impl BaselineFreshnessCheck {
     pub fn unknown() -> Self {
         Self {
             freshness: BaselineFreshness::Unknown,
-            age_days: 0.0,
+            age_days: None,
             fresh_threshold_days: Self::DEFAULT_FRESH_DAYS,
             stale_threshold_days: Self::DEFAULT_STALE_DAYS,
             recommendation: "baseline has no created_at metadata — save it via \
@@ -892,10 +895,10 @@ impl GateReviewArtifact {
             self.baseline_freshness.freshness.symbol(),
             self.baseline_freshness.freshness.label(),
         ));
-        md.push_str(&format!(
-            "| Baseline age | {:.1} days |\n",
-            self.baseline_freshness.age_days,
-        ));
+        match self.baseline_freshness.age_days {
+            Some(days) => md.push_str(&format!("| Baseline age | {days:.1} days |\n")),
+            None => md.push_str("| Baseline age | n/a |\n"),
+        }
         md.push_str(&format!(
             "| Dimensions | {} pass, {} warn, {} fail |\n",
             self.summary.dimensions_passing,
@@ -1579,7 +1582,8 @@ mod tests {
         let created = now - Duration::days(5);
         let check = BaselineFreshnessCheck::evaluate(created, now, None, None);
         assert_eq!(check.freshness, BaselineFreshness::Fresh);
-        assert!(check.age_days > 4.9 && check.age_days < 5.1);
+        let days = check.age_days.expect("known age");
+        assert!(days > 4.9 && days < 5.1);
         assert_eq!(check.fresh_threshold_days, 14);
         assert_eq!(check.stale_threshold_days, 30);
     }
@@ -1623,6 +1627,10 @@ mod tests {
         let future = now + Duration::days(5);
         let check = BaselineFreshnessCheck::evaluate(future, now, None, None);
         assert_eq!(check.freshness, BaselineFreshness::Unknown);
+        assert!(
+            check.age_days.is_none(),
+            "future date should produce None age"
+        );
     }
 
     #[test]
@@ -1634,7 +1642,10 @@ mod tests {
         let json = serde_json::to_string_pretty(&check).unwrap();
         let parsed: BaselineFreshnessCheck = serde_json::from_str(&json).unwrap();
         assert_eq!(check.freshness, parsed.freshness);
-        assert!((check.age_days - parsed.age_days).abs() < 0.01);
+        assert_eq!(check.age_days.is_some(), parsed.age_days.is_some());
+        if let (Some(a), Some(b)) = (check.age_days, parsed.age_days) {
+            assert!((a - b).abs() < 0.01);
+        }
     }
 
     #[test]
@@ -1801,7 +1812,7 @@ mod tests {
     fn freshness_check_unknown_constructor() {
         let check = BaselineFreshnessCheck::unknown();
         assert_eq!(check.freshness, BaselineFreshness::Unknown);
-        assert!((check.age_days - 0.0).abs() < 1e-10);
+        assert!(check.age_days.is_none());
         assert!(check.recommendation.contains("baseline-save"));
         assert_eq!(
             check.fresh_threshold_days,
@@ -1871,18 +1882,31 @@ mod tests {
             "expected baseline-save recommendation, got: {:?}",
             artifact.recommendations,
         );
-        // Markdown should still render
+        // Markdown should still render with n/a instead of 0.0
         let md = artifact.to_markdown();
         assert!(md.contains("Gate Review Report"));
         assert!(md.contains("[?]")); // Unknown symbol
+        assert!(
+            md.contains("n/a"),
+            "expected 'n/a' for unknown age, got:\n{md}"
+        );
+        assert!(
+            !md.contains("0.0 days"),
+            "must not show '0.0 days' for unknown age"
+        );
     }
 
     #[test]
     fn freshness_check_unknown_serde_roundtrip() {
         let check = BaselineFreshnessCheck::unknown();
         let json = serde_json::to_string_pretty(&check).unwrap();
+        assert!(
+            json.contains("null"),
+            "age_days should be null in JSON: {json}"
+        );
         let parsed: BaselineFreshnessCheck = serde_json::from_str(&json).unwrap();
         assert_eq!(check.freshness, parsed.freshness);
+        assert!(parsed.age_days.is_none());
         assert!(parsed.recommendation.contains("baseline-save"));
     }
 }
