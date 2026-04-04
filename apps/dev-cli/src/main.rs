@@ -159,6 +159,9 @@ enum RunsAction {
         /// Workspace path (to find .oco/runs/)
         #[arg(long, default_value = ".")]
         workspace: String,
+        /// Show mission memory (durable handoff artifact) instead of trace
+        #[arg(long)]
+        mission: bool,
     },
     /// List recent runs
     List {
@@ -168,6 +171,17 @@ enum RunsAction {
         /// Max entries
         #[arg(long, default_value_t = 10)]
         limit: usize,
+    },
+    /// Display a run's mission memory as a handoff document
+    Handoff {
+        /// Run/session ID (or "last" for most recent)
+        id: String,
+        /// Workspace path (to find .oco/runs/)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Output as JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -238,8 +252,23 @@ async fn main() -> Result<()> {
         } => cmd_eval(&mut *r, out_format, scenarios, output, provider).await?,
         Commands::Doctor { workspace } => cmd_doctor(&mut *r, workspace)?,
         Commands::Runs { action } => match action {
-            RunsAction::Show { id, workspace } => cmd_runs_show(&mut *r, id, workspace)?,
+            RunsAction::Show {
+                id,
+                workspace,
+                mission,
+            } => {
+                if mission {
+                    cmd_runs_handoff(&mut *r, id, workspace, false)?;
+                } else {
+                    cmd_runs_show(&mut *r, id, workspace)?;
+                }
+            }
             RunsAction::List { workspace, limit } => cmd_runs_list(&mut *r, workspace, limit)?,
+            RunsAction::Handoff {
+                id,
+                workspace,
+                json,
+            } => cmd_runs_handoff(&mut *r, id, workspace, json)?,
         },
     }
 
@@ -562,6 +591,14 @@ fn save_run_artifacts(
         &run_dir.join("summary.json"),
         serde_json::to_string_pretty(&summary)?,
     )?;
+
+    // mission.json — durable mission memory for handoff/resume
+    let mission = state.create_mission_memory();
+    if mission.has_content() {
+        mission
+            .save_to(&run_dir.join("mission.json"))
+            .map_err(|e| anyhow::anyhow!("failed to save mission memory: {e}"))?;
+    }
 
     Ok(())
 }
@@ -1347,6 +1384,71 @@ fn cmd_runs_list(r: &mut dyn Renderer, workspace: String, limit: usize) -> Resul
                 ),
             });
         }
+    }
+
+    Ok(())
+}
+
+/// Resolve a run directory from an ID (or "last") and a workspace path.
+fn resolve_run_dir(id: &str, workspace: &str) -> Result<PathBuf> {
+    let runs_dir = PathBuf::from(workspace).join(".oco").join("runs");
+
+    if id == "last" {
+        let mut entries: Vec<_> = std::fs::read_dir(&runs_dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect();
+        entries.sort_by_key(|e| {
+            std::cmp::Reverse(
+                e.metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
+        });
+        entries
+            .first()
+            .map(|e| e.path())
+            .ok_or_else(|| anyhow::anyhow!("no runs found in {}", runs_dir.display()))
+    } else {
+        let dir = runs_dir.join(id);
+        if !dir.exists() {
+            anyhow::bail!("run {} not found", dir.display());
+        }
+        Ok(dir)
+    }
+}
+
+/// Display a run's mission memory as a handoff document.
+fn cmd_runs_handoff(
+    r: &mut dyn Renderer,
+    id: String,
+    workspace: String,
+    json_output: bool,
+) -> Result<()> {
+    let run_dir = resolve_run_dir(&id, &workspace)?;
+    let mission_path = run_dir.join("mission.json");
+
+    if !mission_path.exists() {
+        r.emit(UiEvent::Info {
+            message: format!(
+                "No mission memory found for this run.\n  Expected: {}",
+                mission_path.display()
+            ),
+        });
+        return Ok(());
+    }
+
+    let mission = oco_shared_types::MissionMemory::load_from(&mission_path)
+        .map_err(|e| anyhow::anyhow!("failed to load mission memory: {e}"))?;
+
+    if json_output {
+        let json = serde_json::to_string_pretty(&mission)?;
+        r.emit(UiEvent::Info { message: json });
+    } else {
+        r.emit(UiEvent::Info {
+            message: mission.to_handoff_text(),
+        });
     }
 
     Ok(())
