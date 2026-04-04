@@ -5,11 +5,13 @@
   import { connectSSE, type SSEClient, type SSEStatus } from './lib/sse'
   import { createEventPlayer, type EventPlayer } from './lib/event-player'
   import { playDemo, type Thought } from './lib/demo'
+  import type { ReviewPacket } from './lib/types'
   import Timeline from './lib/Timeline.svelte'
   import PlanMap from './lib/PlanMap.svelte'
   import PlanExplorer from './lib/PlanExplorer.svelte'
   import DetailPanel from './lib/DetailPanel.svelte'
   import ClassifyingScene from './lib/ClassifyingScene.svelte'
+  import PostRunPanel from './lib/PostRunPanel.svelte'
   import Playground from './lib/Playground.svelte'
 
   // ── Playground routing ─────────────────────────────────────
@@ -48,6 +50,7 @@
   let teammateMessages = $state<Array<{ fromStepId: string; toStepId: string; fromName: string; toName: string; summary: string }>>([])
   let subPlanState = $state<Map<string, { subSteps: Array<{ id: string; name: string; status: 'pending' | 'running' | 'passed' | 'failed' }>; completed: boolean }>>(new Map())
   let msgTimers: ReturnType<typeof setTimeout>[] = []
+  let reviewPacket = $state<ReviewPacket | null>(null)
   let liveSessionId = $state<string | null>(null)
   let sseStatus = $state<SSEStatus>('connecting')
   let phase = $state<Phase>('connecting')
@@ -73,7 +76,7 @@
 
   function resetState() {
     events = []; steps = []; budget = null; thoughts = []; explorationPhase = 'idle'; stepSummaries = []; teamInfo = null; teammateMessages = []; subPlanState = new Map(); msgTimers.forEach(clearTimeout); msgTimers = []
-    selectedSeq = null; selectedStepId = null; missionRequest = ''; complexity = ''; provider = ''
+    selectedSeq = null; selectedStepId = null; missionRequest = ''; complexity = ''; provider = ''; reviewPacket = null
   }
 
   function startDemo() {
@@ -85,6 +88,7 @@
       handleEvent,
       (t) => { thoughts = [...thoughts, t] },
       (p) => { explorationPhase = p },
+      (r) => { reviewPacket = r },
     )
   }
 
@@ -425,47 +429,66 @@
     </div>
   {:else}
     <!-- Active mission: normal layout -->
-    <!-- Plan — top zone -->
-    <div class="h-[55%] border-b border-border shrink-0 relative">
-      <PlanExplorer phase={explorationPhase} />
-      {#if explorationPhase === 'done' || steps.length > 0}
-        <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
-      {:else if phase === 'classifying'}
-        <ClassifyingScene mission={missionRequest} {complexity} />
-      {:else if phase === 'planning' && explorationPhase === 'idle'}
-        <!-- Planning without exploration — simple planning indicator -->
-        <div class="h-full flex items-center justify-center">
-          <div class="text-center space-y-4">
-            <div class="w-16 h-16 mx-auto rounded-xl bg-surface-2 border border-purple/20 flex items-center justify-center">
-              <div class="grid grid-cols-2 gap-1">
-                <div class="w-3 h-3 bg-purple/30 rounded-sm animate-pulse"></div>
-                <div class="w-3 h-3 bg-purple/50 rounded-sm animate-pulse" style="animation-delay: 0.15s"></div>
-                <div class="w-3 h-3 bg-purple/40 rounded-sm animate-pulse" style="animation-delay: 0.3s"></div>
-                <div class="w-3 h-3 bg-purple/20 rounded-sm animate-pulse" style="animation-delay: 0.45s"></div>
-              </div>
-            </div>
-            <div>
-              <p class="text-sm text-purple font-mono">Generating execution plan...</p>
-              {#if complexity}
-                <p class="text-xs text-text-3 mt-1">{complexity}</p>
-              {/if}
-            </div>
+    {#if isFinished && reviewPacket}
+      <!-- Post-run intelligence view -->
+      <div class="flex-1 flex overflow-hidden min-h-0">
+        <!-- Left: Post-run panel -->
+        <div class="w-1/2 border-r border-border flex flex-col min-w-0">
+          <PostRunPanel review={reviewPacket} />
+        </div>
+        <!-- Right: Timeline + Detail -->
+        <div class="w-1/2 flex flex-col min-w-0">
+          <div class="h-1/2 border-b border-border">
+            <Timeline {events} {selectedSeq} onSelect={selectTimeline} />
+          </div>
+          <div class="h-1/2">
+            <DetailPanel event={selectedEvent} {budget} {selectedStep} {thoughts} />
           </div>
         </div>
-      {:else if explorationPhase !== 'idle'}
-        <div class="h-full"></div>
-      {/if}
-    </div>
+      </div>
+    {:else}
+      <!-- Plan — top zone -->
+      <div class="h-[55%] border-b border-border shrink-0 relative">
+        <PlanExplorer phase={explorationPhase} />
+        {#if explorationPhase === 'done' || steps.length > 0}
+          <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
+        {:else if phase === 'classifying'}
+          <ClassifyingScene mission={missionRequest} {complexity} />
+        {:else if phase === 'planning' && explorationPhase === 'idle'}
+          <!-- Planning without exploration — simple planning indicator -->
+          <div class="h-full flex items-center justify-center">
+            <div class="text-center space-y-4">
+              <div class="w-16 h-16 mx-auto rounded-xl bg-surface-2 border border-purple/20 flex items-center justify-center">
+                <div class="grid grid-cols-2 gap-1">
+                  <div class="w-3 h-3 bg-purple/30 rounded-sm animate-pulse"></div>
+                  <div class="w-3 h-3 bg-purple/50 rounded-sm animate-pulse" style="animation-delay: 0.15s"></div>
+                  <div class="w-3 h-3 bg-purple/40 rounded-sm animate-pulse" style="animation-delay: 0.3s"></div>
+                  <div class="w-3 h-3 bg-purple/20 rounded-sm animate-pulse" style="animation-delay: 0.45s"></div>
+                </div>
+              </div>
+              <div>
+                <p class="text-sm text-purple font-mono">Generating execution plan...</p>
+                {#if complexity}
+                  <p class="text-xs text-text-3 mt-1">{complexity}</p>
+                {/if}
+              </div>
+            </div>
+          </div>
+        {:else if explorationPhase !== 'idle'}
+          <div class="h-full"></div>
+        {/if}
+      </div>
 
-    <!-- Bottom: Activity + Detail -->
-    <div class="flex-1 flex overflow-hidden min-h-0">
-      <div class="w-1/2 border-r border-border flex flex-col min-w-0">
-        <Timeline {events} {selectedSeq} onSelect={selectTimeline} />
+      <!-- Bottom: Activity + Detail -->
+      <div class="flex-1 flex overflow-hidden min-h-0">
+        <div class="w-1/2 border-r border-border flex flex-col min-w-0">
+          <Timeline {events} {selectedSeq} onSelect={selectTimeline} />
+        </div>
+        <div class="w-1/2 flex flex-col min-w-0">
+          <DetailPanel event={selectedEvent} {budget} {selectedStep} {thoughts} />
+        </div>
       </div>
-      <div class="w-1/2 flex flex-col min-w-0">
-        <DetailPanel event={selectedEvent} {budget} {selectedStep} {thoughts} />
-      </div>
-    </div>
+    {/if}
   {/if}
 
   <!-- Footer -->

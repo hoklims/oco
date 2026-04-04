@@ -1,16 +1,18 @@
 <script lang="ts">
   import { SCENARIOS, type PlaygroundScenario } from './playground-data'
-  import type { DashboardEvent, StepRow, BudgetSnapshot } from './types'
+  import type { DashboardEvent, StepRow, BudgetSnapshot, ReviewPacket } from './types'
   import type { Thought } from './demo'
+  import { DEMO_REVIEW_PACKET } from './demo'
   import { createEventPlayer } from './event-player'
   import PlanMap from './PlanMap.svelte'
   import PlanExplorer from './PlanExplorer.svelte'
   import ClassifyingScene from './ClassifyingScene.svelte'
+  import PostRunPanel from './PostRunPanel.svelte'
   import Timeline from './Timeline.svelte'
 
   // ── State ──────────────────────────────────────────────────
   let selectedScenario = $state<PlaygroundScenario>(SCENARIOS[0])
-  let mode = $state<'idle' | 'planmap' | 'classifying' | 'explorer' | 'full'>('idle')
+  let mode = $state<'idle' | 'planmap' | 'classifying' | 'explorer' | 'full' | 'postrun'>('idle')
   let events = $state<DashboardEvent[]>([])
   let steps = $state<StepRow[]>([])
   let thoughts = $state<Thought[]>([])
@@ -290,6 +292,11 @@
     cancelPlayback = () => { player.stop(); clearTimeout(t) }
   }
 
+  function playPostRun() {
+    resetState()
+    mode = 'postrun'
+  }
+
   // ── Step status override (manual testing) ──────────────────
   function cycleStepStatus(id: string) {
     const order: StepRow['status'][] = ['pending', 'running', 'passed', 'failed']
@@ -399,6 +406,10 @@
       {mode === 'full' ? 'bg-green/15 text-green border border-green/30' : 'bg-surface-2 text-text-3 hover:text-text-1 border border-border hover:border-border-2'}">
       Full Flow
     </button>
+    <button onclick={playPostRun} class="px-2.5 py-1 text-xs font-mono rounded transition-colors
+      {mode === 'postrun' ? 'bg-blue/15 text-blue border border-blue/30' : 'bg-surface-2 text-text-3 hover:text-text-1 border border-border hover:border-border-2'}">
+      Post-Run
+    </button>
 
     <div class="h-4 w-px bg-border"></div>
     <button onclick={resetState} class="px-2.5 py-1 text-xs font-mono bg-surface-2 text-text-3 hover:text-red border border-border hover:border-red/30 rounded transition-colors">
@@ -442,6 +453,7 @@
               <p><strong class="text-cyan">Classifying</strong> — Abstract analysis scene (~6.5s)</p>
               <p><strong class="text-purple">Explorer</strong> — Plan exploration with two branches (~10s)</p>
               <p><strong class="text-green">Full Flow</strong> — Complete event playback via EventPlayer</p>
+              <p><strong class="text-blue">Post-Run</strong> — Scorecard, gate, mission memory, review packet</p>
             </div>
           </div>
         </div>
@@ -459,6 +471,11 @@
       {:else if mode === 'explorer'}
         <div class="flex-1 relative">
           <PlanExplorer phase={explorationPhase} />
+        </div>
+
+      {:else if mode === 'postrun'}
+        <div class="flex-1 relative">
+          <PostRunPanel review={DEMO_REVIEW_PACKET} />
         </div>
 
       {:else if mode === 'full'}

@@ -3,7 +3,7 @@
  * 2 candidate plans (Speed vs Safety) with structural differences,
  * then execution of the winner.
  */
-import type { DashboardEvent, BudgetSnapshot } from './types'
+import type { DashboardEvent, BudgetSnapshot, ReviewPacket } from './types'
 
 function ts(offsetMs: number): string {
   return new Date(Date.now() + offsetMs).toISOString()
@@ -174,6 +174,90 @@ export const DEMO_THOUGHTS: Thought[] = [
   { text: '12 tests passed — all clear', variant: 'success', stepId: stepIds[4], offsetMs: 30200 },
 ]
 
+/** Demo ReviewPacket — shown after run_stopped. */
+export const DEMO_REVIEW_PACKET: ReviewPacket = {
+  schema_version: 1,
+  generated_at: new Date().toISOString(),
+  run_id: rid,
+  merge_readiness: 'Ready',
+  trust_verdict: 'High',
+  gate_verdict: 'Pass',
+  changes: {
+    modified_files: ['src/auth/middleware.rs', 'src/auth/jwt.rs', 'src/auth/refresh.rs', 'src/routes/mod.rs', 'tests/auth_integration.rs'],
+    key_decisions: [
+      'Chose HS256 over RS256 — jsonwebtoken crate already in Cargo.toml',
+      'Refresh token rotation with single-use invalidation',
+      'Preserved backward-compatible session fallback for 1 release cycle',
+    ],
+    narrative: 'Replaced session-based auth with JWT tokens. Added refresh flow with rotation. All 22 tests passing, zero lint warnings. Migration path preserved for existing sessions.',
+  },
+  verification: {
+    trust_verdict: 'High',
+    checks_passed: ['cargo build', 'cargo test (22 passed)', 'cargo clippy (0 warnings)', 'cargo fmt --check'],
+    checks_failed: [],
+    unverified_files: [],
+  },
+  open_risks: {
+    risks: ['Token secret rotation strategy not yet implemented for production'],
+    open_questions: ['Should refresh tokens have a max lifetime cap?'],
+    unavailable_data: [],
+  },
+  scorecard: {
+    run_id: rid,
+    computed_at: new Date().toISOString(),
+    dimensions: [
+      { dimension: 'Success', score: 0.95, detail: 'All objectives met, all tests passing' },
+      { dimension: 'TrustVerdict', score: 0.92, detail: 'High confidence — full verification suite passed' },
+      { dimension: 'VerificationCoverage', score: 0.88, detail: '22 tests covering auth, refresh, and middleware' },
+      { dimension: 'MissionContinuity', score: 0.85, detail: 'Clear handoff with session fallback path' },
+      { dimension: 'CostEfficiency', score: 0.72, detail: '36k tokens used (budget: 50k)' },
+      { dimension: 'ReplanStability', score: 1.0, detail: 'No replans needed — first plan succeeded' },
+      { dimension: 'ErrorRate', score: 0.96, detail: '0 errors in 22 tool calls' },
+    ],
+    overall_score: 0.89,
+    cost: { steps: 5, tokens: 36000, duration_ms: 26000, tool_calls: 22, verify_cycles: 3, replans: 0 },
+  },
+  gate_result: {
+    baseline_id: 'v0.5-stable',
+    candidate_id: rid,
+    policy: {
+      thresholds: [
+        { dimension: 'Success', min_score: 0.7, max_regression: 0.15 },
+        { dimension: 'TrustVerdict', min_score: 0.6, max_regression: 0.2 },
+        { dimension: 'VerificationCoverage', min_score: 0.5, max_regression: 0.2 },
+        { dimension: 'MissionContinuity', min_score: 0.4, max_regression: 0.25 },
+        { dimension: 'CostEfficiency', min_score: 0.3, max_regression: 0.3 },
+        { dimension: 'ReplanStability', min_score: 0.5, max_regression: 0.25 },
+        { dimension: 'ErrorRate', min_score: 0.7, max_regression: 0.15 },
+      ],
+      strategy: 'Balanced',
+      min_overall_score: 0.6,
+      max_overall_regression: 0.15,
+    },
+    dimension_checks: [
+      { dimension: 'Success', candidate_score: 0.95, baseline_score: 0.85, delta: 0.10, min_score: 0.7, max_regression: 0.15, verdict: 'Pass', reason: 'Above threshold, improved from baseline' },
+      { dimension: 'TrustVerdict', candidate_score: 0.92, baseline_score: 0.80, delta: 0.12, min_score: 0.6, max_regression: 0.2, verdict: 'Pass', reason: 'Strong improvement' },
+      { dimension: 'VerificationCoverage', candidate_score: 0.88, baseline_score: 0.75, delta: 0.13, min_score: 0.5, max_regression: 0.2, verdict: 'Pass', reason: 'Coverage improved' },
+      { dimension: 'MissionContinuity', candidate_score: 0.85, baseline_score: 0.82, delta: 0.03, min_score: 0.4, max_regression: 0.25, verdict: 'Pass', reason: 'Stable' },
+      { dimension: 'CostEfficiency', candidate_score: 0.72, baseline_score: 0.68, delta: 0.04, min_score: 0.3, max_regression: 0.3, verdict: 'Pass', reason: 'Efficient token usage' },
+      { dimension: 'ReplanStability', candidate_score: 1.0, baseline_score: 0.90, delta: 0.10, min_score: 0.5, max_regression: 0.25, verdict: 'Pass', reason: 'Perfect stability' },
+      { dimension: 'ErrorRate', candidate_score: 0.96, baseline_score: 0.88, delta: 0.08, min_score: 0.7, max_regression: 0.15, verdict: 'Pass', reason: 'Near-zero errors' },
+    ],
+    baseline_overall: 0.81,
+    candidate_overall: 0.89,
+    overall_delta: 0.08,
+    verdict: 'Pass',
+    reasons: ['All dimensions pass', 'Overall score 89% exceeds minimum 60%', 'No regressions detected'],
+  },
+  baseline_freshness: {
+    freshness: 'Fresh',
+    age_days: 3,
+    fresh_threshold_days: 14,
+    stale_threshold_days: 30,
+    recommendation: 'Baseline is recent and representative',
+  },
+}
+
 /**
  * Play the demo with exploration + execution.
  */
@@ -181,6 +265,7 @@ export function playDemo(
   onEvent: (event: DashboardEvent) => void,
   onThought?: (thought: Thought) => void,
   onExploration?: (phase: ExplorationPhase['phase']) => void,
+  onReviewPacket?: (review: ReviewPacket) => void,
 ): () => void {
   let cancelled = false
   const timeouts: ReturnType<typeof setTimeout>[] = []
@@ -204,6 +289,12 @@ export function playDemo(
     for (const t of DEMO_THOUGHTS) {
       timeouts.push(setTimeout(() => { if (!cancelled) onThought(t) }, t.offsetMs + EXPLORATION_DURATION))
     }
+  }
+
+  // Review packet — 2s after run_stopped
+  if (onReviewPacket) {
+    const lastEventDelay = new Date(DEMO_EVENTS[DEMO_EVENTS.length - 1].ts).getTime() - baseTime + EXPLORATION_DURATION
+    timeouts.push(setTimeout(() => { if (!cancelled) onReviewPacket(DEMO_REVIEW_PACKET) }, lastEventDelay + 2000))
   }
 
   return () => { cancelled = true; timeouts.forEach(clearTimeout) }
