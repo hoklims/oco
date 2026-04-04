@@ -190,6 +190,45 @@ enum Commands {
         #[arg(long)]
         description: Option<String>,
     },
+    /// Promote a candidate to become the new baseline (Q11)
+    ///
+    /// Loads the current baseline, evaluates the candidate against it,
+    /// backs up the old baseline, saves the new one, and appends an
+    /// audit trail entry to `.oco/baseline-history.json`.
+    BaselinePromote {
+        /// Source: run ID ("last"), eval results file, or scorecard.json path
+        source: String,
+        /// Name for the new baseline (e.g., "v2-stable")
+        #[arg(long)]
+        name: String,
+        /// Reason for the promotion (shown in audit trail)
+        #[arg(long)]
+        reason: Option<String>,
+        /// Optional description for the new baseline
+        #[arg(long)]
+        description: Option<String>,
+        /// Workspace path (for resolving run IDs and repo config)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Output the promotion record as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the baseline promotion audit trail (Q11)
+    BaselineHistory {
+        /// Workspace path
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Output as Markdown
+        #[arg(long)]
+        markdown: bool,
+        /// Maximum entries to show (most recent first)
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Check plugin health and configuration
     Doctor {
         /// Workspace path to check
@@ -366,6 +405,20 @@ async fn main() -> Result<()> {
             workspace,
             description,
         } => cmd_baseline_save(&mut *r, source, name, output, workspace, description)?,
+        Commands::BaselinePromote {
+            source,
+            name,
+            reason,
+            description,
+            workspace,
+            json,
+        } => cmd_baseline_promote(&mut *r, source, name, reason, description, workspace, json)?,
+        Commands::BaselineHistory {
+            workspace,
+            json,
+            markdown,
+            limit,
+        } => cmd_baseline_history(&mut *r, workspace, json, markdown, limit)?,
         Commands::Doctor { workspace } => cmd_doctor(&mut *r, workspace)?,
         Commands::Runs { action } => match action {
             RunsAction::Show {
@@ -2457,6 +2510,135 @@ fn cmd_baseline_save(
             baseline.scorecard.overall_score,
         ),
     });
+
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Q11: Baseline promotion & audit trail
+// ═══════════════════════════════════════════════════════════
+
+fn cmd_baseline_promote(
+    r: &mut dyn Renderer,
+    source: String,
+    name: String,
+    reason: Option<String>,
+    description: Option<String>,
+    workspace: String,
+    json: bool,
+) -> Result<()> {
+    let ws = Path::new(&workspace);
+
+    // Resolve scorecard from source (same logic as baseline-save)
+    let (scorecard, source_label) = if source == "last" || uuid::Uuid::parse_str(&source).is_ok() {
+        let run_dir = resolve_run_dir(&source, &workspace)?;
+        let sc = load_or_build_scorecard(&run_dir, &source)?;
+        (sc, format!("run:{source}"))
+    } else {
+        let sc = load_candidate_scorecard(&source)?;
+        (sc, format!("file:{source}"))
+    };
+
+    let record = oco_orchestrator_core::promote_baseline(
+        ws,
+        scorecard,
+        name.clone(),
+        source_label,
+        reason,
+        description,
+    )
+    .map_err(|e| anyhow::anyhow!("promotion failed: {e}"))?;
+
+    if json {
+        let json_str = serde_json::to_string_pretty(&record)
+            .map_err(|e| anyhow::anyhow!("failed to serialize promotion record: {e}"))?;
+        println!("{json_str}");
+    } else {
+        // Terminal-friendly output
+        r.emit(UiEvent::Success {
+            message: format!(
+                "{} Promoted '{}' → '{}' (overall: {:.2} → {:.2}, {:+.2})",
+                record.recommendation.symbol(),
+                record.old_baseline_name,
+                record.new_baseline_name,
+                record.diff.old_overall,
+                record.diff.new_overall,
+                record.diff.overall_delta,
+            ),
+        });
+        if let Some(gv) = record.gate_verdict {
+            r.emit(UiEvent::Info {
+                message: format!("Gate verdict: {}", gv.symbol()),
+            });
+        }
+        if let Some(bf) = record.baseline_freshness {
+            r.emit(UiEvent::Info {
+                message: format!("Old baseline freshness: {}", bf.symbol()),
+            });
+        }
+        if record.recommendation != oco_shared_types::PromotionRecommendation::Promote {
+            r.emit(UiEvent::Warning {
+                message: format!(
+                    "Recommendation: {} — review the diff before relying on this baseline",
+                    record.recommendation.label(),
+                ),
+            });
+        }
+
+        // Show diff table
+        println!();
+        println!("{}", record.diff.to_report());
+    }
+
+    Ok(())
+}
+
+fn cmd_baseline_history(
+    r: &mut dyn Renderer,
+    workspace: String,
+    json: bool,
+    markdown: bool,
+    limit: usize,
+) -> Result<()> {
+    let ws = Path::new(&workspace);
+    let history = oco_orchestrator_core::load_baseline_history(ws)
+        .map_err(|e| anyhow::anyhow!("failed to load baseline history: {e}"))?;
+
+    if history.is_empty() {
+        r.emit(UiEvent::Info {
+            message: "No baseline promotions recorded yet.".to_string(),
+        });
+        return Ok(());
+    }
+
+    if json {
+        // In JSON mode with limit, only output the last N entries
+        let limited = if limit < history.len() {
+            let mut h = history.clone();
+            let start = h.entries.len().saturating_sub(limit);
+            h.entries = h.entries[start..].to_vec();
+            h
+        } else {
+            history
+        };
+        let json_str = limited
+            .to_json()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!("{json_str}");
+    } else if markdown {
+        println!("{}", history.to_markdown());
+    } else {
+        // Terminal output — show recent entries
+        let recent = history.recent(limit);
+        r.emit(UiEvent::Info {
+            message: format!("Baseline History ({} total, showing {})", history.len(), recent.len()),
+        });
+        for entry in &recent {
+            println!();
+            println!("#{}", entry.sequence);
+            println!("{}", entry.promotion.to_summary());
+        }
+    }
 
     Ok(())
 }
