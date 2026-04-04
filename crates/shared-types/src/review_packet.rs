@@ -149,8 +149,36 @@ pub struct ReviewPacket {
 /// Current review packet schema version.
 pub const REVIEW_PACKET_SCHEMA_VERSION: u32 = 1;
 
+// ---------------------------------------------------------------------------
+// Merge readiness configuration
+// ---------------------------------------------------------------------------
+
+/// Per-repo configuration for the merge readiness heuristic.
+///
+/// All fields have sensible defaults. Override in `[review.merge_readiness]` in `oco.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MergeReadinessConfig {
+    /// If true, open risks downgrade Ready → ConditionallyReady. Default: true.
+    pub open_risks_block_ready: bool,
+    /// If true, an aging or stale baseline downgrades Ready → ConditionallyReady. Default: true.
+    pub aging_baseline_blocks_ready: bool,
+    /// If true, gate warnings downgrade Ready → ConditionallyReady. Default: true.
+    pub gate_warn_blocks_ready: bool,
+}
+
+impl Default for MergeReadinessConfig {
+    fn default() -> Self {
+        Self {
+            open_risks_block_ready: true,
+            aging_baseline_blocks_ready: true,
+            gate_warn_blocks_ready: true,
+        }
+    }
+}
+
 impl ReviewPacket {
-    /// Compute merge readiness from the available data.
+    /// Compute merge readiness from the available data using default config.
     ///
     /// Rules:
     /// - If gate verdict is Fail → NotReady
@@ -165,7 +193,24 @@ impl ReviewPacket {
         freshness: Option<BaselineFreshness>,
         has_open_risks: bool,
     ) -> MergeReadiness {
-        // Hard blockers
+        Self::compute_merge_readiness_with_config(
+            trust,
+            gate,
+            freshness,
+            has_open_risks,
+            &MergeReadinessConfig::default(),
+        )
+    }
+
+    /// Compute merge readiness with per-repo configuration.
+    pub fn compute_merge_readiness_with_config(
+        trust: Option<TrustVerdict>,
+        gate: Option<GateVerdict>,
+        freshness: Option<BaselineFreshness>,
+        has_open_risks: bool,
+        config: &MergeReadinessConfig,
+    ) -> MergeReadiness {
+        // Hard blockers (never configurable)
         if gate == Some(GateVerdict::Fail) {
             return MergeReadiness::NotReady;
         }
@@ -183,18 +228,20 @@ impl ReviewPacket {
         let gate_missing = gate.is_none();
         let freshness_missing = freshness.is_none();
 
-        // Conditional signals
-        let gate_warns = gate == Some(GateVerdict::Warn);
-        let baseline_aging = matches!(
-            freshness,
-            Some(BaselineFreshness::Aging) | Some(BaselineFreshness::Stale)
-        );
+        // Conditional signals (respecting per-repo config)
+        let gate_warns = config.gate_warn_blocks_ready && gate == Some(GateVerdict::Warn);
+        let baseline_aging = config.aging_baseline_blocks_ready
+            && matches!(
+                freshness,
+                Some(BaselineFreshness::Aging) | Some(BaselineFreshness::Stale)
+            );
         let trust_low = trust == Some(TrustVerdict::Low);
+        let risks_block = config.open_risks_block_ready && has_open_risks;
 
         if gate_warns
             || baseline_aging
             || trust_low
-            || has_open_risks
+            || risks_block
             || gate_missing
             || freshness_missing
         {
@@ -648,6 +695,9 @@ pub struct ReviewConfig {
     /// Relative paths are resolved from workspace root.
     /// Default: `None` (save to run directory).
     pub output_dir: Option<String>,
+    /// Merge readiness heuristic configuration.
+    #[serde(default)]
+    pub merge_readiness: MergeReadinessConfig,
 }
 
 impl Default for ReviewConfig {
@@ -656,6 +706,7 @@ impl Default for ReviewConfig {
             auto_save: false,
             default_format: "terminal".into(),
             output_dir: None,
+            merge_readiness: MergeReadinessConfig::default(),
         }
     }
 }
@@ -1150,6 +1201,10 @@ mod tests {
             auto_save: true,
             default_format: "markdown".into(),
             output_dir: Some(".oco/reviews".into()),
+            merge_readiness: MergeReadinessConfig {
+                open_risks_block_ready: false,
+                ..Default::default()
+            },
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let restored: ReviewConfig = serde_json::from_str(&json).unwrap();
@@ -1168,6 +1223,10 @@ mod tests {
             auto_save: true,
             default_format: "json".into(),
             output_dir: Some("reviews".into()),
+            merge_readiness: MergeReadinessConfig {
+                open_risks_block_ready: false,
+                ..Default::default()
+            },
         };
         let toml_str = toml::to_string(&cfg).unwrap();
         let parsed: ReviewConfig = toml::from_str(&toml_str).unwrap();
@@ -1198,5 +1257,145 @@ mod tests {
         };
         assert!(cfg.is_markdown());
         assert!(!cfg.is_json());
+    }
+
+    // ── MergeReadinessConfig ──
+
+    #[test]
+    fn merge_readiness_config_default_all_blocking() {
+        let cfg = MergeReadinessConfig::default();
+        assert!(cfg.open_risks_block_ready);
+        assert!(cfg.aging_baseline_blocks_ready);
+        assert!(cfg.gate_warn_blocks_ready);
+    }
+
+    #[test]
+    fn merge_readiness_config_serde_roundtrip() {
+        let cfg = MergeReadinessConfig {
+            open_risks_block_ready: false,
+            aging_baseline_blocks_ready: true,
+            gate_warn_blocks_ready: false,
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let parsed: MergeReadinessConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn config_open_risks_not_blocking_allows_ready() {
+        let cfg = MergeReadinessConfig {
+            open_risks_block_ready: false,
+            ..Default::default()
+        };
+        // With default config, open risks → ConditionallyReady
+        assert_eq!(
+            ReviewPacket::compute_merge_readiness(
+                Some(TrustVerdict::High),
+                Some(GateVerdict::Pass),
+                Some(BaselineFreshness::Fresh),
+                true,
+            ),
+            MergeReadiness::ConditionallyReady,
+        );
+        // With relaxed config → Ready
+        assert_eq!(
+            ReviewPacket::compute_merge_readiness_with_config(
+                Some(TrustVerdict::High),
+                Some(GateVerdict::Pass),
+                Some(BaselineFreshness::Fresh),
+                true,
+                &cfg,
+            ),
+            MergeReadiness::Ready,
+        );
+    }
+
+    #[test]
+    fn config_aging_baseline_not_blocking_allows_ready() {
+        let cfg = MergeReadinessConfig {
+            aging_baseline_blocks_ready: false,
+            ..Default::default()
+        };
+        // With default: aging → ConditionallyReady
+        assert_eq!(
+            ReviewPacket::compute_merge_readiness(
+                Some(TrustVerdict::High),
+                Some(GateVerdict::Pass),
+                Some(BaselineFreshness::Aging),
+                false,
+            ),
+            MergeReadiness::ConditionallyReady,
+        );
+        // With relaxed config → Ready
+        assert_eq!(
+            ReviewPacket::compute_merge_readiness_with_config(
+                Some(TrustVerdict::High),
+                Some(GateVerdict::Pass),
+                Some(BaselineFreshness::Aging),
+                false,
+                &cfg,
+            ),
+            MergeReadiness::Ready,
+        );
+    }
+
+    #[test]
+    fn config_gate_warn_not_blocking_allows_ready() {
+        let cfg = MergeReadinessConfig {
+            gate_warn_blocks_ready: false,
+            ..Default::default()
+        };
+        // With default: warn → ConditionallyReady
+        assert_eq!(
+            ReviewPacket::compute_merge_readiness(
+                Some(TrustVerdict::High),
+                Some(GateVerdict::Warn),
+                Some(BaselineFreshness::Fresh),
+                false,
+            ),
+            MergeReadiness::ConditionallyReady,
+        );
+        // With relaxed config → Ready
+        assert_eq!(
+            ReviewPacket::compute_merge_readiness_with_config(
+                Some(TrustVerdict::High),
+                Some(GateVerdict::Warn),
+                Some(BaselineFreshness::Fresh),
+                false,
+                &cfg,
+            ),
+            MergeReadiness::Ready,
+        );
+    }
+
+    #[test]
+    fn config_hard_blockers_not_overridable() {
+        let cfg = MergeReadinessConfig {
+            open_risks_block_ready: false,
+            aging_baseline_blocks_ready: false,
+            gate_warn_blocks_ready: false,
+        };
+        // Gate Fail is never configurable
+        assert_eq!(
+            ReviewPacket::compute_merge_readiness_with_config(
+                Some(TrustVerdict::High),
+                Some(GateVerdict::Fail),
+                Some(BaselineFreshness::Fresh),
+                false,
+                &cfg,
+            ),
+            MergeReadiness::NotReady,
+        );
+        // Trust None is never configurable
+        assert_eq!(
+            ReviewPacket::compute_merge_readiness_with_config(
+                Some(TrustVerdict::None),
+                Some(GateVerdict::Pass),
+                Some(BaselineFreshness::Fresh),
+                false,
+                &cfg,
+            ),
+            MergeReadiness::NotReady,
+        );
     }
 }

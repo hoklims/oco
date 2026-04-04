@@ -82,6 +82,13 @@ default_format = "terminal"              # Default output: "terminal", "markdown
 # Uncomment to save review packets to a fixed directory:
 # output_dir = ".oco/reviews"
 
+# Merge readiness heuristic: which signals downgrade Ready → ConditionallyReady.
+# All default to true. Set to false to relax.
+[review.merge_readiness]
+# open_risks_block_ready = true          # Open risks block Ready
+# aging_baseline_blocks_ready = true     # Aging/stale baseline blocks Ready
+# gate_warn_blocks_ready = true          # Gate warnings block Ready
+
 # Baseline promotion (Q11).
 # Promotion uses the [gate] section above for baseline_path and policy.
 # The audit trail is stored at .oco/baseline-history.json (automatic).
