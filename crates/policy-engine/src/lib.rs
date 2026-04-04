@@ -21,7 +21,7 @@ pub mod selector;
 
 pub use budget::{BudgetEnforcer, BudgetReport, BudgetStatus};
 pub use classifier::TaskClassifier;
-pub use gates::{PolicyGate, WritePolicy};
+pub use gates::{GateDecision, PolicyGate, PolicyPackGate, WritePolicy};
 pub use knowledge::KnowledgeBoundaryEstimator;
 pub use scheduler::{SchedulableAction, Schedule, SchedulerError};
 pub use secret_scanner::{SecretScanResult, scan_secrets};

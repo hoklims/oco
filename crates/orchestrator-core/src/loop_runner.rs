@@ -762,6 +762,7 @@ impl OrchestrationLoop {
             has_memory_errors,
             memory_active_count: state.memory.active_count(),
             task_category: state.task_category(),
+            policy_pack: self.config.profile.policy_pack,
         }
     }
 
