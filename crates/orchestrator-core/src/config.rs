@@ -3,7 +3,7 @@ use std::path::Path;
 use oco_shared_types::{
     BaselineDiffSummary, BaselineFreshness, BaselineFreshnessCheck, BaselineHistory, Budget,
     EvalBaseline, GateConfig, GateResult, PromotionRecommendation, PromotionRecord, RepoProfile,
-    ReviewConfig, RunScorecard,
+    ReviewConfig, RunScorecard, ScorecardWeights,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +41,9 @@ pub struct OrchestratorConfig {
     /// Q10: Per-repo review packet configuration (format, auto-save, output dir).
     #[serde(default)]
     pub review: ReviewConfig,
+    /// Per-repo scorecard weight overrides. Falls back to default weights when absent.
+    #[serde(default)]
+    pub scorecard: ScorecardWeights,
 }
 
 impl Default for OrchestratorConfig {
@@ -59,6 +62,7 @@ impl Default for OrchestratorConfig {
             max_steps: 0,
             gate: GateConfig::default(),
             review: ReviewConfig::default(),
+            scorecard: ScorecardWeights::default(),
         }
     }
 }
@@ -97,6 +101,9 @@ impl OrchestratorConfig {
         }
         self.gate.validate().map_err(ConfigError::ValidationError)?;
         self.review
+            .validate()
+            .map_err(ConfigError::ValidationError)?;
+        self.scorecard
             .validate()
             .map_err(ConfigError::ValidationError)?;
         Ok(())
@@ -183,6 +190,19 @@ impl Default for LlmProviderConfig {
             timeout_secs: 60,
         }
     }
+}
+
+/// Load the `[scorecard]` weight overrides from `oco.toml` at the given workspace path.
+///
+/// Returns `ScorecardWeights::default()` (all `None`) if no config file exists.
+/// Returns an error if `oco.toml` exists but is invalid.
+pub fn load_scorecard_weights(workspace: &Path) -> Result<ScorecardWeights, ConfigError> {
+    let config_path = workspace.join("oco.toml");
+    if !config_path.exists() {
+        return Ok(ScorecardWeights::default());
+    }
+    let config = OrchestratorConfig::from_file(&config_path)?;
+    Ok(config.scorecard)
 }
 
 /// Load only the `[gate]` section from an `oco.toml` at the given workspace path.

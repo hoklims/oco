@@ -8,6 +8,65 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// Configurable weights
+// ---------------------------------------------------------------------------
+
+/// Per-dimension weight overrides for scorecard computation.
+///
+/// All fields are optional. When `None`, the dimension's `default_weight()` is used.
+/// Weights must be > 0.0 when provided.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct ScorecardWeights {
+    pub success: Option<f64>,
+    pub trust_verdict: Option<f64>,
+    pub verification_coverage: Option<f64>,
+    pub mission_continuity: Option<f64>,
+    pub cost_efficiency: Option<f64>,
+    pub replan_stability: Option<f64>,
+    pub error_rate: Option<f64>,
+}
+
+impl ScorecardWeights {
+    /// Validate that all provided weights are positive.
+    pub fn validate(&self) -> Result<(), String> {
+        let checks: &[(&str, Option<f64>)] = &[
+            ("success", self.success),
+            ("trust_verdict", self.trust_verdict),
+            ("verification_coverage", self.verification_coverage),
+            ("mission_continuity", self.mission_continuity),
+            ("cost_efficiency", self.cost_efficiency),
+            ("replan_stability", self.replan_stability),
+            ("error_rate", self.error_rate),
+        ];
+        for (name, val) in checks {
+            if let Some(w) = val {
+                if *w <= 0.0 {
+                    return Err(format!(
+                        "scorecard weight '{name}' must be > 0.0, got {w}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve the weight for a dimension: use override if present, else default.
+    pub fn weight_for(&self, dim: ScorecardDimension) -> f64 {
+        let override_val = match dim {
+            ScorecardDimension::Success => self.success,
+            ScorecardDimension::TrustVerdict => self.trust_verdict,
+            ScorecardDimension::VerificationCoverage => self.verification_coverage,
+            ScorecardDimension::MissionContinuity => self.mission_continuity,
+            ScorecardDimension::CostEfficiency => self.cost_efficiency,
+            ScorecardDimension::ReplanStability => self.replan_stability,
+            ScorecardDimension::ErrorRate => self.error_rate,
+        };
+        override_val.unwrap_or_else(|| dim.default_weight())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Dimensions
 // ---------------------------------------------------------------------------
 
@@ -132,12 +191,22 @@ impl RunScorecard {
             .map(|d| d.score)
     }
 
-    /// Compute the weighted overall score from dimension scores.
+    /// Compute the weighted overall score from dimension scores using default weights.
     pub fn compute_overall(dimensions: &[DimensionScore]) -> f64 {
+        Self::compute_overall_with_weights(dimensions, None)
+    }
+
+    /// Compute the weighted overall score with optional per-dimension weight overrides.
+    pub fn compute_overall_with_weights(
+        dimensions: &[DimensionScore],
+        weights: Option<&ScorecardWeights>,
+    ) -> f64 {
         let mut weighted_sum = 0.0;
         let mut weight_total = 0.0;
         for d in dimensions {
-            let w = d.dimension.default_weight();
+            let w = weights
+                .map(|ws| ws.weight_for(d.dimension))
+                .unwrap_or_else(|| d.dimension.default_weight());
             weighted_sum += d.score * w;
             weight_total += w;
         }
@@ -844,5 +913,115 @@ mod tests {
         let agg = RunScorecard::aggregate(&[a, b]).unwrap();
         // Average of 0.4 and 1.0 = 0.7 for all dimensions, so overall = 0.7
         assert!((agg.overall_score - 0.7).abs() < 1e-10);
+    }
+
+    // ── ScorecardWeights ──
+
+    #[test]
+    fn weights_default_is_all_none() {
+        let w = ScorecardWeights::default();
+        assert!(w.success.is_none());
+        assert!(w.error_rate.is_none());
+        assert!(w.validate().is_ok());
+    }
+
+    #[test]
+    fn weights_validate_rejects_zero() {
+        let w = ScorecardWeights {
+            success: Some(0.0),
+            ..Default::default()
+        };
+        assert!(w.validate().is_err());
+    }
+
+    #[test]
+    fn weights_validate_rejects_negative() {
+        let w = ScorecardWeights {
+            cost_efficiency: Some(-1.0),
+            ..Default::default()
+        };
+        assert!(w.validate().is_err());
+    }
+
+    #[test]
+    fn weights_validate_accepts_positive() {
+        let w = ScorecardWeights {
+            success: Some(5.0),
+            trust_verdict: Some(1.0),
+            ..Default::default()
+        };
+        assert!(w.validate().is_ok());
+    }
+
+    #[test]
+    fn weights_weight_for_uses_override() {
+        let w = ScorecardWeights {
+            success: Some(10.0),
+            ..Default::default()
+        };
+        assert!((w.weight_for(ScorecardDimension::Success) - 10.0).abs() < 1e-10);
+        // Non-overridden dimension uses default
+        assert!(
+            (w.weight_for(ScorecardDimension::TrustVerdict)
+                - ScorecardDimension::TrustVerdict.default_weight())
+            .abs()
+                < 1e-10
+        );
+    }
+
+    #[test]
+    fn weights_serde_roundtrip() {
+        let w = ScorecardWeights {
+            success: Some(5.0),
+            replan_stability: Some(2.0),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        let parsed: ScorecardWeights = serde_json::from_str(&json).unwrap();
+        assert_eq!(w, parsed);
+    }
+
+    #[test]
+    fn compute_overall_with_custom_weights() {
+        let scores = vec![
+            DimensionScore {
+                dimension: ScorecardDimension::Success,
+                score: 1.0,
+                detail: "passed".into(),
+            },
+            DimensionScore {
+                dimension: ScorecardDimension::CostEfficiency,
+                score: 0.5,
+                detail: "50% budget".into(),
+            },
+        ];
+        // Custom: Success=1.0, CostEfficiency=1.0 → equal weight
+        let weights = ScorecardWeights {
+            success: Some(1.0),
+            cost_efficiency: Some(1.0),
+            ..Default::default()
+        };
+        let overall = RunScorecard::compute_overall_with_weights(&scores, Some(&weights));
+        // (1.0*1.0 + 0.5*1.0) / (1.0 + 1.0) = 0.75
+        assert!((overall - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compute_overall_with_none_weights_matches_default() {
+        let scores: Vec<(ScorecardDimension, f64, &str)> = ScorecardDimension::all()
+            .iter()
+            .map(|d| (*d, 0.8, "test"))
+            .collect();
+        let dimensions: Vec<DimensionScore> = scores
+            .iter()
+            .map(|(dim, score, detail)| DimensionScore {
+                dimension: *dim,
+                score: *score,
+                detail: detail.to_string(),
+            })
+            .collect();
+        let default_overall = RunScorecard::compute_overall(&dimensions);
+        let weighted_overall = RunScorecard::compute_overall_with_weights(&dimensions, None);
+        assert!((default_overall - weighted_overall).abs() < 1e-10);
     }
 }
