@@ -32,6 +32,69 @@ pub struct RepoProfile {
     pub metadata: HashMap<String, String>,
     /// Per-task-type verification policies.
     pub task_policies: Vec<TaskTypePolicy>,
+    /// Q3: Policy pack governing this repo's trust contract.
+    #[serde(default)]
+    pub policy_pack: PolicyPack,
+}
+
+// ── Q3: Policy Packs ─────────────────────────────────────
+
+/// A named policy pack that governs verification strictness.
+///
+/// Each pack defines which checks are mandatory vs optional,
+/// the minimum verification tier, and whether completion on
+/// stale verification state is allowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyPack {
+    /// Fastest iteration: build-only gate, stale completion allowed.
+    Fast,
+    /// Default: build + test required, stale completion blocked.
+    #[default]
+    Balanced,
+    /// Production-grade: full verification suite, stale blocked,
+    /// sensitive-path changes require thorough tier.
+    Strict,
+}
+
+impl PolicyPack {
+    /// Minimum verification tier enforced by this pack.
+    pub fn minimum_tier(&self) -> crate::VerificationTier {
+        match self {
+            Self::Fast => crate::VerificationTier::Light,
+            Self::Balanced => crate::VerificationTier::Standard,
+            Self::Strict => crate::VerificationTier::Thorough,
+        }
+    }
+
+    /// Strategies that are mandatory (must pass) under this pack.
+    pub fn mandatory_strategies(&self) -> Vec<crate::VerificationStrategy> {
+        use crate::VerificationStrategy;
+        match self {
+            Self::Fast => vec![VerificationStrategy::Build],
+            Self::Balanced => vec![VerificationStrategy::Build, VerificationStrategy::RunTests],
+            Self::Strict => vec![
+                VerificationStrategy::Build,
+                VerificationStrategy::RunTests,
+                VerificationStrategy::Lint,
+                VerificationStrategy::TypeCheck,
+            ],
+        }
+    }
+
+    /// Whether completion on stale verification is allowed.
+    pub fn allows_stale_completion(&self) -> bool {
+        matches!(self, Self::Fast)
+    }
+
+    /// Human-readable label.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Balanced => "balanced",
+            Self::Strict => "strict",
+        }
+    }
 }
 
 /// Verification policy for a specific type of task.
@@ -234,6 +297,29 @@ impl RepoProfile {
         profile
     }
 
+    /// Compute the effective verification tier for a set of changed files,
+    /// taking the policy pack minimum into account.
+    pub fn effective_tier(
+        &self,
+        changed_files: &[impl AsRef<std::path::Path>],
+    ) -> crate::VerificationTier {
+        let detected = crate::TierSelector::select(changed_files);
+        let pack_min = self.policy_pack.minimum_tier();
+        std::cmp::max(detected, pack_min)
+    }
+
+    /// Check whether a completion attempt should be blocked based on
+    /// the current verification freshness and the active policy pack.
+    pub fn should_block_completion(&self, freshness: crate::VerificationFreshness) -> bool {
+        use crate::VerificationFreshness;
+        match freshness {
+            VerificationFreshness::Fresh => false,
+            VerificationFreshness::Partial => !self.policy_pack.allows_stale_completion(),
+            VerificationFreshness::Stale => !self.policy_pack.allows_stale_completion(),
+            VerificationFreshness::None => true, // always block if nothing was verified
+        }
+    }
+
     /// Merge overrides from another profile (e.g. from oco.toml).
     /// Non-empty/non-default values in `other` take precedence.
     pub fn merge(&mut self, other: &RepoProfile) {
@@ -270,6 +356,9 @@ impl RepoProfile {
         }
         for (k, v) in &other.metadata {
             self.metadata.insert(k.clone(), v.clone());
+        }
+        if other.policy_pack != PolicyPack::Balanced {
+            self.policy_pack = other.policy_pack;
         }
     }
 
@@ -365,5 +454,135 @@ mod tests {
         assert!(profile.is_sensitive(".env"));
         assert!(profile.is_sensitive("certs/server.pem"));
         assert!(!profile.is_sensitive("src/main.rs"));
+    }
+
+    // ── Policy pack tests ──
+
+    #[test]
+    fn policy_pack_default_is_balanced() {
+        assert_eq!(PolicyPack::default(), PolicyPack::Balanced);
+    }
+
+    #[test]
+    fn policy_pack_minimum_tier() {
+        use crate::VerificationTier;
+        assert_eq!(PolicyPack::Fast.minimum_tier(), VerificationTier::Light);
+        assert_eq!(
+            PolicyPack::Balanced.minimum_tier(),
+            VerificationTier::Standard
+        );
+        assert_eq!(
+            PolicyPack::Strict.minimum_tier(),
+            VerificationTier::Thorough
+        );
+    }
+
+    #[test]
+    fn policy_pack_mandatory_strategies_count() {
+        assert_eq!(PolicyPack::Fast.mandatory_strategies().len(), 1);
+        assert_eq!(PolicyPack::Balanced.mandatory_strategies().len(), 2);
+        assert_eq!(PolicyPack::Strict.mandatory_strategies().len(), 4);
+    }
+
+    #[test]
+    fn policy_pack_stale_completion() {
+        assert!(PolicyPack::Fast.allows_stale_completion());
+        assert!(!PolicyPack::Balanced.allows_stale_completion());
+        assert!(!PolicyPack::Strict.allows_stale_completion());
+    }
+
+    #[test]
+    fn effective_tier_respects_pack_minimum() {
+        use crate::VerificationTier;
+        let profile = RepoProfile {
+            policy_pack: PolicyPack::Strict,
+            ..Default::default()
+        };
+        // Even docs-only changes get Thorough under strict pack.
+        let files = vec!["README.md"];
+        assert_eq!(profile.effective_tier(&files), VerificationTier::Thorough);
+    }
+
+    #[test]
+    fn effective_tier_detected_can_exceed_pack() {
+        use crate::VerificationTier;
+        let profile = RepoProfile {
+            policy_pack: PolicyPack::Fast,
+            ..Default::default()
+        };
+        // Security files still get Thorough even under fast pack.
+        let files = vec!["src/auth/middleware.rs"];
+        assert_eq!(profile.effective_tier(&files), VerificationTier::Thorough);
+    }
+
+    #[test]
+    fn should_block_completion_fresh_never_blocks() {
+        use crate::VerificationFreshness;
+        let profile = RepoProfile {
+            policy_pack: PolicyPack::Strict,
+            ..Default::default()
+        };
+        assert!(!profile.should_block_completion(VerificationFreshness::Fresh));
+    }
+
+    #[test]
+    fn should_block_completion_stale_blocked_by_balanced() {
+        use crate::VerificationFreshness;
+        let profile = RepoProfile {
+            policy_pack: PolicyPack::Balanced,
+            ..Default::default()
+        };
+        assert!(profile.should_block_completion(VerificationFreshness::Stale));
+    }
+
+    #[test]
+    fn should_block_completion_stale_allowed_by_fast() {
+        use crate::VerificationFreshness;
+        let profile = RepoProfile {
+            policy_pack: PolicyPack::Fast,
+            ..Default::default()
+        };
+        assert!(!profile.should_block_completion(VerificationFreshness::Stale));
+    }
+
+    #[test]
+    fn should_block_completion_none_always_blocks() {
+        use crate::VerificationFreshness;
+        for pack in [PolicyPack::Fast, PolicyPack::Balanced, PolicyPack::Strict] {
+            let profile = RepoProfile {
+                policy_pack: pack,
+                ..Default::default()
+            };
+            assert!(profile.should_block_completion(VerificationFreshness::None));
+        }
+    }
+
+    #[test]
+    fn merge_overrides_policy_pack() {
+        let mut base = RepoProfile::default();
+        assert_eq!(base.policy_pack, PolicyPack::Balanced);
+
+        let strict = RepoProfile {
+            policy_pack: PolicyPack::Strict,
+            ..Default::default()
+        };
+        base.merge(&strict);
+        assert_eq!(base.policy_pack, PolicyPack::Strict);
+    }
+
+    #[test]
+    fn policy_pack_serde_round_trip() {
+        for pack in [PolicyPack::Fast, PolicyPack::Balanced, PolicyPack::Strict] {
+            let json = serde_json::to_string(&pack).unwrap();
+            let parsed: PolicyPack = serde_json::from_str(&json).unwrap();
+            assert_eq!(pack, parsed);
+        }
+    }
+
+    #[test]
+    fn policy_pack_labels() {
+        assert_eq!(PolicyPack::Fast.label(), "fast");
+        assert_eq!(PolicyPack::Balanced.label(), "balanced");
+        assert_eq!(PolicyPack::Strict.label(), "strict");
     }
 }
