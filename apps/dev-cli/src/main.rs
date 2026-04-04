@@ -249,7 +249,7 @@ enum RunsAction {
         /// Output as Markdown
         #[arg(long)]
         markdown: bool,
-        /// Write review packet files to the run directory (or specified dir)
+        /// Write review packet files (relative paths resolve from --workspace)
         #[arg(long)]
         save: Option<Option<String>>,
     },
@@ -1825,6 +1825,26 @@ fn cmd_eval_compare(
     Ok(())
 }
 
+/// Load both gate and review config from `oco.toml` in one pass.
+///
+/// Avoids double-parsing and ensures that a broken `[review]` section is not
+/// mis-attributed to the gate config (or vice versa).  Returns defaults for
+/// both sections when no config file exists.
+fn load_review_pack_config(
+    ws: &Path,
+) -> Result<(oco_shared_types::GateConfig, oco_shared_types::ReviewConfig)> {
+    let config_path = ws.join("oco.toml");
+    if !config_path.exists() {
+        return Ok((
+            oco_shared_types::GateConfig::default(),
+            oco_shared_types::ReviewConfig::default(),
+        ));
+    }
+    let config = oco_orchestrator_core::OrchestratorConfig::from_file(&config_path)
+        .map_err(|e| anyhow::anyhow!("cannot load oco.toml: {e}"))?;
+    Ok((config.gate, config.review))
+}
+
 /// Generate a unified review packet for a run (Q9).
 fn cmd_runs_review_pack(
     r: &mut dyn Renderer,
@@ -1841,10 +1861,7 @@ fn cmd_runs_review_pack(
         .unwrap_or_else(|| id.clone());
 
     let ws = Path::new(&workspace);
-    let gate_cfg = oco_orchestrator_core::load_gate_config_strict(ws)
-        .map_err(|e| anyhow::anyhow!("cannot resolve gate config: {e}"))?;
-    let review_cfg = oco_orchestrator_core::load_review_config_strict(ws)
-        .map_err(|e| anyhow::anyhow!("cannot resolve review config: {e}"))?;
+    let (gate_cfg, review_cfg) = load_review_pack_config(ws)?;
 
     let packet = oco_orchestrator_core::build_review_packet(&run_dir, &run_id, &gate_cfg, ws)?;
 
@@ -1910,9 +1927,13 @@ fn cmd_runs_review_pack(
 
     // Save to disk if saving was resolved
     if let Some(save_dir) = effective_save {
-        // Resolve target directory: explicit --save <dir> > config output_dir > run_dir
+        // Resolve target directory: explicit --save <dir> > config output_dir > run_dir.
+        // Relative paths are always resolved from the workspace root (--workspace).
         let target_dir = match save_dir {
-            Some(dir) => PathBuf::from(dir),
+            Some(dir) => {
+                let p = PathBuf::from(&dir);
+                if p.is_absolute() { p } else { ws.join(p) }
+            }
             None => match review_cfg.output_dir {
                 Some(ref dir) => ws.join(dir),
                 None => run_dir.clone(),

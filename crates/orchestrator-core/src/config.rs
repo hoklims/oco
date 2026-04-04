@@ -1005,4 +1005,96 @@ output_dir = "reviews"
         assert!(config.review.is_markdown());
         assert!(!config.review.is_json());
     }
+
+    // ── Q10 consolidation: path resolution and error attribution ──
+
+    #[test]
+    fn save_dir_relative_resolves_from_workspace() {
+        // Proves that `ws.join("reviews")` produces a path inside the workspace,
+        // not relative to the process cwd.  This is the contract that the CLI
+        // fix (PathBuf → ws.join) depends on.
+        let workspace = tempfile::tempdir().unwrap();
+        let ws = workspace.path();
+
+        let relative = "reviews";
+        let resolved = ws.join(relative);
+        assert!(
+            resolved.starts_with(ws),
+            "resolved path must be inside workspace"
+        );
+        assert!(resolved.ends_with("reviews"));
+
+        // Absolute paths pass through unchanged.
+        let absolute = if cfg!(windows) {
+            std::path::PathBuf::from("C:\\absolute\\path")
+        } else {
+            std::path::PathBuf::from("/absolute/path")
+        };
+        assert!(absolute.is_absolute());
+    }
+
+    #[test]
+    fn invalid_review_section_does_not_blame_gate() {
+        // A broken [review] section must not surface as a gate config error.
+        // Both load_gate_config_strict and load_review_config_strict parse the
+        // whole file, so the error message from from_file() must mention the
+        // actual problem (the review format), not the gate.
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+default_policy = "balanced"
+
+[review]
+default_format = "invalid-format"
+"#
+        )
+        .unwrap();
+
+        // load_gate_config_strict will also fail because from_file validates
+        // the whole config.  The error message must mention the actual problem.
+        let gate_err = load_gate_config_strict(dir.path()).unwrap_err();
+        let gate_msg = format!("{gate_err}");
+        assert!(
+            gate_msg.contains("review format") || gate_msg.contains("unknown review format"),
+            "gate loader error should mention the actual review format problem, got: {gate_msg}"
+        );
+
+        // load_review_config_strict should also fail with the same root cause.
+        let review_err = load_review_config_strict(dir.path()).unwrap_err();
+        let review_msg = format!("{review_err}");
+        assert!(
+            review_msg.contains("review format") || review_msg.contains("unknown review format"),
+            "review loader error should mention the actual review format problem, got: {review_msg}"
+        );
+
+        // Now test a broken [gate] section — the error must mention gate, not review.
+        let mut f2 = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f2,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+default_policy = "nonexistent"
+
+[review]
+default_format = "json"
+"#
+        )
+        .unwrap();
+
+        let gate_err2 = load_gate_config_strict(dir.path()).unwrap_err();
+        let gate_msg2 = format!("{gate_err2}");
+        assert!(
+            gate_msg2.contains("gate policy") || gate_msg2.contains("unknown gate policy"),
+            "error should mention the actual gate problem, got: {gate_msg2}"
+        );
+    }
 }

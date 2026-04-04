@@ -19,6 +19,8 @@
 #
 # Then simply: ./ci-review-pack.sh
 # Or without config: ./ci-review-pack.sh last ./review-artifacts
+#
+# Note: relative paths passed to --save resolve from --workspace (default: .).
 
 set -euo pipefail
 
