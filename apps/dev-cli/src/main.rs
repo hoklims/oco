@@ -1844,13 +1844,10 @@ fn cmd_runs_review_pack(
     let gate_cfg = oco_orchestrator_core::load_gate_config_strict(ws)
         .unwrap_or_else(|_| oco_shared_types::GateConfig::default());
 
-    let packet =
-        oco_orchestrator_core::build_review_packet(&run_dir, &run_id, &gate_cfg, ws)?;
+    let packet = oco_orchestrator_core::build_review_packet(&run_dir, &run_id, &gate_cfg, ws)?;
 
     if json_output {
-        let json = packet
-            .to_json()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let json = packet.to_json().map_err(|e| anyhow::anyhow!("{e}"))?;
         r.emit(UiEvent::Info { message: json });
     } else if markdown_output {
         r.emit(UiEvent::Info {

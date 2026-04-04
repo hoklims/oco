@@ -210,14 +210,12 @@ impl ReviewPacket {
         baseline_freshness: Option<BaselineFreshnessCheck>,
     ) -> Self {
         // Extract trust verdict from multiple sources (prefer mission, fall back to scorecard dim)
-        let trust_verdict = mission
-            .map(|m| m.trust_verdict)
-            .or_else(|| {
-                scorecard.as_ref().and_then(|sc| {
-                    sc.dimension_score(crate::ScorecardDimension::TrustVerdict)
-                        .map(trust_from_score)
-                })
-            });
+        let trust_verdict = mission.map(|m| m.trust_verdict).or_else(|| {
+            scorecard.as_ref().and_then(|sc| {
+                sc.dimension_score(crate::ScorecardDimension::TrustVerdict)
+                    .map(trust_from_score)
+            })
+        });
 
         let gate_verdict = gate_result.as_ref().map(|gr| gr.verdict);
         let freshness_classification = baseline_freshness.as_ref().map(|bf| bf.freshness);
@@ -227,9 +225,7 @@ impl ReviewPacket {
             modified_files: mission
                 .map(|m| m.modified_files.clone())
                 .unwrap_or_default(),
-            key_decisions: mission
-                .map(|m| m.key_decisions.clone())
-                .unwrap_or_default(),
+            key_decisions: mission.map(|m| m.key_decisions.clone()).unwrap_or_default(),
             narrative: mission
                 .filter(|m| !m.narrative.is_empty())
                 .map(|m| m.narrative.clone()),
@@ -430,12 +426,11 @@ impl ReviewPacket {
         }
 
         // Gate detail (if present)
-        if let Some(ref gr) = self.gate_result {
-            if !gr.reasons.is_empty() {
-                let items: Vec<String> =
-                    gr.reasons.iter().map(|r| format!("  - {r}")).collect();
-                sections.push(format!("GATE REASONS:\n{}", items.join("\n")));
-            }
+        if let Some(ref gr) = self.gate_result
+            && !gr.reasons.is_empty()
+        {
+            let items: Vec<String> = gr.reasons.iter().map(|r| format!("  - {r}")).collect();
+            sections.push(format!("GATE REASONS:\n{}", items.join("\n")));
         }
 
         sections.join("\n\n")
@@ -553,12 +548,12 @@ impl ReviewPacket {
         }
 
         // Gate detail
-        if let Some(ref gr) = self.gate_result {
-            if !gr.reasons.is_empty() {
-                md.push_str("\n## Gate Reasons\n\n");
-                for r in &gr.reasons {
-                    md.push_str(&format!("- {r}\n"));
-                }
+        if let Some(ref gr) = self.gate_result
+            && !gr.reasons.is_empty()
+        {
+            md.push_str("\n## Gate Reasons\n\n");
+            for r in &gr.reasons {
+                md.push_str(&format!("- {r}\n"));
             }
         }
 
@@ -589,8 +584,7 @@ impl ReviewPacket {
     /// Save Markdown to a file.
     pub fn save_markdown(&self, path: &std::path::Path) -> Result<(), String> {
         let md = self.to_markdown();
-        std::fs::write(path, md)
-            .map_err(|e| format!("failed to write markdown review packet: {e}"))
+        std::fs::write(path, md).map_err(|e| format!("failed to write markdown review packet: {e}"))
     }
 }
 
@@ -618,9 +612,7 @@ fn trust_from_score(score: f64) -> TrustVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        CostMetrics, DimensionScore, GatePolicy, ScorecardDimension,
-    };
+    use crate::{CostMetrics, DimensionScore, GatePolicy, ScorecardDimension};
 
     fn sample_scorecard() -> RunScorecard {
         let dimensions: Vec<DimensionScore> = ScorecardDimension::all()
@@ -682,7 +674,10 @@ mod tests {
     #[test]
     fn merge_readiness_labels() {
         assert_eq!(MergeReadiness::Ready.label(), "ready");
-        assert_eq!(MergeReadiness::ConditionallyReady.label(), "conditionally_ready");
+        assert_eq!(
+            MergeReadiness::ConditionallyReady.label(),
+            "conditionally_ready"
+        );
         assert_eq!(MergeReadiness::NotReady.label(), "not_ready");
         assert_eq!(MergeReadiness::Unknown.label(), "unknown");
     }
@@ -831,12 +826,7 @@ mod tests {
     #[test]
     fn readiness_no_gate_but_good_trust_is_ready() {
         assert_eq!(
-            ReviewPacket::compute_merge_readiness(
-                Some(TrustVerdict::High),
-                None,
-                None,
-                false,
-            ),
+            ReviewPacket::compute_merge_readiness(Some(TrustVerdict::High), None, None, false,),
             MergeReadiness::Ready,
         );
     }
@@ -848,12 +838,7 @@ mod tests {
         let sc = sample_scorecard();
         let mission = sample_mission();
         let gate = sample_gate_result();
-        let freshness = BaselineFreshnessCheck::evaluate(
-            Utc::now(),
-            Utc::now(),
-            None,
-            None,
-        );
+        let freshness = BaselineFreshnessCheck::evaluate(Utc::now(), Utc::now(), None, None);
 
         let packet = ReviewPacket::build(
             "test-run".to_string(),
@@ -879,13 +864,7 @@ mod tests {
 
     #[test]
     fn build_minimal_packet() {
-        let packet = ReviewPacket::build(
-            "minimal".to_string(),
-            None,
-            None,
-            None,
-            None,
-        );
+        let packet = ReviewPacket::build("minimal".to_string(), None, None, None, None);
 
         assert_eq!(packet.merge_readiness, MergeReadiness::Unknown);
         assert!(packet.trust_verdict.is_none());
@@ -899,13 +878,7 @@ mod tests {
     #[test]
     fn build_scorecard_only() {
         let sc = sample_scorecard();
-        let packet = ReviewPacket::build(
-            "sc-only".to_string(),
-            Some(sc),
-            None,
-            None,
-            None,
-        );
+        let packet = ReviewPacket::build("sc-only".to_string(), Some(sc), None, None, None);
 
         // Trust derived from scorecard dimension score (0.8 → Medium)
         assert_eq!(packet.trust_verdict, Some(TrustVerdict::Medium));

@@ -776,10 +776,9 @@ impl Renderer for TerminalRenderer {
                     "not_ready" => style(&merge_readiness).red().bold(),
                     _ => style(&merge_readiness).dim(),
                 };
-                let _ = self.term.write_line(&format!(
-                    "    Merge readiness: {}",
-                    readiness_styled,
-                ));
+                let _ = self
+                    .term
+                    .write_line(&format!("    Merge readiness: {}", readiness_styled,));
                 if let Some(tv) = trust_verdict {
                     let tv_styled = match tv.as_str() {
                         "high" => style(&tv).green(),
@@ -810,10 +809,9 @@ impl Renderer for TerminalRenderer {
                     style(format!("{overall_score:.2}")).bold(),
                 ));
                 for (dim, score) in dimensions {
-                    let _ = self.term.write_line(&format!(
-                        "      {:<24} {:.2}",
-                        dim, score,
-                    ));
+                    let _ = self
+                        .term
+                        .write_line(&format!("      {:<24} {:.2}", dim, score,));
                 }
             }
 
@@ -833,10 +831,9 @@ impl Renderer for TerminalRenderer {
                     }
                 }
                 if !key_decisions.is_empty() {
-                    let _ = self.term.write_line(&format!(
-                        "\n    {} Key decisions",
-                        self.icon_bullet(),
-                    ));
+                    let _ = self
+                        .term
+                        .write_line(&format!("\n    {} Key decisions", self.icon_bullet(),));
                     for d in &key_decisions {
                         let _ = self.term.write_line(&format!("      - {d}"));
                     }
@@ -855,31 +852,24 @@ impl Renderer for TerminalRenderer {
                 open_questions,
                 unavailable_data,
             } => {
-                if !risks.is_empty() || !open_questions.is_empty() || !unavailable_data.is_empty()
-                {
+                if !risks.is_empty() || !open_questions.is_empty() || !unavailable_data.is_empty() {
                     let _ = self
                         .term
                         .write_line(&format!("\n    {} Open risks", self.icon_bullet()));
                     for r in &risks {
-                        let _ = self.term.write_line(&format!(
-                            "      {} {}",
-                            style("!").red(),
-                            r,
-                        ));
+                        let _ = self
+                            .term
+                            .write_line(&format!("      {} {}", style("!").red(), r,));
                     }
                     for q in &open_questions {
-                        let _ = self.term.write_line(&format!(
-                            "      {} {}",
-                            style("?").yellow(),
-                            q,
-                        ));
+                        let _ =
+                            self.term
+                                .write_line(&format!("      {} {}", style("?").yellow(), q,));
                     }
                     for u in &unavailable_data {
-                        let _ = self.term.write_line(&format!(
-                            "      {} {}",
-                            style("~").dim(),
-                            u,
-                        ));
+                        let _ = self
+                            .term
+                            .write_line(&format!("      {} {}", style("~").dim(), u,));
                     }
                 }
             }

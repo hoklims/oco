@@ -36,8 +36,7 @@ pub fn build_review_packet(
     let mission = load_mission(run_dir);
 
     // 3. Evaluate gate (if scorecard and baseline are both available)
-    let (gate_result, baseline_freshness) =
-        evaluate_gate(&scorecard, gate_config, workspace);
+    let (gate_result, baseline_freshness) = evaluate_gate(&scorecard, gate_config, workspace);
 
     Ok(ReviewPacket::build(
         run_id.to_string(),
@@ -54,12 +53,11 @@ pub fn build_review_packet(
 fn load_scorecard(run_dir: &Path, run_id: &str) -> Option<RunScorecard> {
     // Try scorecard.json first
     let scorecard_path = run_dir.join("scorecard.json");
-    if scorecard_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&scorecard_path) {
-            if let Ok(sc) = serde_json::from_str::<RunScorecard>(&content) {
-                return Some(sc);
-            }
-        }
+    if scorecard_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&scorecard_path)
+        && let Ok(sc) = serde_json::from_str::<RunScorecard>(&content)
+    {
+        return Some(sc);
     }
 
     // Fall back to reconstructing from summary.json
@@ -90,22 +88,22 @@ fn load_scorecard(run_dir: &Path, run_id: &str) -> Option<RunScorecard> {
 
     // Mission memory enrichment
     let mission_path = run_dir.join("mission.json");
-    if mission_path.exists() {
-        if let Ok(mission) = MissionMemory::load_from(&mission_path) {
-            builder = builder.with_mission_memory(&mission);
-        }
+    if mission_path.exists()
+        && let Ok(mission) = MissionMemory::load_from(&mission_path)
+    {
+        builder = builder.with_mission_memory(&mission);
     }
 
     // Replan count from trace
     let trace_path = run_dir.join("trace.jsonl");
-    if trace_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&trace_path) {
-            let replan_count = content
-                .lines()
-                .filter(|line| line.contains("ReplanTriggered"))
-                .count() as u32;
-            builder = builder.replans(replan_count);
-        }
+    if trace_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&trace_path)
+    {
+        let replan_count = content
+            .lines()
+            .filter(|line| line.contains("ReplanTriggered"))
+            .count() as u32;
+        builder = builder.replans(replan_count);
     }
 
     Some(builder.build())
@@ -149,28 +147,27 @@ fn evaluate_gate(
     };
 
     // Try EvalBaseline first
-    let (baseline_sc, freshness) = if value.get("scorecard").is_some()
-        && value.get("name").is_some()
-    {
-        match serde_json::from_value::<EvalBaseline>(value) {
-            Ok(eb) => {
-                let fc = BaselineFreshnessCheck::from_baseline(
-                    &eb,
-                    gate_config.fresh_days,
-                    gate_config.stale_days,
-                );
-                (eb.scorecard, Some(fc))
+    let (baseline_sc, freshness) =
+        if value.get("scorecard").is_some() && value.get("name").is_some() {
+            match serde_json::from_value::<EvalBaseline>(value) {
+                Ok(eb) => {
+                    let fc = BaselineFreshnessCheck::from_baseline(
+                        &eb,
+                        gate_config.fresh_days,
+                        gate_config.stale_days,
+                    );
+                    (eb.scorecard, Some(fc))
+                }
+                Err(_) => return (None, None),
             }
-            Err(_) => return (None, None),
-        }
-    } else if value.get("run_id").is_some() && value.get("dimensions").is_some() {
-        match serde_json::from_value::<RunScorecard>(value) {
-            Ok(raw_sc) => (raw_sc, Some(BaselineFreshnessCheck::unknown())),
-            Err(_) => return (None, None),
-        }
-    } else {
-        return (None, None);
-    };
+        } else if value.get("run_id").is_some() && value.get("dimensions").is_some() {
+            match serde_json::from_value::<RunScorecard>(value) {
+                Ok(raw_sc) => (raw_sc, Some(BaselineFreshnessCheck::unknown())),
+                Err(_) => return (None, None),
+            }
+        } else {
+            return (None, None);
+        };
 
     let policy = gate_config.resolve_policy();
     let gate_result = GateResult::evaluate(&baseline_sc, sc, &policy);
@@ -346,10 +343,7 @@ mod tests {
 
         let sc = load_scorecard(&dir, "fallback-run").unwrap();
         assert_eq!(sc.run_id, "fallback-run");
-        assert_eq!(
-            sc.dimension_score(ScorecardDimension::Success),
-            Some(1.0)
-        );
+        assert_eq!(sc.dimension_score(ScorecardDimension::Success), Some(1.0));
 
         std::fs::remove_dir_all(&dir).ok();
     }
