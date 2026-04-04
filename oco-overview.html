@@ -1608,7 +1608,7 @@
 
       <div class="warn-item" style="border-left-color: var(--green);">
         <h4><span style="color: var(--green);">FERME</span> — Poids de scorecard non configurables</h4>
-        <p><code>ScorecardWeights</code> dans <code>[scorecard]</code> de <code>oco.toml</code>. Fallback strict sur les poids par defaut. 8 tests.</p>
+        <p><code>ScorecardWeights</code> dans <code>[scorecard]</code> de <code>oco.toml</code>. Branche dans <code>ScorecardBuilder::build()</code> et <code>review-pack</code>. Fallback strict sur les poids par defaut. 12 tests.</p>
       </div>
 
       <div class="warn-item" style="border-left-color: var(--after);">
@@ -1623,7 +1623,7 @@
 
       <div class="warn-item" style="border-left-color: var(--green);">
         <h4><span style="color: var(--green);">FERME</span> — MergeReadiness non configurable</h4>
-        <p><code>MergeReadinessConfig</code> dans <code>[review.merge_readiness]</code> : 3 toggles booleens. Blocages durs non configurables. 6 tests.</p>
+        <p><code>MergeReadinessConfig</code> dans <code>[review.merge_readiness]</code> : 3 toggles booleens. Branche dans <code>ReviewPacket::build_with_config()</code> et <code>review-pack</code> CLI. Blocages durs non configurables. 8 tests.</p>
       </div>
 
       <div class="warn-item" style="border-left-color: var(--green);">
