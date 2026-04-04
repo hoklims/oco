@@ -519,9 +519,10 @@ pub async fn hook_file_changed(
 
 /// `POST /api/v1/hooks/post-compact` — called after Claude Code compacts context.
 ///
-/// Re-injects a compact snapshot of the session's working memory so that
-/// verified facts, active hypotheses, plan state, and open questions survive
-/// context compaction.
+/// Creates a typed [`CompactSnapshot`] from the session's working memory,
+/// stores it on the session for later retrieval via
+/// `GET /api/sessions/:id/snapshot`, and returns a human-readable
+/// reinjection text so Claude Code can preserve critical context.
 pub async fn hook_post_compact(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<HookPayload>,
@@ -535,26 +536,35 @@ pub async fn hook_post_compact(
         "hook: post-compact — context compaction detected"
     );
 
-    // Try to retrieve a compact snapshot from the active session
-    let snapshot = match resolve_oco_session_id(&state, payload.session_id.as_deref()).await {
-        Some(oco_sid) => state.session_manager.get_compact_snapshot(&oco_sid).await,
+    // Resolve the OCO session and create a typed CompactSnapshot
+    let oco_sid = resolve_oco_session_id(&state, payload.session_id.as_deref()).await;
+
+    let typed_snapshot = match oco_sid.as_deref() {
+        Some(sid) => {
+            state
+                .session_manager
+                .create_and_store_compact_snapshot(sid)
+                .await
+        }
         None => None,
     };
 
-    match snapshot {
-        Some(snap) => {
-            let message = format!(
-                "OCO context to preserve after compact:\n{}",
-                serde_json::to_string_pretty(&snap).unwrap_or_default()
-            );
+    match typed_snapshot {
+        Some(snap) if snap.has_content() => {
+            let reinjection_text = snap.to_reinjection_text();
             debug!(
                 session = ?payload.session_id,
-                snapshot_keys = ?snap.as_object().map(|o| o.keys().collect::<Vec<_>>()),
-                "post-compact: re-injecting working memory snapshot"
+                facts = snap.verified_facts.len(),
+                hypotheses = snap.hypotheses.len(),
+                plan_steps = snap.plan.len(),
+                "post-compact: re-injecting typed snapshot"
             );
-            (StatusCode::OK, Json(HookResponse::ok_with_message(message)))
+            (
+                StatusCode::OK,
+                Json(HookResponse::ok_with_message(reinjection_text)),
+            )
         }
-        None => (StatusCode::OK, Json(HookResponse::ok())),
+        _ => (StatusCode::OK, Json(HookResponse::ok())),
     }
 }
 

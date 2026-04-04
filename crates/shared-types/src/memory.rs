@@ -116,7 +116,7 @@ impl CompactSnapshot {
         let unverified_files: Vec<String> = verification
             .modified_files
             .iter()
-            .filter(|(_, mod_time)| last_verify_ts.map_or(true, |vt| **mod_time > vt))
+            .filter(|(_, mod_time)| last_verify_ts.is_none_or(|vt| **mod_time > vt))
             .map(|(path, _)| path.clone())
             .collect();
 
@@ -145,6 +145,15 @@ impl CompactSnapshot {
                 .collect(),
             created_at: Utc::now(),
         }
+    }
+
+    /// True if the snapshot contains any meaningful content worth reinjecting.
+    pub fn has_content(&self) -> bool {
+        !self.verified_facts.is_empty()
+            || !self.hypotheses.is_empty()
+            || !self.questions.is_empty()
+            || !self.plan.is_empty()
+            || self.planner_state.is_some()
     }
 
     /// Render as a compact text block suitable for context reinjection.

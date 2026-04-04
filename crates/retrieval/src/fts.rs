@@ -165,16 +165,6 @@ impl FtsIndex {
         Ok(())
     }
 
-    /// Record that a file was indexed at a given modification time.
-    fn record_indexed(conn: &Connection, path: &str, mtime_secs: i64) -> Result<()> {
-        conn.execute(
-            "INSERT OR REPLACE INTO index_meta (path, mtime_secs, indexed_at)
-             VALUES (?1, ?2, datetime('now'))",
-            rusqlite::params![path, mtime_secs],
-        )?;
-        Ok(())
-    }
-
     /// Check which files in the workspace need re-indexing.
     ///
     /// Returns `(to_index, to_remove)`:
@@ -252,7 +242,7 @@ impl FtsIndex {
             let mut del_doc = tx.prepare("DELETE FROM documents WHERE path = ?1")?;
             let mut del_meta = tx.prepare("DELETE FROM index_meta WHERE path = ?1")?;
             for path in paths {
-                count += del_doc.execute([path])? as usize;
+                count += del_doc.execute([path])?;
                 del_meta.execute([path])?;
             }
         }

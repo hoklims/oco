@@ -104,6 +104,14 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/api/v1/sessions/{session_id}/hooks",
             get(get_session_hooks),
         )
+        .route(
+            "/api/v1/sessions/{session_id}/summary",
+            get(get_session_summary),
+        )
+        .route(
+            "/api/v1/sessions/{session_id}/snapshot",
+            get(get_session_snapshot),
+        )
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/index", post(index_workspace))
         .route("/api/v1/search", post(search_workspace))
@@ -243,6 +251,44 @@ async fn get_session_hooks(
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// `GET /api/v1/sessions/{id}/summary` — get a high-level run summary.
+async fn get_session_summary(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state.session_manager.get_run_summary(&session_id).await {
+        Some(summary) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(summary).unwrap_or_default()),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("session not found: {session_id}") })),
+        ),
+    }
+}
+
+/// `GET /api/v1/sessions/{id}/snapshot` — get the latest compact snapshot.
+async fn get_session_snapshot(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state
+        .session_manager
+        .get_typed_compact_snapshot(&session_id)
+        .await
+    {
+        Some(snapshot) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(snapshot).unwrap_or_default()),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("no snapshot for session: {session_id}") })),
         ),
     }
 }
