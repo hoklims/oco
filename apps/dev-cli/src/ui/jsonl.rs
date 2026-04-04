@@ -316,6 +316,14 @@ impl Renderer for JsonlRenderer {
                 }),
             ),
 
+            UiEvent::PolicyPackActive { pack } => {
+                self.emit_json("policy_pack_active", serde_json::json!({ "pack": pack }))
+            }
+            UiEvent::TrustVerdictFinal { verdict, freshness } => self.emit_json(
+                "trust_verdict_final",
+                serde_json::json!({ "verdict": verdict, "freshness": freshness }),
+            ),
+
             UiEvent::Info { message } => {
                 self.emit_json("info", serde_json::json!({ "message": message }))
             }

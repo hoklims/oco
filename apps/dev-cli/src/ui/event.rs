@@ -171,6 +171,17 @@ pub enum UiEvent {
         messages: u32,
     },
 
+    // ── Trust & Policy ────────────────────────────────────
+    /// The active policy pack for this run.
+    PolicyPackActive {
+        pack: String,
+    },
+    /// Final trust verdict at end of run.
+    TrustVerdictFinal {
+        verdict: String,
+        freshness: String,
+    },
+
     // ── Generic ───────────────────────────────────────────
     Info {
         message: String,

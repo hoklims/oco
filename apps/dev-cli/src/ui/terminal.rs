@@ -565,6 +565,33 @@ impl Renderer for TerminalRenderer {
                 ));
             }
 
+            // ── Trust & Policy ────────────────────────────
+            UiEvent::PolicyPackActive { pack } => {
+                let _ = self.term.write_line(&format!(
+                    "  {} Policy: {}",
+                    self.icon_bullet(),
+                    style(&pack).cyan().bold(),
+                ));
+            }
+
+            UiEvent::TrustVerdictFinal { verdict, freshness } => {
+                let _ = self.term.write_line("");
+                // Map verdict string to symbol + style
+                let (symbol, verdict_styled) = match verdict.as_str() {
+                    "high" => ("\u{2705}", style(&verdict).green().bold()),
+                    "medium" => ("\u{26a0}", style(&verdict).yellow().bold()),
+                    "low" => ("\u{274c}", style(&verdict).red().bold()),
+                    _ => ("\u{2753}", style(&verdict).dim()),
+                };
+                let symbol_display = if self.use_unicode { symbol } else { "" };
+                let _ = self.term.write_line(&format!(
+                    "  Trust: {} {} (freshness: {})",
+                    symbol_display,
+                    verdict_styled,
+                    style(&freshness).dim(),
+                ));
+            }
+
             // ── Generic ───────────────────────────────────
             UiEvent::Info { message } => {
                 let _ = self.term.write_line(&message);

@@ -1,8 +1,9 @@
 use std::sync::Mutex;
 
 use oco_shared_types::{
-    DecisionTrace, InterventionOutcome, InterventionSummary, SessionId, TelemetryEvent,
-    TelemetryEventType,
+    DecisionTrace, InterventionOutcome, InterventionSummary, PolicyPack, RunCheckSummary,
+    RunSummary, SessionId, TaskComplexity, TelemetryEvent, TelemetryEventType, TrustVerdict,
+    VerificationState,
 };
 
 /// Thread-safe collector for decision traces and telemetry events.
@@ -131,6 +132,244 @@ impl Default for DecisionTraceCollector {
     }
 }
 
+// ── RunSummaryBuilder ────────────────────────────────────
+
+/// Builds a [`RunSummary`] from orchestration artifacts (traces, verification state, etc.).
+pub struct RunSummaryBuilder {
+    session_id: SessionId,
+    request: String,
+    complexity: TaskComplexity,
+    policy_pack: PolicyPack,
+    verification_state: VerificationState,
+    risks: Vec<String>,
+    key_decisions: Vec<String>,
+    total_steps: u32,
+    total_tokens: u64,
+    total_duration_ms: u64,
+    replans: u32,
+}
+
+impl RunSummaryBuilder {
+    /// Create a new builder with required fields.
+    pub fn new(session_id: SessionId, request: String) -> Self {
+        Self {
+            session_id,
+            request,
+            complexity: TaskComplexity::Medium,
+            policy_pack: PolicyPack::default(),
+            verification_state: VerificationState::default(),
+            risks: Vec::new(),
+            key_decisions: Vec::new(),
+            total_steps: 0,
+            total_tokens: 0,
+            total_duration_ms: 0,
+            replans: 0,
+        }
+    }
+
+    /// Set the task complexity.
+    pub fn complexity(mut self, complexity: TaskComplexity) -> Self {
+        self.complexity = complexity;
+        self
+    }
+
+    /// Set the policy pack used for this run.
+    pub fn policy_pack(mut self, pack: PolicyPack) -> Self {
+        self.policy_pack = pack;
+        self
+    }
+
+    /// Set the verification state to derive file coverage and freshness.
+    pub fn verification_state(mut self, state: VerificationState) -> Self {
+        self.verification_state = state;
+        self
+    }
+
+    /// Add a risk note.
+    pub fn risk(mut self, risk: impl Into<String>) -> Self {
+        self.risks.push(risk.into());
+        self
+    }
+
+    /// Add a key decision.
+    pub fn decision(mut self, decision: impl Into<String>) -> Self {
+        self.key_decisions.push(decision.into());
+        self
+    }
+
+    /// Set run metrics.
+    pub fn metrics(mut self, steps: u32, tokens: u64, duration_ms: u64, replans: u32) -> Self {
+        self.total_steps = steps;
+        self.total_tokens = tokens;
+        self.total_duration_ms = duration_ms;
+        self.replans = replans;
+        self
+    }
+
+    /// Build the final [`RunSummary`], computing derived fields automatically.
+    pub fn build(self) -> RunSummary {
+        let files_modified: Vec<String> = self
+            .verification_state
+            .modified_files
+            .keys()
+            .cloned()
+            .collect();
+
+        // Determine which files are verified vs unverified
+        let mut files_verified = Vec::new();
+        let mut files_unverified = Vec::new();
+        for f in &files_modified {
+            let covered = self
+                .verification_state
+                .runs
+                .iter()
+                .any(|run| run.covered_files.is_empty() || run.covered_files.contains(f));
+            if covered {
+                files_verified.push(f.clone());
+            } else {
+                files_unverified.push(f.clone());
+            }
+        }
+
+        // If no runs exist, all modified files are unverified
+        if self.verification_state.runs.is_empty() {
+            files_unverified = files_modified.clone();
+            files_verified.clear();
+        }
+
+        let freshness = self.verification_state.freshness();
+
+        let mandatory_strats = self.policy_pack.mandatory_strategies();
+        let checks_run: Vec<RunCheckSummary> = self
+            .verification_state
+            .runs
+            .iter()
+            .map(|run| {
+                let is_mandatory = mandatory_strats
+                    .iter()
+                    .any(|s| format!("{s:?}").to_lowercase() == run.strategy);
+                RunCheckSummary {
+                    strategy: run.strategy.clone(),
+                    passed: run.passed,
+                    duration_ms: run.duration_ms,
+                    mandatory: is_mandatory,
+                }
+            })
+            .collect();
+
+        let all_mandatory_passed = checks_run.iter().filter(|c| c.mandatory).all(|c| c.passed);
+
+        let has_unverified_sensitive = false; // TODO: check against profile.sensitive_paths
+
+        let trust_verdict =
+            TrustVerdict::compute(freshness, all_mandatory_passed, has_unverified_sensitive);
+
+        RunSummary {
+            session_id: self.session_id,
+            request: self.request,
+            complexity: self.complexity,
+            policy_pack: self.policy_pack,
+            total_steps: self.total_steps,
+            total_tokens: self.total_tokens,
+            total_duration_ms: self.total_duration_ms,
+            files_modified,
+            files_verified,
+            files_unverified,
+            verification_freshness: freshness,
+            checks_run,
+            replans: self.replans,
+            key_decisions: self.key_decisions,
+            trust_verdict,
+            risks: self.risks,
+        }
+    }
+
+    /// Build and serialize to JSON. Returns `Err` on serialization failure.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        let summary = Self {
+            session_id: self.session_id,
+            request: self.request.clone(),
+            complexity: self.complexity,
+            policy_pack: self.policy_pack,
+            verification_state: self.verification_state.clone(),
+            risks: self.risks.clone(),
+            key_decisions: self.key_decisions.clone(),
+            total_steps: self.total_steps,
+            total_tokens: self.total_tokens,
+            total_duration_ms: self.total_duration_ms,
+            replans: self.replans,
+        }
+        .build();
+        serde_json::to_string_pretty(&summary)
+    }
+
+    /// Build and format as human-readable text.
+    pub fn to_text(&self) -> String {
+        let summary = Self {
+            session_id: self.session_id,
+            request: self.request.clone(),
+            complexity: self.complexity,
+            policy_pack: self.policy_pack,
+            verification_state: self.verification_state.clone(),
+            risks: self.risks.clone(),
+            key_decisions: self.key_decisions.clone(),
+            total_steps: self.total_steps,
+            total_tokens: self.total_tokens,
+            total_duration_ms: self.total_duration_ms,
+            replans: self.replans,
+        }
+        .build();
+        summary_to_text(&summary)
+    }
+}
+
+/// Format a [`RunSummary`] as human-readable text.
+pub fn summary_to_text(summary: &RunSummary) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Run Summary ({})", summary.session_id.0));
+    lines.push(format!("  Request:    {}", summary.request));
+    lines.push(format!("  Complexity: {:?}", summary.complexity));
+    lines.push(format!("  Policy:     {}", summary.policy_pack.label()));
+    lines.push(format!(
+        "  Modified:   {} file(s)",
+        summary.files_modified.len()
+    ));
+    lines.push(format!(
+        "  Verified:   {} file(s)",
+        summary.files_verified.len()
+    ));
+    if !summary.files_unverified.is_empty() {
+        lines.push(format!(
+            "  Unverified: {} file(s) — {}",
+            summary.files_unverified.len(),
+            summary.files_unverified.join(", ")
+        ));
+    }
+    lines.push(format!(
+        "  Freshness:  {:?}",
+        summary.verification_freshness
+    ));
+    lines.push(format!(
+        "  Checks:     {} ({} passed / {} total)",
+        if summary.checks_run.iter().all(|c| c.passed) {
+            "all pass"
+        } else {
+            "failures"
+        },
+        summary.checks_run.iter().filter(|c| c.passed).count(),
+        summary.checks_run.len(),
+    ));
+    lines.push(format!(
+        "  Trust:      {} {}",
+        summary.trust_verdict.symbol(),
+        summary.trust_verdict.label()
+    ));
+    if !summary.risks.is_empty() {
+        lines.push(format!("  Risks:      {}", summary.risks.join("; ")));
+    }
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +410,130 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("skill_invoked"));
         assert!(lines[1].contains("memory_updated"));
+    }
+
+    // ── RunSummaryBuilder tests ────────────────��─────────
+
+    use oco_shared_types::{
+        PolicyPack, TaskComplexity, TrustVerdict, VerificationFreshness, VerificationRun,
+        VerificationState,
+    };
+    use std::collections::{HashMap, HashSet};
+
+    fn make_verification_state_with_run(files: &[&str], passed: bool) -> VerificationState {
+        let now = chrono::Utc::now();
+        let mut modified = HashMap::new();
+        for f in files {
+            modified.insert(f.to_string(), now);
+        }
+        let mut state = VerificationState {
+            modified_files: modified.clone(),
+            runs: vec![],
+        };
+        state.runs.push(VerificationRun {
+            strategy: "build".into(),
+            timestamp: now + chrono::Duration::seconds(1),
+            passed,
+            covered_files: HashSet::new(),
+            modifications_snapshot: modified,
+            duration_ms: 150,
+            failures: if passed {
+                vec![]
+            } else {
+                vec!["compile error".into()]
+            },
+        });
+        state
+    }
+
+    #[test]
+    fn builder_high_trust_all_pass() {
+        let state = make_verification_state_with_run(&["src/lib.rs"], true);
+        let summary = RunSummaryBuilder::new(SessionId::new(), "fix typo".into())
+            .complexity(TaskComplexity::Trivial)
+            .policy_pack(PolicyPack::Balanced)
+            .verification_state(state)
+            .build();
+
+        assert_eq!(summary.trust_verdict, TrustVerdict::High);
+        assert_eq!(summary.files_modified.len(), 1);
+        assert_eq!(summary.files_verified.len(), 1);
+        assert!(summary.files_unverified.is_empty());
+        assert_eq!(summary.verification_freshness, VerificationFreshness::Fresh);
+    }
+
+    #[test]
+    fn builder_low_trust_on_failure() {
+        let state = make_verification_state_with_run(&["src/main.rs"], false);
+        let summary = RunSummaryBuilder::new(SessionId::new(), "break things".into())
+            .complexity(TaskComplexity::Low)
+            .policy_pack(PolicyPack::Strict)
+            .verification_state(state)
+            .build();
+
+        assert_eq!(summary.trust_verdict, TrustVerdict::Low);
+        assert!(!summary.checks_run.is_empty());
+        assert!(!summary.checks_run[0].passed);
+    }
+
+    #[test]
+    fn builder_none_trust_no_verification() {
+        let mut state = VerificationState::default();
+        state
+            .modified_files
+            .insert("src/foo.rs".into(), chrono::Utc::now());
+
+        let summary = RunSummaryBuilder::new(SessionId::new(), "add feature".into())
+            .verification_state(state)
+            .build();
+
+        assert_eq!(summary.trust_verdict, TrustVerdict::None);
+        assert_eq!(summary.files_unverified.len(), 1);
+        assert!(summary.checks_run.is_empty());
+    }
+
+    #[test]
+    fn builder_risks_propagated() {
+        let summary = RunSummaryBuilder::new(SessionId::new(), "deploy".into())
+            .risk("touches auth module")
+            .risk("no tests for edge case")
+            .build();
+
+        assert_eq!(summary.risks.len(), 2);
+        assert!(summary.risks[0].contains("auth"));
+    }
+
+    #[test]
+    fn builder_to_json_succeeds() {
+        let builder = RunSummaryBuilder::new(SessionId::new(), "test json".into())
+            .complexity(TaskComplexity::Medium)
+            .policy_pack(PolicyPack::Fast);
+
+        let json = builder.to_json();
+        assert!(json.is_ok());
+        let json_str = json.unwrap();
+        assert!(json_str.contains("\"policy_pack\": \"fast\""));
+        assert!(json_str.contains("\"trust_verdict\": \"none\""));
+    }
+
+    #[test]
+    fn builder_to_text_contains_key_fields() {
+        let state = make_verification_state_with_run(&["src/lib.rs"], true);
+        let builder = RunSummaryBuilder::new(SessionId::new(), "refactor module".into())
+            .complexity(TaskComplexity::High)
+            .policy_pack(PolicyPack::Strict)
+            .verification_state(state);
+
+        let text = builder.to_text();
+        assert!(text.contains("Run Summary"));
+        assert!(text.contains("refactor module"));
+        assert!(text.contains("strict"));
+        assert!(text.contains("Verified:"));
+    }
+
+    #[test]
+    fn builder_default_policy_is_balanced() {
+        let summary = RunSummaryBuilder::new(SessionId::new(), "test".into()).build();
+        assert_eq!(summary.policy_pack, PolicyPack::Balanced);
     }
 }
