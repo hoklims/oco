@@ -178,11 +178,15 @@ pub fn user_message_with_bias(request: &str, context: &PlanningContext, bias: Pl
 }
 
 /// Build the user message for replanning after a failure.
+///
+/// The prompt includes the full failure context (step output + verification
+/// output) and explicitly asks the planner to change approach, not just retry.
 pub fn replan_message(
     request: &str,
     failed_step_name: &str,
     error_context: &str,
     completed_steps: &[String],
+    failed_step_output: Option<&str>,
 ) -> String {
     let completed = if completed_steps.is_empty() {
         "None".to_string()
@@ -190,18 +194,30 @@ pub fn replan_message(
         completed_steps.join(", ")
     };
 
+    let step_output_section = if let Some(output) = failed_step_output {
+        let truncated = if output.len() > 2000 {
+            &output[..2000]
+        } else {
+            output
+        };
+        format!("\n\nStep output before failure (truncated to 2k):\n{truncated}")
+    } else {
+        String::new()
+    };
+
     format!(
         r#"The original task was: {request}
 
 Step "{failed_step_name}" FAILED with error:
-{error_context}
+{error_context}{step_output_section}
 
 Already completed steps: {completed}
 
 Generate a NEW plan that:
-1. Does NOT repeat completed steps.
-2. Fixes the issue that caused the failure.
-3. Completes the remaining work.
+1. Does NOT repeat completed steps — their outputs are already available.
+2. Takes a DIFFERENT approach to fix the failure — do not retry the exact same strategy.
+3. Explicitly states what changed in the approach compared to the failed step.
+4. Completes the remaining work toward the original goal.
 
 Respond with ONLY a JSON array of NEW steps."#
     )
@@ -265,9 +281,24 @@ mod tests {
             "implement-middleware",
             "test failed: 401 Unauthorized",
             &["investigate".into()],
+            None,
         );
         assert!(msg.contains("implement-middleware"));
         assert!(msg.contains("401 Unauthorized"));
         assert!(msg.contains("investigate"));
+        assert!(msg.contains("DIFFERENT approach"));
+    }
+
+    #[test]
+    fn replan_message_includes_step_output() {
+        let msg = replan_message(
+            "fix auth",
+            "patch-handler",
+            "typecheck failed: expected String, got i32",
+            &["investigate".into()],
+            Some("Added handler returning session.user_id as i32"),
+        );
+        assert!(msg.contains("Step output before failure"));
+        assert!(msg.contains("session.user_id as i32"));
     }
 }

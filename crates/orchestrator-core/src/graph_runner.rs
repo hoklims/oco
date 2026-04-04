@@ -779,9 +779,9 @@ impl GraphRunner {
             _ => "unknown failure".into(),
         };
 
-        // Budget pre-check: ensure we have at least 15% remaining for replan + new steps
+        // Budget pre-check: ensure we have at least 15% remaining for replan + new steps.
         let remaining = self.token_budget.saturating_sub(self.tokens_used);
-        let min_required = self.token_budget / 7; // ~15%
+        let min_required = self.token_budget * 15 / 100;
         if remaining < min_required {
             warn!(
                 remaining,
@@ -1814,5 +1814,29 @@ mod tests {
             }
         }
         assert!(found_progress, "should emit PlanProgress with budget data");
+    }
+
+    #[tokio::test]
+    async fn replan_skipped_when_budget_below_15_percent() {
+        // Step that fails → trigger replan consideration
+        let mut step = PlanStep::new("task", "Do work").with_verify();
+        step.status = StepStatus::Pending;
+        let plan = make_plan(vec![step]);
+
+        let executor =
+            Arc::new(StubStepExecutor::all_pass().with_failure("verify:task", "test failed"));
+        let planner = Arc::new(DirectPlanner);
+
+        // Budget: 1000, consume 900 → 10% remaining < 15% threshold
+        let mut runner = GraphRunner::new(executor, planner).with_budget(1000);
+        runner.tokens_used = 900;
+
+        let _result = runner.execute(plan, &ctx()).await.unwrap();
+        // Verify gate fails → replan should be attempted but skipped due to budget
+        assert_eq!(
+            runner.replan_count(),
+            0,
+            "replan should not have been attempted"
+        );
     }
 }

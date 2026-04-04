@@ -384,6 +384,7 @@ impl Planner for LlmPlanner {
             &failed_step.name,
             error_context,
             &completed_names,
+            failed_step.output.as_deref(),
         );
         let max_tokens = context.planning_token_budget();
 

@@ -57,6 +57,12 @@ enum Commands {
         /// Maximum steps
         #[arg(long, default_value_t = 25)]
         max_steps: u32,
+        /// Override maximum token budget for this run
+        #[arg(long)]
+        max_tokens: Option<u64>,
+        /// Override maximum tool calls for this run
+        #[arg(long)]
+        max_tools: Option<u32>,
         /// Resume from a previous run's mission memory (session ID or "last")
         #[arg(long)]
         resume: Option<String>,
@@ -367,10 +373,13 @@ async fn main() -> Result<()> {
             provider,
             model,
             max_steps: _,
+            max_tokens,
+            max_tools,
             resume,
         } => {
             cmd_run(
-                &mut *r, out_format, request, workspace, provider, model, resume,
+                &mut *r, out_format, request, workspace, provider, model, resume, max_tokens,
+                max_tools,
             )
             .await?
         }
@@ -553,6 +562,7 @@ async fn cmd_serve(r: &mut dyn Renderer, host: String, port: u16, headless: bool
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_run(
     r: &mut dyn Renderer,
     format: OutputFormat,
@@ -561,9 +571,19 @@ async fn cmd_run(
     provider: String,
     model: Option<String>,
     resume: Option<String>,
+    max_tokens: Option<u64>,
+    max_tools: Option<u32>,
 ) -> Result<()> {
     let mut config = oco_orchestrator_core::OrchestratorConfig::default();
     config.default_budget.max_duration_secs = 120;
+
+    // P1 5.3: Per-run budget overrides from CLI flags.
+    if let Some(tokens) = max_tokens {
+        config.default_budget.max_total_tokens = tokens;
+    }
+    if let Some(tools) = max_tools {
+        config.default_budget.max_tool_calls = tools;
+    }
 
     let base_llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
         "claude-code" => {
@@ -611,6 +631,8 @@ async fn cmd_run(
     });
 
     let run_profile = config.profile.clone();
+    // Capture budget for plan overview display before config is moved.
+    let run_budget_tokens = config.default_budget.max_total_tokens;
     let mut orchestrator = oco_orchestrator_core::OrchestrationLoop::new(config, llm);
 
     // Index workspace if provided
@@ -738,7 +760,7 @@ async fn cmd_run(
                     parallel_groups: parallel_group_count,
                     critical_path_length,
                     estimated_tokens: estimated_total_tokens as u32,
-                    budget_tokens: 0, // not available here
+                    budget_tokens: run_budget_tokens,
                     strategy: strategy.clone(),
                     team: team
                         .as_ref()
