@@ -971,6 +971,395 @@ impl GateReviewArtifact {
 }
 
 // ---------------------------------------------------------------------------
+// Q11: Baseline promotion & audit trail
+// ---------------------------------------------------------------------------
+
+/// Recommendation for whether a candidate should be promoted to baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionRecommendation {
+    /// Candidate passes all checks — safe to promote.
+    Promote,
+    /// Candidate has warnings — promotion requires explicit review.
+    Review,
+    /// Candidate fails critical checks — do not promote.
+    Reject,
+}
+
+impl PromotionRecommendation {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Promote => "promote",
+            Self::Review => "review",
+            Self::Reject => "reject",
+        }
+    }
+
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            Self::Promote => "[PROMOTE]",
+            Self::Review => "[REVIEW]",
+            Self::Reject => "[REJECT]",
+        }
+    }
+
+    /// Derive a recommendation from gate verdict + baseline freshness.
+    ///
+    /// Rules:
+    /// - Gate Fail → Reject
+    /// - Gate Warn OR baseline Stale → Review
+    /// - Gate Pass + baseline Fresh/Aging/Unknown → Promote
+    pub fn from_gate_and_freshness(
+        gate_verdict: GateVerdict,
+        freshness: BaselineFreshness,
+    ) -> Self {
+        match gate_verdict {
+            GateVerdict::Fail => Self::Reject,
+            GateVerdict::Warn => Self::Review,
+            GateVerdict::Pass => {
+                if freshness == BaselineFreshness::Stale {
+                    Self::Review
+                } else {
+                    Self::Promote
+                }
+            }
+        }
+    }
+}
+
+/// Summary of differences between old and new baselines.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaselineDiffSummary {
+    /// Per-dimension score changes (dimension label → delta).
+    pub dimension_deltas: Vec<DimensionDelta>,
+    /// Overall score change.
+    pub old_overall: f64,
+    pub new_overall: f64,
+    pub overall_delta: f64,
+    /// Human-readable summary line.
+    pub summary: String,
+}
+
+/// A single dimension's score change between old and new baseline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DimensionDelta {
+    pub dimension: ScorecardDimension,
+    pub old_score: f64,
+    pub new_score: f64,
+    pub delta: f64,
+}
+
+impl BaselineDiffSummary {
+    /// Compute a diff between two scorecards (old baseline vs new candidate).
+    pub fn compute(old: &RunScorecard, new: &RunScorecard) -> Self {
+        let dimension_deltas: Vec<DimensionDelta> = ScorecardDimension::all()
+            .iter()
+            .map(|dim| {
+                let old_score = old.dimension_score(*dim).unwrap_or(0.0);
+                let new_score = new.dimension_score(*dim).unwrap_or(0.0);
+                DimensionDelta {
+                    dimension: *dim,
+                    old_score,
+                    new_score,
+                    delta: new_score - old_score,
+                }
+            })
+            .collect();
+
+        let overall_delta = new.overall_score - old.overall_score;
+
+        let improved = dimension_deltas.iter().filter(|d| d.delta > 0.01).count();
+        let regressed = dimension_deltas.iter().filter(|d| d.delta < -0.01).count();
+        let unchanged = dimension_deltas.len() - improved - regressed;
+
+        let summary = format!(
+            "{:.2} → {:.2} ({:+.2}): {} improved, {} regressed, {} unchanged",
+            old.overall_score, new.overall_score, overall_delta, improved, regressed, unchanged,
+        );
+
+        Self {
+            dimension_deltas,
+            old_overall: old.overall_score,
+            new_overall: new.overall_score,
+            overall_delta,
+            summary,
+        }
+    }
+
+    /// Format as a human-readable table.
+    pub fn to_report(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push(format!("Baseline Diff: {}", self.summary));
+        lines.push(String::new());
+        lines.push(
+            "  Dimension                Old       New      Delta".to_string(),
+        );
+        lines.push(
+            "  ---------------------------------------------------".to_string(),
+        );
+        for d in &self.dimension_deltas {
+            let marker = if d.delta > 0.01 {
+                "+"
+            } else if d.delta < -0.01 {
+                "-"
+            } else {
+                " "
+            };
+            lines.push(format!(
+                "  {:<24} {:>7.2}   {:>7.2}  {:>+6.2} {}",
+                d.dimension.label(),
+                d.old_score,
+                d.new_score,
+                d.delta,
+                marker,
+            ));
+        }
+        lines.push(String::new());
+        lines.push(format!(
+            "  Overall: {:.2} → {:.2} ({:+.2})",
+            self.old_overall, self.new_overall, self.overall_delta,
+        ));
+        lines.join("\n")
+    }
+
+    /// Format as Markdown table.
+    pub fn to_markdown(&self) -> String {
+        let mut md = String::new();
+        md.push_str("## Baseline Diff\n\n");
+        md.push_str(&format!("**Overall:** {}\n\n", self.summary));
+        md.push_str("| Dimension | Old | New | Delta |\n");
+        md.push_str("|-----------|-----|-----|-------|\n");
+        for d in &self.dimension_deltas {
+            md.push_str(&format!(
+                "| {} | {:.2} | {:.2} | {:+.2} |\n",
+                d.dimension.label(),
+                d.old_score,
+                d.new_score,
+                d.delta,
+            ));
+        }
+        md
+    }
+}
+
+/// A durable record of a baseline promotion event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromotionRecord {
+    /// When the promotion occurred.
+    pub promoted_at: DateTime<Utc>,
+    /// Name of the old baseline being replaced.
+    pub old_baseline_name: String,
+    /// Name of the new baseline.
+    pub new_baseline_name: String,
+    /// Source of the new baseline (run ID, file path, etc.).
+    pub source: String,
+    /// Human-provided reason for the promotion.
+    pub reason: Option<String>,
+    /// Computed recommendation at promotion time.
+    pub recommendation: PromotionRecommendation,
+    /// Gate verdict at promotion time (if available).
+    pub gate_verdict: Option<GateVerdict>,
+    /// Baseline freshness at promotion time (if available).
+    pub baseline_freshness: Option<BaselineFreshness>,
+    /// Diff between old and new baseline scorecards.
+    pub diff: BaselineDiffSummary,
+}
+
+impl PromotionRecord {
+    /// Format as a human-readable summary.
+    pub fn to_summary(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "{} {} → {} ({})",
+            self.recommendation.symbol(),
+            self.old_baseline_name,
+            self.new_baseline_name,
+            self.promoted_at.format("%Y-%m-%d %H:%M:%S UTC"),
+        ));
+        lines.push(format!("  Source: {}", self.source));
+        if let Some(reason) = &self.reason {
+            lines.push(format!("  Reason: {reason}"));
+        }
+        if let Some(gv) = self.gate_verdict {
+            lines.push(format!("  Gate: {}", gv.symbol()));
+        }
+        if let Some(bf) = self.baseline_freshness {
+            lines.push(format!("  Old baseline freshness: {}", bf.symbol()));
+        }
+        lines.push(format!("  Score: {}", self.diff.summary));
+        lines.join("\n")
+    }
+
+    /// Format as Markdown.
+    pub fn to_markdown(&self) -> String {
+        let mut md = String::new();
+        md.push_str(&format!(
+            "### Promotion: {} → {}\n\n",
+            self.old_baseline_name, self.new_baseline_name,
+        ));
+        md.push_str("| Field | Value |\n");
+        md.push_str("|-------|-------|\n");
+        md.push_str(&format!(
+            "| Date | {} |\n",
+            self.promoted_at.format("%Y-%m-%d %H:%M:%S UTC"),
+        ));
+        md.push_str(&format!(
+            "| Recommendation | {} |\n",
+            self.recommendation.symbol(),
+        ));
+        md.push_str(&format!("| Source | {} |\n", self.source));
+        if let Some(reason) = &self.reason {
+            md.push_str(&format!("| Reason | {reason} |\n"));
+        }
+        if let Some(gv) = self.gate_verdict {
+            md.push_str(&format!("| Gate verdict | {} |\n", gv.symbol()));
+        }
+        if let Some(bf) = self.baseline_freshness {
+            md.push_str(&format!(
+                "| Old baseline freshness | {} |\n",
+                bf.symbol(),
+            ));
+        }
+        md.push_str(&format!("| Score change | {} |\n", self.diff.summary));
+        md.push_str("\n");
+        md.push_str(&self.diff.to_markdown());
+        md
+    }
+}
+
+/// An entry in the baseline audit trail / history log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaselineHistoryEntry {
+    /// Monotonic sequence number (1-based).
+    pub sequence: u32,
+    /// The promotion record for this entry.
+    pub promotion: PromotionRecord,
+}
+
+/// The full baseline audit trail for a repository.
+///
+/// Persisted as a JSON file (typically `.oco/baseline-history.json`).
+/// Append-only in normal operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaselineHistory {
+    /// Schema version for forward compatibility.
+    pub schema_version: u32,
+    /// History entries, ordered by sequence number (oldest first).
+    pub entries: Vec<BaselineHistoryEntry>,
+}
+
+/// Current baseline history schema version.
+pub const BASELINE_HISTORY_SCHEMA_VERSION: u32 = 1;
+
+impl Default for BaselineHistory {
+    fn default() -> Self {
+        Self {
+            schema_version: BASELINE_HISTORY_SCHEMA_VERSION,
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl BaselineHistory {
+    /// Create a new empty history.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append a promotion record and return the new sequence number.
+    pub fn append(&mut self, promotion: PromotionRecord) -> u32 {
+        let sequence = self.entries.last().map_or(1, |e| e.sequence + 1);
+        self.entries.push(BaselineHistoryEntry {
+            sequence,
+            promotion,
+        });
+        sequence
+    }
+
+    /// Get the most recent entry, if any.
+    pub fn latest(&self) -> Option<&BaselineHistoryEntry> {
+        self.entries.last()
+    }
+
+    /// Number of entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the history is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Return the last `n` entries (most recent first).
+    pub fn recent(&self, n: usize) -> Vec<&BaselineHistoryEntry> {
+        self.entries.iter().rev().take(n).collect()
+    }
+
+    /// Save to a JSON file.
+    pub fn save_to(&self, path: &std::path::Path) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("failed to serialize baseline history: {e}"))?;
+        std::fs::write(path, json)
+            .map_err(|e| format!("failed to write baseline history: {e}"))
+    }
+
+    /// Load from a JSON file. Returns an empty history if the file doesn't exist.
+    pub fn load_from(path: &std::path::Path) -> Result<Self, String> {
+        if !path.exists() {
+            return Ok(Self::new());
+        }
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("failed to read baseline history: {e}"))?;
+        serde_json::from_str(&content)
+            .map_err(|e| format!("failed to parse baseline history: {e}"))
+    }
+
+    /// Format all entries as a human-readable report.
+    pub fn to_report(&self) -> String {
+        if self.entries.is_empty() {
+            return "No baseline promotions recorded.".to_string();
+        }
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Baseline History ({} entries)",
+            self.entries.len()
+        ));
+        lines.push("=".repeat(50));
+        for entry in self.entries.iter().rev() {
+            lines.push(String::new());
+            lines.push(format!("#{}", entry.sequence));
+            lines.push(entry.promotion.to_summary());
+        }
+        lines.join("\n")
+    }
+
+    /// Format as Markdown.
+    pub fn to_markdown(&self) -> String {
+        if self.entries.is_empty() {
+            return "# Baseline History\n\nNo promotions recorded.\n".to_string();
+        }
+        let mut md = String::new();
+        md.push_str(&format!(
+            "# Baseline History ({} entries)\n\n",
+            self.entries.len(),
+        ));
+        for entry in self.entries.iter().rev() {
+            md.push_str(&format!("---\n\n**#{}**\n\n", entry.sequence));
+            md.push_str(&entry.promotion.to_markdown());
+            md.push_str("\n");
+        }
+        md
+    }
+
+    /// Serialize to pretty-printed JSON.
+    pub fn to_json(&self) -> Result<String, String> {
+        serde_json::to_string_pretty(self)
+            .map_err(|e| format!("failed to serialize baseline history: {e}"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1908,5 +2297,457 @@ mod tests {
         assert_eq!(check.freshness, parsed.freshness);
         assert!(parsed.age_days.is_none());
         assert!(parsed.recommendation.contains("baseline-save"));
+    }
+
+    // ── Q11: Promotion recommendation ──
+
+    #[test]
+    fn promotion_recommendation_labels() {
+        assert_eq!(PromotionRecommendation::Promote.label(), "promote");
+        assert_eq!(PromotionRecommendation::Review.label(), "review");
+        assert_eq!(PromotionRecommendation::Reject.label(), "reject");
+    }
+
+    #[test]
+    fn promotion_recommendation_serde_roundtrip() {
+        for r in [
+            PromotionRecommendation::Promote,
+            PromotionRecommendation::Review,
+            PromotionRecommendation::Reject,
+        ] {
+            let json = serde_json::to_string(&r).unwrap();
+            let parsed: PromotionRecommendation = serde_json::from_str(&json).unwrap();
+            assert_eq!(r, parsed);
+        }
+    }
+
+    #[test]
+    fn promotion_from_gate_fail_rejects() {
+        let rec = PromotionRecommendation::from_gate_and_freshness(
+            GateVerdict::Fail,
+            BaselineFreshness::Fresh,
+        );
+        assert_eq!(rec, PromotionRecommendation::Reject);
+    }
+
+    #[test]
+    fn promotion_from_gate_warn_reviews() {
+        let rec = PromotionRecommendation::from_gate_and_freshness(
+            GateVerdict::Warn,
+            BaselineFreshness::Fresh,
+        );
+        assert_eq!(rec, PromotionRecommendation::Review);
+    }
+
+    #[test]
+    fn promotion_from_gate_pass_fresh_promotes() {
+        let rec = PromotionRecommendation::from_gate_and_freshness(
+            GateVerdict::Pass,
+            BaselineFreshness::Fresh,
+        );
+        assert_eq!(rec, PromotionRecommendation::Promote);
+    }
+
+    #[test]
+    fn promotion_from_gate_pass_stale_reviews() {
+        let rec = PromotionRecommendation::from_gate_and_freshness(
+            GateVerdict::Pass,
+            BaselineFreshness::Stale,
+        );
+        assert_eq!(rec, PromotionRecommendation::Review);
+    }
+
+    #[test]
+    fn promotion_from_gate_pass_aging_promotes() {
+        let rec = PromotionRecommendation::from_gate_and_freshness(
+            GateVerdict::Pass,
+            BaselineFreshness::Aging,
+        );
+        assert_eq!(rec, PromotionRecommendation::Promote);
+    }
+
+    #[test]
+    fn promotion_from_gate_pass_unknown_promotes() {
+        let rec = PromotionRecommendation::from_gate_and_freshness(
+            GateVerdict::Pass,
+            BaselineFreshness::Unknown,
+        );
+        assert_eq!(rec, PromotionRecommendation::Promote);
+    }
+
+    // ── Q11: BaselineDiffSummary ──
+
+    #[test]
+    fn diff_summary_identical_scorecards() {
+        let a = full_scorecard("old", 0.8);
+        let b = full_scorecard("new", 0.8);
+        let diff = BaselineDiffSummary::compute(&a, &b);
+        assert!((diff.overall_delta).abs() < 0.001);
+        assert!(diff.summary.contains("unchanged"));
+        for d in &diff.dimension_deltas {
+            assert!((d.delta).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn diff_summary_improved_scorecard() {
+        let old = full_scorecard("old", 0.5);
+        let new = full_scorecard("new", 0.8);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        assert!(diff.overall_delta > 0.0);
+        assert!(diff.summary.contains("improved"));
+    }
+
+    #[test]
+    fn diff_summary_regressed_scorecard() {
+        let old = full_scorecard("old", 0.9);
+        let new = full_scorecard("new", 0.5);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        assert!(diff.overall_delta < 0.0);
+        assert!(diff.summary.contains("regressed"));
+    }
+
+    #[test]
+    fn diff_summary_report_format() {
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.8);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        let report = diff.to_report();
+        assert!(report.contains("Baseline Diff"));
+        assert!(report.contains("Overall"));
+    }
+
+    #[test]
+    fn diff_summary_markdown_format() {
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.8);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        let md = diff.to_markdown();
+        assert!(md.contains("## Baseline Diff"));
+        assert!(md.contains("| Dimension |"));
+    }
+
+    #[test]
+    fn diff_summary_serde_roundtrip() {
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.8);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        let json = serde_json::to_string_pretty(&diff).unwrap();
+        let parsed: BaselineDiffSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(diff.dimension_deltas.len(), parsed.dimension_deltas.len());
+        assert!((diff.overall_delta - parsed.overall_delta).abs() < 0.001);
+    }
+
+    // ── Q11: PromotionRecord ──
+
+    #[test]
+    fn promotion_record_summary() {
+        let old = full_scorecard("old-base", 0.7);
+        let new = full_scorecard("new-base", 0.8);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        let record = PromotionRecord {
+            promoted_at: Utc::now(),
+            old_baseline_name: "v1-stable".to_string(),
+            new_baseline_name: "v2-stable".to_string(),
+            source: "run:abc123".to_string(),
+            reason: Some("CI passed".to_string()),
+            recommendation: PromotionRecommendation::Promote,
+            gate_verdict: Some(GateVerdict::Pass),
+            baseline_freshness: Some(BaselineFreshness::Fresh),
+            diff,
+        };
+        let summary = record.to_summary();
+        assert!(summary.contains("[PROMOTE]"));
+        assert!(summary.contains("v1-stable"));
+        assert!(summary.contains("v2-stable"));
+        assert!(summary.contains("CI passed"));
+    }
+
+    #[test]
+    fn promotion_record_markdown() {
+        let old = full_scorecard("old", 0.7);
+        let new = full_scorecard("new", 0.8);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        let record = PromotionRecord {
+            promoted_at: Utc::now(),
+            old_baseline_name: "v1".to_string(),
+            new_baseline_name: "v2".to_string(),
+            source: "file:scorecard.json".to_string(),
+            reason: None,
+            recommendation: PromotionRecommendation::Review,
+            gate_verdict: Some(GateVerdict::Warn),
+            baseline_freshness: None,
+            diff,
+        };
+        let md = record.to_markdown();
+        assert!(md.contains("### Promotion:"));
+        assert!(md.contains("[REVIEW]"));
+        assert!(md.contains("[WARN]"));
+    }
+
+    #[test]
+    fn promotion_record_serde_roundtrip() {
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.7);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        let record = PromotionRecord {
+            promoted_at: Utc::now(),
+            old_baseline_name: "old".to_string(),
+            new_baseline_name: "new".to_string(),
+            source: "test".to_string(),
+            reason: Some("testing".to_string()),
+            recommendation: PromotionRecommendation::Promote,
+            gate_verdict: Some(GateVerdict::Pass),
+            baseline_freshness: Some(BaselineFreshness::Fresh),
+            diff,
+        };
+        let json = serde_json::to_string_pretty(&record).unwrap();
+        let parsed: PromotionRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(record.old_baseline_name, parsed.old_baseline_name);
+        assert_eq!(record.recommendation, parsed.recommendation);
+    }
+
+    // ── Q11: BaselineHistory ──
+
+    #[test]
+    fn history_new_is_empty() {
+        let h = BaselineHistory::new();
+        assert!(h.is_empty());
+        assert_eq!(h.len(), 0);
+        assert!(h.latest().is_none());
+    }
+
+    #[test]
+    fn history_append_increments_sequence() {
+        let mut h = BaselineHistory::new();
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.7);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+
+        let record = PromotionRecord {
+            promoted_at: Utc::now(),
+            old_baseline_name: "v1".to_string(),
+            new_baseline_name: "v2".to_string(),
+            source: "test".to_string(),
+            reason: None,
+            recommendation: PromotionRecommendation::Promote,
+            gate_verdict: None,
+            baseline_freshness: None,
+            diff: diff.clone(),
+        };
+
+        let seq1 = h.append(record.clone());
+        assert_eq!(seq1, 1);
+        assert_eq!(h.len(), 1);
+
+        let mut record2 = record;
+        record2.new_baseline_name = "v3".to_string();
+        let seq2 = h.append(record2);
+        assert_eq!(seq2, 2);
+        assert_eq!(h.len(), 2);
+    }
+
+    #[test]
+    fn history_latest_returns_last() {
+        let mut h = BaselineHistory::new();
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.7);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+
+        let record = PromotionRecord {
+            promoted_at: Utc::now(),
+            old_baseline_name: "v1".to_string(),
+            new_baseline_name: "v2".to_string(),
+            source: "test".to_string(),
+            reason: None,
+            recommendation: PromotionRecommendation::Promote,
+            gate_verdict: None,
+            baseline_freshness: None,
+            diff,
+        };
+        h.append(record);
+        let latest = h.latest().unwrap();
+        assert_eq!(latest.promotion.new_baseline_name, "v2");
+    }
+
+    #[test]
+    fn history_recent_order() {
+        let mut h = BaselineHistory::new();
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.7);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+
+        for i in 1..=5 {
+            let record = PromotionRecord {
+                promoted_at: Utc::now(),
+                old_baseline_name: format!("v{}", i - 1),
+                new_baseline_name: format!("v{i}"),
+                source: "test".to_string(),
+                reason: None,
+                recommendation: PromotionRecommendation::Promote,
+                gate_verdict: None,
+                baseline_freshness: None,
+                diff: diff.clone(),
+            };
+            h.append(record);
+        }
+
+        let recent = h.recent(3);
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0].sequence, 5);
+        assert_eq!(recent[1].sequence, 4);
+        assert_eq!(recent[2].sequence, 3);
+    }
+
+    #[test]
+    fn history_serde_roundtrip() {
+        let mut h = BaselineHistory::new();
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.7);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+
+        let record = PromotionRecord {
+            promoted_at: Utc::now(),
+            old_baseline_name: "v1".to_string(),
+            new_baseline_name: "v2".to_string(),
+            source: "test".to_string(),
+            reason: Some("release".to_string()),
+            recommendation: PromotionRecommendation::Promote,
+            gate_verdict: Some(GateVerdict::Pass),
+            baseline_freshness: Some(BaselineFreshness::Fresh),
+            diff,
+        };
+        h.append(record);
+
+        let json = serde_json::to_string_pretty(&h).unwrap();
+        let parsed: BaselineHistory = serde_json::from_str(&json).unwrap();
+        assert_eq!(h.len(), parsed.len());
+        assert_eq!(
+            h.latest().unwrap().promotion.new_baseline_name,
+            parsed.latest().unwrap().promotion.new_baseline_name,
+        );
+    }
+
+    #[test]
+    fn history_save_load_roundtrip() {
+        let dir = std::env::temp_dir().join("oco-test-q11-history");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test-history.json");
+
+        let mut h = BaselineHistory::new();
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.7);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+
+        let record = PromotionRecord {
+            promoted_at: Utc::now(),
+            old_baseline_name: "v1".to_string(),
+            new_baseline_name: "v2".to_string(),
+            source: "test".to_string(),
+            reason: None,
+            recommendation: PromotionRecommendation::Promote,
+            gate_verdict: None,
+            baseline_freshness: None,
+            diff,
+        };
+        h.append(record);
+
+        h.save_to(&path).unwrap();
+        let loaded = BaselineHistory::load_from(&path).unwrap();
+        assert_eq!(h.len(), loaded.len());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn history_load_missing_file_returns_empty() {
+        let path = std::path::Path::new("/tmp/oco-test-nonexistent-q11.json");
+        let h = BaselineHistory::load_from(path).unwrap();
+        assert!(h.is_empty());
+    }
+
+    #[test]
+    fn history_report_empty() {
+        let h = BaselineHistory::new();
+        assert!(h.to_report().contains("No baseline promotions"));
+    }
+
+    #[test]
+    fn history_report_with_entries() {
+        let mut h = BaselineHistory::new();
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.8);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        let record = PromotionRecord {
+            promoted_at: Utc::now(),
+            old_baseline_name: "v1".to_string(),
+            new_baseline_name: "v2".to_string(),
+            source: "test".to_string(),
+            reason: None,
+            recommendation: PromotionRecommendation::Promote,
+            gate_verdict: None,
+            baseline_freshness: None,
+            diff,
+        };
+        h.append(record);
+        let report = h.to_report();
+        assert!(report.contains("#1"));
+        assert!(report.contains("v1"));
+        assert!(report.contains("v2"));
+    }
+
+    #[test]
+    fn history_markdown_empty() {
+        let h = BaselineHistory::new();
+        let md = h.to_markdown();
+        assert!(md.contains("No promotions recorded"));
+    }
+
+    #[test]
+    fn history_markdown_with_entries() {
+        let mut h = BaselineHistory::new();
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.8);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        let record = PromotionRecord {
+            promoted_at: Utc::now(),
+            old_baseline_name: "v1".to_string(),
+            new_baseline_name: "v2".to_string(),
+            source: "test".to_string(),
+            reason: Some("release".to_string()),
+            recommendation: PromotionRecommendation::Promote,
+            gate_verdict: None,
+            baseline_freshness: None,
+            diff,
+        };
+        h.append(record);
+        let md = h.to_markdown();
+        assert!(md.contains("# Baseline History"));
+        assert!(md.contains("**#1**"));
+    }
+
+    #[test]
+    fn history_json_output() {
+        let mut h = BaselineHistory::new();
+        let old = full_scorecard("old", 0.6);
+        let new = full_scorecard("new", 0.7);
+        let diff = BaselineDiffSummary::compute(&old, &new);
+        let record = PromotionRecord {
+            promoted_at: Utc::now(),
+            old_baseline_name: "v1".to_string(),
+            new_baseline_name: "v2".to_string(),
+            source: "test".to_string(),
+            reason: None,
+            recommendation: PromotionRecommendation::Promote,
+            gate_verdict: None,
+            baseline_freshness: None,
+            diff,
+        };
+        h.append(record);
+        let json = h.to_json().unwrap();
+        assert!(json.contains("schema_version"));
+        assert!(json.contains("entries"));
     }
 }
