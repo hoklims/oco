@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use oco_shared_types::{BaselineFreshnessCheck, Budget, EvalBaseline, GateConfig, RepoProfile};
+use oco_shared_types::{
+    BaselineFreshnessCheck, Budget, EvalBaseline, GateConfig, RepoProfile, ReviewConfig,
+};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the orchestrator.
@@ -34,6 +36,9 @@ pub struct OrchestratorConfig {
     /// Q7: Per-repo gate configuration (baseline, policy, thresholds).
     #[serde(default)]
     pub gate: GateConfig,
+    /// Q10: Per-repo review packet configuration (format, auto-save, output dir).
+    #[serde(default)]
+    pub review: ReviewConfig,
 }
 
 impl Default for OrchestratorConfig {
@@ -51,6 +56,7 @@ impl Default for OrchestratorConfig {
             profile: RepoProfile::default(),
             max_steps: 0,
             gate: GateConfig::default(),
+            review: ReviewConfig::default(),
         }
     }
 }
@@ -88,6 +94,9 @@ impl OrchestratorConfig {
             ));
         }
         self.gate.validate().map_err(ConfigError::ValidationError)?;
+        self.review
+            .validate()
+            .map_err(ConfigError::ValidationError)?;
         Ok(())
     }
 
@@ -195,6 +204,19 @@ pub fn load_gate_config_strict(workspace: &Path) -> Result<GateConfig, ConfigErr
     }
     let config = OrchestratorConfig::from_file(&config_path)?;
     Ok(config.gate)
+}
+
+/// Load the `[review]` section from `oco.toml` at the given workspace path.
+///
+/// Returns `ReviewConfig::default()` if no config file exists.
+/// Returns an error if `oco.toml` exists but is invalid (fail-closed).
+pub fn load_review_config_strict(workspace: &Path) -> Result<ReviewConfig, ConfigError> {
+    let config_path = workspace.join("oco.toml");
+    if !config_path.exists() {
+        return Ok(ReviewConfig::default());
+    }
+    let config = OrchestratorConfig::from_file(&config_path)?;
+    Ok(config.review)
 }
 
 /// Build a freshness check from the workspace's gate config and a loaded baseline.
@@ -656,5 +678,331 @@ default_policy = "nonexistent"
 
         let result = evaluate_baseline_freshness(dir.path(), &baseline);
         assert!(result.is_err(), "expected error for invalid config");
+    }
+
+    // ── Q10: ReviewConfig in OrchestratorConfig ──
+
+    #[test]
+    fn default_config_has_default_review() {
+        let config = OrchestratorConfig::default();
+        assert!(!config.review.auto_save);
+        assert_eq!(config.review.default_format, "terminal");
+        assert!(config.review.output_dir.is_none());
+    }
+
+    #[test]
+    fn review_config_from_toml_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[review]
+auto_save = true
+default_format = "markdown"
+output_dir = ".oco/reviews"
+"#
+        )
+        .unwrap();
+
+        let config = OrchestratorConfig::from_file(&config_path).unwrap();
+        assert!(config.review.auto_save);
+        assert_eq!(config.review.default_format, "markdown");
+        assert_eq!(config.review.output_dir.as_deref(), Some(".oco/reviews"));
+    }
+
+    #[test]
+    fn review_config_missing_section_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+"#
+        )
+        .unwrap();
+
+        let config = OrchestratorConfig::from_file(&config_path).unwrap();
+        assert_eq!(config.review, oco_shared_types::ReviewConfig::default());
+    }
+
+    #[test]
+    fn review_config_invalid_format_fails_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[review]
+default_format = "html"
+"#
+        )
+        .unwrap();
+
+        let err = OrchestratorConfig::from_file(&config_path);
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(msg.contains("unknown review format"), "got: {msg}");
+    }
+
+    #[test]
+    fn load_review_config_strict_no_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let review = load_review_config_strict(dir.path()).unwrap();
+        assert_eq!(review, oco_shared_types::ReviewConfig::default());
+    }
+
+    #[test]
+    fn load_review_config_strict_valid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[review]
+auto_save = true
+default_format = "json"
+"#
+        )
+        .unwrap();
+
+        let review = load_review_config_strict(dir.path()).unwrap();
+        assert!(review.auto_save);
+        assert_eq!(review.default_format, "json");
+    }
+
+    #[test]
+    fn load_review_config_strict_invalid_format_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[review]
+default_format = "xml"
+"#
+        )
+        .unwrap();
+
+        let result = load_review_config_strict(dir.path());
+        assert!(result.is_err());
+    }
+
+    // ── Q10: Smoke / integration tests — repo-centric review packet flow ──
+
+    #[test]
+    fn review_config_auto_save_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[review]
+auto_save = true
+default_format = "json"
+output_dir = ".oco/reviews"
+"#
+        )
+        .unwrap();
+
+        let config = OrchestratorConfig::from_file(&config_path).unwrap();
+        assert!(config.review.auto_save);
+        assert_eq!(config.review.default_format, "json");
+        assert_eq!(config.review.output_dir.as_deref(), Some(".oco/reviews"));
+    }
+
+    #[test]
+    fn review_config_partial_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[review]
+auto_save = true
+"#
+        )
+        .unwrap();
+
+        let config = OrchestratorConfig::from_file(&config_path).unwrap();
+        assert!(config.review.auto_save);
+        // Missing fields fall back to defaults.
+        assert_eq!(config.review.default_format, "terminal");
+        assert!(config.review.output_dir.is_none());
+    }
+
+    #[test]
+    fn review_packet_with_review_config_flow() {
+        use chrono::Utc;
+        use oco_shared_types::{
+            CostMetrics, DimensionScore, MergeReadiness, ReviewPacket, RunScorecard,
+            ScorecardDimension,
+        };
+
+        // 1. Create a temp workspace with oco.toml containing [review] and [gate].
+        let workspace = tempfile::tempdir().unwrap();
+        let config_path = workspace.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+default_policy = "balanced"
+
+[review]
+auto_save = true
+default_format = "json"
+output_dir = ".oco/reviews"
+"#
+        )
+        .unwrap();
+
+        // Load and validate the config.
+        let config = OrchestratorConfig::from_file(&config_path).unwrap();
+        assert!(config.review.auto_save);
+        assert_eq!(config.review.default_format, "json");
+
+        // 2. Create a .oco/runs/test-run/ directory with a scorecard.json.
+        let run_dir = workspace.path().join(".oco").join("runs").join("test-run");
+        std::fs::create_dir_all(&run_dir).unwrap();
+
+        let dimensions: Vec<DimensionScore> = ScorecardDimension::all()
+            .iter()
+            .map(|d| DimensionScore {
+                dimension: *d,
+                score: 0.8,
+                detail: "test".to_string(),
+            })
+            .collect();
+        let overall = RunScorecard::compute_overall(&dimensions);
+        let scorecard = RunScorecard {
+            run_id: "test-run".to_string(),
+            computed_at: Utc::now(),
+            dimensions,
+            overall_score: overall,
+            cost: CostMetrics::default(),
+        };
+        let sc_json = serde_json::to_string_pretty(&scorecard).unwrap();
+        std::fs::write(run_dir.join("scorecard.json"), &sc_json).unwrap();
+
+        // 3. Build the review packet using the repo gate config.
+        let packet = crate::review_packet::build_review_packet(
+            &run_dir,
+            "test-run",
+            &config.gate,
+            workspace.path(),
+        )
+        .unwrap();
+
+        // 4. Verify the packet is structurally valid.
+        assert_eq!(packet.run_id, "test-run");
+        assert!(packet.scorecard.is_some());
+        let sc = packet.scorecard.as_ref().unwrap();
+        assert!((sc.overall_score - overall).abs() < 1e-10);
+        // No baseline on disk => no gate result, merge_readiness reflects that.
+        assert!(packet.gate_result.is_none());
+        // MergeReadiness should not be Ready (no gate evidence).
+        assert_ne!(packet.merge_readiness, MergeReadiness::Ready);
+
+        // 5. Simulate auto_save: persist to the configured output_dir.
+        let output_dir = workspace
+            .path()
+            .join(config.review.output_dir.as_deref().unwrap());
+        std::fs::create_dir_all(&output_dir).unwrap();
+
+        let json_path = output_dir.join("test-run.json");
+        packet.save_to(&json_path).unwrap();
+        assert!(json_path.exists());
+
+        // Verify saved JSON is valid and round-trips.
+        let loaded_json = std::fs::read_to_string(&json_path).unwrap();
+        let loaded: ReviewPacket = serde_json::from_str(&loaded_json).unwrap();
+        assert_eq!(loaded.run_id, "test-run");
+        assert!(loaded.scorecard.is_some());
+
+        // Also save markdown.
+        let md_path = output_dir.join("test-run.md");
+        packet.save_markdown(&md_path).unwrap();
+        assert!(md_path.exists());
+
+        let md_content = std::fs::read_to_string(&md_path).unwrap();
+        assert!(md_content.contains("OCO Review Packet"));
+        assert!(md_content.contains("test-run"));
+    }
+
+    #[test]
+    fn review_config_combined_with_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("oco.toml");
+        let mut f = std::fs::File::create(&config_path).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+default_policy = "strict"
+baseline_path = ".oco/my-baseline.json"
+min_overall_score = 0.75
+fresh_days = 7
+stale_days = 21
+
+[review]
+auto_save = true
+default_format = "markdown"
+output_dir = "reviews"
+"#
+        )
+        .unwrap();
+
+        let config = OrchestratorConfig::from_file(&config_path).unwrap();
+
+        // Gate config assertions.
+        assert_eq!(config.gate.default_policy, "strict");
+        assert_eq!(config.gate.baseline_path, ".oco/my-baseline.json");
+        assert_eq!(config.gate.min_overall_score, Some(0.75));
+        assert_eq!(config.gate.fresh_days, Some(7));
+        assert_eq!(config.gate.stale_days, Some(21));
+
+        // Review config assertions.
+        assert!(config.review.auto_save);
+        assert_eq!(config.review.default_format, "markdown");
+        assert_eq!(config.review.output_dir.as_deref(), Some("reviews"));
+
+        // Both sections resolve correctly in isolation.
+        let policy = config.gate.resolve_policy();
+        assert_eq!(policy.strategy, GateStrategy::Strict);
+        assert!((policy.min_overall_score - 0.75).abs() < 1e-10);
+        assert!(config.review.is_markdown());
+        assert!(!config.review.is_json());
     }
 }

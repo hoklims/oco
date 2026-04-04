@@ -26,6 +26,7 @@ pub mod state;
 
 pub use config::{
     OrchestratorConfig, evaluate_baseline_freshness, load_gate_config, load_gate_config_strict,
+    load_review_config_strict,
 };
 pub use error::OrchestratorError;
 pub use graph_runner::GraphRunner;

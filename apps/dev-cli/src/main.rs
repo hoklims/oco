@@ -1843,13 +1843,19 @@ fn cmd_runs_review_pack(
     let ws = Path::new(&workspace);
     let gate_cfg = oco_orchestrator_core::load_gate_config_strict(ws)
         .map_err(|e| anyhow::anyhow!("cannot resolve gate config: {e}"))?;
+    let review_cfg = oco_orchestrator_core::load_review_config_strict(ws)
+        .map_err(|e| anyhow::anyhow!("cannot resolve review config: {e}"))?;
 
     let packet = oco_orchestrator_core::build_review_packet(&run_dir, &run_id, &gate_cfg, ws)?;
 
-    if json_output {
+    // Resolve output format: CLI flags override config default_format.
+    let use_json = json_output || (!markdown_output && review_cfg.default_format == "json");
+    let use_markdown = !use_json && (markdown_output || review_cfg.default_format == "markdown");
+
+    if use_json {
         let json = packet.to_json().map_err(|e| anyhow::anyhow!("{e}"))?;
         r.emit(UiEvent::Info { message: json });
-    } else if markdown_output {
+    } else if use_markdown {
         r.emit(UiEvent::Info {
             message: packet.to_markdown(),
         });
@@ -1895,11 +1901,22 @@ fn cmd_runs_review_pack(
         }
     }
 
-    // Save to disk if --save is provided
-    if let Some(save_dir) = save {
+    // Resolve whether to save: explicit --save overrides config auto_save.
+    let effective_save: Option<Option<String>> = match save {
+        Some(_) => save, // User passed --save explicitly — honour as-is
+        None if review_cfg.auto_save => Some(None), // Config auto_save triggers save with no explicit dir
+        None => None,
+    };
+
+    // Save to disk if saving was resolved
+    if let Some(save_dir) = effective_save {
+        // Resolve target directory: explicit --save <dir> > config output_dir > run_dir
         let target_dir = match save_dir {
             Some(dir) => PathBuf::from(dir),
-            None => run_dir.clone(),
+            None => match review_cfg.output_dir {
+                Some(ref dir) => ws.join(dir),
+                None => run_dir.clone(),
+            },
         };
 
         if !target_dir.exists() {

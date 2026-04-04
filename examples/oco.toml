@@ -58,3 +58,12 @@ default_policy = "balanced"          # "strict", "balanced", or "lenient"
 # Q8: Baseline freshness thresholds (days). Defaults: fresh=14, stale=30.
 # fresh_days = 14
 # stale_days = 30
+
+# Review packet configuration (Q10).
+# Configures `oco runs review-pack` defaults so the command works
+# with minimal or no CLI arguments.
+[review]
+auto_save = false                        # Save review packets automatically (JSON + Markdown)
+default_format = "terminal"              # Default output: "terminal", "markdown", or "json"
+# Uncomment to save review packets to a fixed directory:
+# output_dir = ".oco/reviews"

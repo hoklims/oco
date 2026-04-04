@@ -618,6 +618,76 @@ fn trust_from_score(score: f64) -> TrustVerdict {
 }
 
 // ---------------------------------------------------------------------------
+// Q10: Per-repo review packet configuration
+// ---------------------------------------------------------------------------
+
+/// Per-repo review packet configuration (Q10).
+///
+/// Declares defaults for `oco runs review-pack` so it works naturally
+/// from `oco.toml` without ad-hoc CLI flags.
+///
+/// ```toml
+/// [review]
+/// auto_save = true
+/// default_format = "markdown"
+/// output_dir = ".oco/reviews"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ReviewConfig {
+    /// Automatically save review packet files when generating.
+    /// When true, `oco runs review-pack` behaves as if `--save` was passed.
+    /// Default: false.
+    pub auto_save: bool,
+    /// Default output format: `"terminal"`, `"markdown"`, or `"json"`.
+    /// CLI flags (`--json`, `--markdown`) override this.
+    /// Default: `"terminal"`.
+    pub default_format: String,
+    /// Directory to save review packets.
+    /// When set, overrides the default (run directory).
+    /// Relative paths are resolved from workspace root.
+    /// Default: `None` (save to run directory).
+    pub output_dir: Option<String>,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            auto_save: false,
+            default_format: "terminal".into(),
+            output_dir: None,
+        }
+    }
+}
+
+/// Valid format values for [`ReviewConfig::default_format`].
+const VALID_REVIEW_FORMATS: &[&str] = &["terminal", "markdown", "json"];
+
+impl ReviewConfig {
+    /// Validate semantic constraints.
+    pub fn validate(&self) -> Result<(), String> {
+        if !VALID_REVIEW_FORMATS.contains(&self.default_format.as_str()) {
+            return Err(format!(
+                "unknown review format '{}', expected one of: {}",
+                self.default_format,
+                VALID_REVIEW_FORMATS.join(", ")
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether the resolved format (considering CLI overrides) is JSON.
+    pub fn is_json(&self) -> bool {
+        self.default_format == "json"
+    }
+
+    /// Whether the resolved format (considering CLI overrides) is Markdown.
+    pub fn is_markdown(&self) -> bool {
+        self.default_format == "markdown"
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1041,5 +1111,92 @@ mod tests {
         assert_eq!(trust_from_score(0.33), TrustVerdict::Low);
         assert_eq!(trust_from_score(0.1), TrustVerdict::Low);
         assert_eq!(trust_from_score(0.0), TrustVerdict::None);
+    }
+
+    // ── Q10: ReviewConfig ──
+
+    #[test]
+    fn review_config_default() {
+        let cfg = ReviewConfig::default();
+        assert!(!cfg.auto_save);
+        assert_eq!(cfg.default_format, "terminal");
+        assert!(cfg.output_dir.is_none());
+    }
+
+    #[test]
+    fn review_config_validate_valid_formats() {
+        for fmt in &["terminal", "markdown", "json"] {
+            let cfg = ReviewConfig {
+                default_format: fmt.to_string(),
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_ok(), "expected valid for {fmt}");
+        }
+    }
+
+    #[test]
+    fn review_config_validate_invalid_format() {
+        let cfg = ReviewConfig {
+            default_format: "html".into(),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("unknown review format"), "got: {err}");
+    }
+
+    #[test]
+    fn review_config_serde_roundtrip() {
+        let cfg = ReviewConfig {
+            auto_save: true,
+            default_format: "markdown".into(),
+            output_dir: Some(".oco/reviews".into()),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let restored: ReviewConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, restored);
+    }
+
+    #[test]
+    fn review_config_serde_default_fields() {
+        let cfg: ReviewConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(cfg, ReviewConfig::default());
+    }
+
+    #[test]
+    fn review_config_toml_roundtrip() {
+        let cfg = ReviewConfig {
+            auto_save: true,
+            default_format: "json".into(),
+            output_dir: Some("reviews".into()),
+        };
+        let toml_str = toml::to_string(&cfg).unwrap();
+        let parsed: ReviewConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn review_config_toml_empty_uses_defaults() {
+        let cfg: ReviewConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg, ReviewConfig::default());
+    }
+
+    #[test]
+    fn review_config_is_json() {
+        let cfg = ReviewConfig {
+            default_format: "json".into(),
+            ..Default::default()
+        };
+        assert!(cfg.is_json());
+        assert!(!cfg.is_markdown());
+    }
+
+    #[test]
+    fn review_config_is_markdown() {
+        let cfg = ReviewConfig {
+            default_format: "markdown".into(),
+            ..Default::default()
+        };
+        assert!(cfg.is_markdown());
+        assert!(!cfg.is_json());
     }
 }

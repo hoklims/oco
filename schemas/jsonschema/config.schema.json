@@ -145,6 +145,28 @@
         }
       },
       "additionalProperties": false
+    },
+    "review": {
+      "description": "Review packet configuration for merge-readiness artifacts (Q10).",
+      "type": "object",
+      "properties": {
+        "auto_save": {
+          "description": "Automatically save review packets (JSON + Markdown) after each run.",
+          "type": "boolean",
+          "default": false
+        },
+        "default_format": {
+          "description": "Default output format for `oco runs review-pack`.",
+          "type": "string",
+          "enum": ["terminal", "markdown", "json"],
+          "default": "terminal"
+        },
+        "output_dir": {
+          "description": "Directory to save review packets. If omitted, packets are saved to the run directory.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,

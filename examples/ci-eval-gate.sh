@@ -54,4 +54,11 @@ esac
 #   oco eval-gate --report ./gate-artifacts
 #   This writes gate-artifacts/gate-report.md and gate-artifacts/gate-report.json
 
+# Q10: Generate a unified review packet after the gate check:
+#   oco runs review-pack last --save ./review-artifacts
+#   This writes review-artifacts/review-packet.json and review-artifacts/review-packet.md
+#
+# With [review] config in oco.toml, the command uses repo defaults:
+#   oco runs review-pack last
+
 exit $EXIT_CODE
