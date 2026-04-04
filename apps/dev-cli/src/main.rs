@@ -873,6 +873,9 @@ fn save_run_artifacts(
             .filter(|o| matches!(o.kind, oco_shared_types::ObservationKind::Error { .. }))
             .count();
 
+        // Load per-repo scorecard weight overrides from oco.toml (if present).
+        let weights = oco_orchestrator_core::load_scorecard_weights(&base).unwrap_or_default();
+
         let scorecard = oco_orchestrator_core::ScorecardBuilder::new(session_id)
             .success(success)
             .trust_verdict(mission.trust_verdict)
@@ -887,6 +890,7 @@ fn save_run_artifacts(
             )
             .replans(replan_count)
             .errors(error_count, state.session.step_count)
+            .with_weights(weights)
             .build();
 
         atomic_write(
@@ -2081,8 +2085,9 @@ fn cmd_runs_compare(
     let baseline_dir = resolve_run_dir(&baseline_id, &workspace)?;
     let candidate_dir = resolve_run_dir(&candidate_id, &workspace)?;
 
-    let baseline_sc = load_or_build_scorecard(&baseline_dir, &baseline_id)?;
-    let candidate_sc = load_or_build_scorecard(&candidate_dir, &candidate_id)?;
+    let weights = load_weights_for_workspace(&workspace);
+    let baseline_sc = load_or_build_scorecard(&baseline_dir, &baseline_id, &weights)?;
+    let candidate_sc = load_or_build_scorecard(&candidate_dir, &candidate_id, &weights)?;
 
     let comparison = ScorecardComparison::compare(&baseline_sc, &candidate_sc);
 
@@ -2142,12 +2147,27 @@ fn scorecard_from_scenario_result(
         .build()
 }
 
+/// Load per-repo scorecard weight overrides from `oco.toml`.
+///
+/// Returns `ScorecardWeights::default()` (all `None`) on any failure — this is
+/// intentional: missing or broken config should never block scorecard loading.
+fn load_weights_for_workspace(workspace: &str) -> oco_shared_types::ScorecardWeights {
+    oco_orchestrator_core::load_scorecard_weights(Path::new(workspace)).unwrap_or_default()
+}
+
 /// Load a scorecard from disk, or reconstruct honestly from available artifacts.
 ///
 /// Priority: scorecard.json > reconstruction from summary.json + mission.json + trace.jsonl.
 /// Dimensions without data are left at the ScorecardBuilder's documented defaults
 /// (which produce honest "no data" details), not fabricated scores.
-fn load_or_build_scorecard(run_dir: &Path, run_id: &str) -> Result<oco_shared_types::RunScorecard> {
+///
+/// `weights` are applied when reconstructing from summary.json. When loading a
+/// pre-existing scorecard.json the weights have already been baked in at save time.
+fn load_or_build_scorecard(
+    run_dir: &Path,
+    run_id: &str,
+    weights: &oco_shared_types::ScorecardWeights,
+) -> Result<oco_shared_types::RunScorecard> {
     use oco_shared_types::TrustVerdict;
 
     // Try scorecard.json first (saved by oco run since Q5).
@@ -2181,7 +2201,8 @@ fn load_or_build_scorecard(run_dir: &Path, run_id: &str) -> Result<oco_shared_ty
     let mut builder = oco_orchestrator_core::ScorecardBuilder::new(run_id)
         .success(success)
         .trust_verdict(trust)
-        .cost(tokens, steps, duration_ms, 0, 0);
+        .cost(tokens, steps, duration_ms, 0, 0)
+        .with_weights(weights.clone());
 
     // Mission memory — use the real artifact if present.
     let mission_path = run_dir.join("mission.json");
@@ -2268,9 +2289,10 @@ fn cmd_eval_gate(
     let baseline_sc = load_baseline_scorecard(&effective_baseline)?;
 
     // Load candidate scorecard — supports scorecard.json, eval results, run dir, or "last"
+    let weights = load_weights_for_workspace(&workspace);
     let candidate_sc = if effective_candidate == "last" {
         let run_dir = resolve_run_dir("last", &workspace)?;
-        load_or_build_scorecard(&run_dir, "last")?
+        load_or_build_scorecard(&run_dir, "last", &weights)?
     } else {
         load_candidate_scorecard(&effective_candidate)?
     };
@@ -2445,12 +2467,13 @@ fn load_candidate_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard
             let sc: oco_shared_types::RunScorecard = serde_json::from_str(&content)?;
             return Ok(sc);
         }
-        // Fall back to reconstruct from summary
+        // Fall back to reconstruct from summary (no workspace context → default weights)
         return load_or_build_scorecard(
             &p,
             &p.file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default(),
+            &oco_shared_types::ScorecardWeights::default(),
         );
     }
 
@@ -2531,10 +2554,11 @@ fn cmd_baseline_save(
         std::fs::create_dir_all(parent)?;
     }
 
+    let weights = load_weights_for_workspace(&workspace);
     let (scorecard, source_label) = if source == "last" || uuid::Uuid::parse_str(&source).is_ok() {
         // Load from run dir
         let run_dir = resolve_run_dir(&source, &workspace)?;
-        let sc = load_or_build_scorecard(&run_dir, &source)?;
+        let sc = load_or_build_scorecard(&run_dir, &source, &weights)?;
         (sc, format!("run:{source}"))
     } else {
         // Try loading as a file
@@ -2581,9 +2605,10 @@ fn cmd_baseline_promote(
     let ws = Path::new(&workspace);
 
     // Resolve scorecard from source (same logic as baseline-save)
+    let weights = load_weights_for_workspace(&workspace);
     let (scorecard, source_label) = if source == "last" || uuid::Uuid::parse_str(&source).is_ok() {
         let run_dir = resolve_run_dir(&source, &workspace)?;
-        let sc = load_or_build_scorecard(&run_dir, &source)?;
+        let sc = load_or_build_scorecard(&run_dir, &source, &weights)?;
         (sc, format!("run:{source}"))
     } else {
         let sc = load_candidate_scorecard(&source)?;
