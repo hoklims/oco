@@ -432,6 +432,55 @@ impl Renderer for JsonlRenderer {
                 }),
             ),
 
+            UiEvent::ReviewPacketHeader {
+                run_id,
+                merge_readiness,
+                trust_verdict,
+                gate_verdict,
+            } => self.emit_json(
+                "review_packet_header",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "merge_readiness": merge_readiness,
+                    "trust_verdict": trust_verdict,
+                    "gate_verdict": gate_verdict,
+                }),
+            ),
+            UiEvent::ReviewPacketScorecard {
+                overall_score,
+                dimensions,
+            } => self.emit_json(
+                "review_packet_scorecard",
+                serde_json::json!({
+                    "overall_score": overall_score,
+                    "dimensions": dimensions.iter().map(|(d, s)| serde_json::json!({"dimension": d, "score": s})).collect::<Vec<_>>(),
+                }),
+            ),
+            UiEvent::ReviewPacketChanges {
+                modified_files,
+                key_decisions,
+                narrative,
+            } => self.emit_json(
+                "review_packet_changes",
+                serde_json::json!({
+                    "modified_files": modified_files,
+                    "key_decisions": key_decisions,
+                    "narrative": narrative,
+                }),
+            ),
+            UiEvent::ReviewPacketRisks {
+                risks,
+                open_questions,
+                unavailable_data,
+            } => self.emit_json(
+                "review_packet_risks",
+                serde_json::json!({
+                    "risks": risks,
+                    "open_questions": open_questions,
+                    "unavailable_data": unavailable_data,
+                }),
+            ),
+
             UiEvent::Info { message } => {
                 self.emit_json("info", serde_json::json!({ "message": message }))
             }

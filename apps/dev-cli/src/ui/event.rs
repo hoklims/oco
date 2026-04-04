@@ -236,6 +236,32 @@ pub enum UiEvent {
         recommendation: String,
     },
 
+    // ── Review Packet (Q9) ────────────────────────────────
+    /// Header for review packet output.
+    ReviewPacketHeader {
+        run_id: String,
+        merge_readiness: String,
+        trust_verdict: Option<String>,
+        gate_verdict: Option<String>,
+    },
+    /// Review packet scorecard summary line.
+    ReviewPacketScorecard {
+        overall_score: f64,
+        dimensions: Vec<(String, f64)>,
+    },
+    /// Review packet changes summary.
+    ReviewPacketChanges {
+        modified_files: Vec<String>,
+        key_decisions: Vec<String>,
+        narrative: Option<String>,
+    },
+    /// Review packet open risks.
+    ReviewPacketRisks {
+        risks: Vec<String>,
+        open_questions: Vec<String>,
+        unavailable_data: Vec<String>,
+    },
+
     // ── Generic ───────────────────────────────────────────
     Info {
         message: String,

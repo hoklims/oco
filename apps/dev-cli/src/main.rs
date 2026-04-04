@@ -236,6 +236,23 @@ enum RunsAction {
         #[arg(long)]
         json: bool,
     },
+    /// Generate a unified review packet for a run (Q9 merge-readiness bundle)
+    ReviewPack {
+        /// Run/session ID (or "last" for most recent)
+        id: String,
+        /// Workspace path (to find .oco/runs/ and oco.toml)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Output full packet as JSON
+        #[arg(long)]
+        json: bool,
+        /// Output as Markdown
+        #[arg(long)]
+        markdown: bool,
+        /// Write review packet files to the run directory (or specified dir)
+        #[arg(long)]
+        save: Option<Option<String>>,
+    },
     /// Compare two runs' scorecards (Q5 regression detection)
     Compare {
         /// First run ID (or "last" for most recent)
@@ -368,6 +385,13 @@ async fn main() -> Result<()> {
                 workspace,
                 json,
             } => cmd_runs_handoff(&mut *r, id, workspace, json)?,
+            RunsAction::ReviewPack {
+                id,
+                workspace,
+                json,
+                markdown,
+                save,
+            } => cmd_runs_review_pack(&mut *r, id, workspace, json, markdown, save)?,
             RunsAction::Compare {
                 baseline,
                 candidate,
@@ -1795,6 +1819,112 @@ fn cmd_eval_compare(
         let symbol = batch.overall_verdict.symbol();
         r.emit(UiEvent::Info {
             message: format!("\n  Overall: {symbol} {verdict_str}"),
+        });
+    }
+
+    Ok(())
+}
+
+/// Generate a unified review packet for a run (Q9).
+fn cmd_runs_review_pack(
+    r: &mut dyn Renderer,
+    id: String,
+    workspace: String,
+    json_output: bool,
+    markdown_output: bool,
+    save: Option<Option<String>>,
+) -> Result<()> {
+    let run_dir = resolve_run_dir(&id, &workspace)?;
+    let run_id = run_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| id.clone());
+
+    let ws = Path::new(&workspace);
+    let gate_cfg = oco_orchestrator_core::load_gate_config_strict(ws)
+        .unwrap_or_else(|_| oco_shared_types::GateConfig::default());
+
+    let packet =
+        oco_orchestrator_core::build_review_packet(&run_dir, &run_id, &gate_cfg, ws)?;
+
+    if json_output {
+        let json = packet
+            .to_json()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        r.emit(UiEvent::Info { message: json });
+    } else if markdown_output {
+        r.emit(UiEvent::Info {
+            message: packet.to_markdown(),
+        });
+    } else {
+        // Structured terminal output via UiEvents
+        r.emit(UiEvent::ReviewPacketHeader {
+            run_id: packet.run_id.clone(),
+            merge_readiness: packet.merge_readiness.label().to_string(),
+            trust_verdict: packet.trust_verdict.map(|tv| tv.label().to_string()),
+            gate_verdict: packet.gate_verdict.map(|gv| gv.label().to_string()),
+        });
+
+        if let Some(ref sc) = packet.scorecard {
+            r.emit(UiEvent::ReviewPacketScorecard {
+                overall_score: sc.overall_score,
+                dimensions: sc
+                    .dimensions
+                    .iter()
+                    .map(|d| (d.dimension.label().to_string(), d.score))
+                    .collect(),
+            });
+        }
+
+        r.emit(UiEvent::ReviewPacketChanges {
+            modified_files: packet.changes.modified_files.clone(),
+            key_decisions: packet.changes.key_decisions.clone(),
+            narrative: packet.changes.narrative.clone(),
+        });
+
+        r.emit(UiEvent::ReviewPacketRisks {
+            risks: packet.open_risks.risks.clone(),
+            open_questions: packet.open_risks.open_questions.clone(),
+            unavailable_data: packet.open_risks.unavailable_data.clone(),
+        });
+
+        // Show baseline freshness if available
+        if let Some(ref bf) = packet.baseline_freshness {
+            r.emit(UiEvent::BaselineFreshness {
+                freshness: bf.freshness.label().to_string(),
+                age_days: bf.age_days,
+                recommendation: bf.recommendation.clone(),
+            });
+        }
+    }
+
+    // Save to disk if --save is provided
+    if let Some(save_dir) = save {
+        let target_dir = match save_dir {
+            Some(dir) => PathBuf::from(dir),
+            None => run_dir.clone(),
+        };
+
+        if !target_dir.exists() {
+            std::fs::create_dir_all(&target_dir)?;
+        }
+
+        let json_path = target_dir.join("review-packet.json");
+        let md_path = target_dir.join("review-packet.md");
+
+        packet
+            .save_to(&json_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        packet
+            .save_markdown(&md_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        r.emit(UiEvent::Success {
+            message: format!(
+                "Review packet saved to {} and {}",
+                json_path.display(),
+                md_path.display(),
+            ),
         });
     }
 

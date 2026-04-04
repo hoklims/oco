@@ -757,6 +757,133 @@ impl Renderer for TerminalRenderer {
                     .write_line(&format!("    {}", style(&recommendation).dim(),));
             }
 
+            // ── Review Packet (Q9) ────────────────────────
+            UiEvent::ReviewPacketHeader {
+                run_id,
+                merge_readiness,
+                trust_verdict,
+                gate_verdict,
+            } => {
+                let _ = self.term.write_line("");
+                let _ = self.term.write_line(&format!(
+                    "  {} OCO Review Packet: {}",
+                    style(self.icon_bullet()).cyan().bold(),
+                    style(&run_id).bold(),
+                ));
+                let readiness_styled = match merge_readiness.as_str() {
+                    "ready" => style(&merge_readiness).green().bold(),
+                    "conditionally_ready" => style(&merge_readiness).yellow().bold(),
+                    "not_ready" => style(&merge_readiness).red().bold(),
+                    _ => style(&merge_readiness).dim(),
+                };
+                let _ = self.term.write_line(&format!(
+                    "    Merge readiness: {}",
+                    readiness_styled,
+                ));
+                if let Some(tv) = trust_verdict {
+                    let tv_styled = match tv.as_str() {
+                        "high" => style(&tv).green(),
+                        "medium" => style(&tv).yellow(),
+                        "low" => style(&tv).red(),
+                        _ => style(&tv).dim(),
+                    };
+                    let _ = self.term.write_line(&format!("    Trust: {}", tv_styled));
+                }
+                if let Some(gv) = gate_verdict {
+                    let gv_styled = match gv.as_str() {
+                        "pass" => style(&gv).green(),
+                        "warn" => style(&gv).yellow(),
+                        "fail" => style(&gv).red().bold(),
+                        _ => style(&gv).dim(),
+                    };
+                    let _ = self.term.write_line(&format!("    Gate: {}", gv_styled));
+                }
+            }
+
+            UiEvent::ReviewPacketScorecard {
+                overall_score,
+                dimensions,
+            } => {
+                let _ = self.term.write_line(&format!(
+                    "\n    {} Scorecard (overall: {})",
+                    self.icon_bullet(),
+                    style(format!("{overall_score:.2}")).bold(),
+                ));
+                for (dim, score) in dimensions {
+                    let _ = self.term.write_line(&format!(
+                        "      {:<24} {:.2}",
+                        dim, score,
+                    ));
+                }
+            }
+
+            UiEvent::ReviewPacketChanges {
+                modified_files,
+                key_decisions,
+                narrative,
+            } => {
+                if !modified_files.is_empty() {
+                    let _ = self.term.write_line(&format!(
+                        "\n    {} Changes ({} files)",
+                        self.icon_bullet(),
+                        modified_files.len(),
+                    ));
+                    for f in &modified_files {
+                        let _ = self.term.write_line(&format!("      - {f}"));
+                    }
+                }
+                if !key_decisions.is_empty() {
+                    let _ = self.term.write_line(&format!(
+                        "\n    {} Key decisions",
+                        self.icon_bullet(),
+                    ));
+                    for d in &key_decisions {
+                        let _ = self.term.write_line(&format!("      - {d}"));
+                    }
+                }
+                if let Some(n) = narrative {
+                    let _ = self.term.write_line(&format!(
+                        "\n    {} Narrative: {}",
+                        self.icon_bullet(),
+                        style(&n).dim(),
+                    ));
+                }
+            }
+
+            UiEvent::ReviewPacketRisks {
+                risks,
+                open_questions,
+                unavailable_data,
+            } => {
+                if !risks.is_empty() || !open_questions.is_empty() || !unavailable_data.is_empty()
+                {
+                    let _ = self
+                        .term
+                        .write_line(&format!("\n    {} Open risks", self.icon_bullet()));
+                    for r in &risks {
+                        let _ = self.term.write_line(&format!(
+                            "      {} {}",
+                            style("!").red(),
+                            r,
+                        ));
+                    }
+                    for q in &open_questions {
+                        let _ = self.term.write_line(&format!(
+                            "      {} {}",
+                            style("?").yellow(),
+                            q,
+                        ));
+                    }
+                    for u in &unavailable_data {
+                        let _ = self.term.write_line(&format!(
+                            "      {} {}",
+                            style("~").dim(),
+                            u,
+                        ));
+                    }
+                }
+            }
+
             // ── Generic ───────────────────────────────────
             UiEvent::Info { message } => {
                 let _ = self.term.write_line(&message);
