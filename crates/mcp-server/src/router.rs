@@ -1631,4 +1631,615 @@ mod tests {
         // 6th should be rejected
         assert!(!limiter.check());
     }
+
+    // =========================================================================
+    // Adversarial / robustness tests (ADR-007 gap: "Adversarial inputs")
+    // =========================================================================
+
+    // -- Malformed payload: invalid JSON --------------------------------------
+
+    #[tokio::test]
+    async fn hook_invalid_json_returns_4xx() {
+        let app = create_router(test_state());
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(b"this is not json".to_vec()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // Axum returns 400 or 422 for unparseable JSON bodies
+        assert!(
+            resp.status().is_client_error(),
+            "invalid JSON should produce a 4xx, got {}",
+            resp.status()
+        );
+    }
+
+    // -- Malformed payload: truncated JSON ------------------------------------
+
+    #[tokio::test]
+    async fn hook_truncated_json_returns_4xx() {
+        let app = create_router(test_state());
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(b"{\"event\": \"PostToolUse\", \"data\":".to_vec()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            resp.status().is_client_error(),
+            "truncated JSON should produce a 4xx, got {}",
+            resp.status()
+        );
+    }
+
+    // -- Malformed payload: empty body ----------------------------------------
+
+    #[tokio::test]
+    async fn hook_empty_body_returns_4xx() {
+        let app = create_router(test_state());
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            resp.status().is_client_error(),
+            "empty body should produce a 4xx, got {}",
+            resp.status()
+        );
+    }
+
+    // -- Malformed payload: valid JSON but wrong shape (array instead of object)
+
+    #[tokio::test]
+    async fn hook_json_array_instead_of_object_returns_4xx() {
+        let app = create_router(test_state());
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(b"[1, 2, 3]".to_vec()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            resp.status().is_client_error(),
+            "JSON array should produce a 4xx, got {}",
+            resp.status()
+        );
+    }
+
+    // -- Oversized payload: body exceeding HOOK_BODY_LIMIT (64 KB) -----------
+
+    #[tokio::test]
+    async fn hook_oversized_body_returns_413() {
+        let app = create_router(test_state());
+
+        // Build a payload larger than 64 KB
+        let big_data = "x".repeat(70_000);
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": {
+                "tool_name": "Edit",
+                "success": true,
+                "output_preview": big_data
+            }
+        });
+        let body_bytes_vec = serde_json::to_vec(&body).unwrap();
+        assert!(
+            body_bytes_vec.len() > 64 * 1024,
+            "test payload must exceed 64 KB (got {} bytes)",
+            body_bytes_vec.len()
+        );
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(body_bytes_vec))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "oversized body should trigger 413 Payload Too Large"
+        );
+
+        // Verify the response is JSON with a structured error
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            json["error"].as_str().unwrap().contains("too large"),
+            "413 response should include 'too large' in error field"
+        );
+        assert_eq!(json["max_bytes"], 64 * 1024);
+    }
+
+    // -- Auth edge case: empty bearer token -----------------------------------
+
+    #[tokio::test]
+    async fn hook_auth_rejects_empty_bearer_token() {
+        let app = create_router(test_state_with_secret("s3cret"));
+
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer ")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "empty bearer token should be rejected"
+        );
+    }
+
+    // -- Auth edge case: wrong token value ------------------------------------
+
+    #[tokio::test]
+    async fn hook_auth_rejects_wrong_token() {
+        let app = create_router(test_state_with_secret("s3cret"));
+
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer wrong-token")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "wrong bearer token should be rejected"
+        );
+
+        // Verify the response body says "unauthorized"
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["message"], "unauthorized");
+    }
+
+    // -- Auth edge case: Basic scheme instead of Bearer -----------------------
+
+    #[tokio::test]
+    async fn hook_auth_rejects_basic_scheme() {
+        let app = create_router(test_state_with_secret("s3cret"));
+
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .header("authorization", "Basic czNjcmV0") // base64("s3cret")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "Basic auth scheme should be rejected (only Bearer accepted)"
+        );
+    }
+
+    // -- Auth edge case: token with extra whitespace --------------------------
+
+    #[tokio::test]
+    async fn hook_auth_rejects_token_with_trailing_space() {
+        let app = create_router(test_state_with_secret("s3cret"));
+
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer s3cret ")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "token with trailing space should be rejected (exact match)"
+        );
+    }
+
+    // -- Unexpected fields: extra fields should not crash ----------------------
+
+    #[tokio::test]
+    async fn hook_extra_fields_are_ignored_gracefully() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "PostToolUse",
+            "session_id": "test-session",
+            "timestamp": "2025-01-01T00:00:00Z",
+            "data": {
+                "tool_name": "Edit",
+                "success": true,
+                "duration_ms": 10,
+                "unexpected_field": "should be ignored",
+                "nested_unknown": { "deep": true }
+            },
+            "extra_top_level_field": "also ignored",
+            "another_extra": 42
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "extra fields in payload should not cause errors"
+        );
+
+        let bytes = body_bytes(resp.into_body()).await;
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ok"], true);
+    }
+
+    // -- Unexpected fields: extra fields on unified endpoint -------------------
+
+    #[tokio::test]
+    async fn hook_unified_extra_fields_ignored() {
+        let app = create_router(test_state());
+
+        // Send a PostToolUse event to the unified endpoint with extra fields
+        let body = serde_json::json!({
+            "event_type": "PostToolUse",
+            "tool_name": "Read",
+            "success": true,
+            "duration_ms": 5,
+            "unexpected_extra": "should not crash"
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/event")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // The unified endpoint uses ClaudeHookEvent which may reject unknown
+        // variants — either 200 OK or a 4xx is acceptable; the key assertion
+        // is that the server does NOT panic (500).
+        assert!(
+            !resp.status().is_server_error(),
+            "extra fields on unified endpoint should not cause 500, got {}",
+            resp.status()
+        );
+    }
+
+    // -- Unexpected fields: every specific endpoint tolerates extras -----------
+
+    #[tokio::test]
+    async fn hook_task_completed_extra_fields_ignored() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "TaskCompleted",
+            "data": {
+                "task_id": "t-1",
+                "success": true,
+                "output": "done",
+                "bonus_field": [1, 2, 3]
+            }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/task-completed")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn hook_file_changed_extra_fields_ignored() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "FileChanged",
+            "data": {
+                "paths": ["a.rs"],
+                "change_type": "created",
+                "workspace_root": "/tmp/ws",
+                "git_branch": "main"
+            }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/file-changed")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // -- Concurrent request simulation ----------------------------------------
+
+    #[tokio::test]
+    async fn hook_concurrent_requests_do_not_panic() {
+        use std::sync::Arc;
+        use tokio::task::JoinSet;
+
+        let state = test_state();
+
+        // Spawn 20 concurrent requests to different hook endpoints
+        let mut join_set = JoinSet::new();
+
+        let payloads = [
+            ("/api/v1/hooks/post-tool", serde_json::json!({
+                "event": "PostToolUse",
+                "session_id": "concurrent-1",
+                "data": { "tool_name": "Edit", "success": true }
+            })),
+            ("/api/v1/hooks/task-completed", serde_json::json!({
+                "event": "TaskCompleted",
+                "data": { "task_id": "ct-1", "success": true }
+            })),
+            ("/api/v1/hooks/file-changed", serde_json::json!({
+                "event": "FileChanged",
+                "data": { "paths": ["lib.rs"] }
+            })),
+            ("/api/v1/hooks/stop", serde_json::json!({
+                "event": "Stop",
+                "data": { "reason": "user_cancelled" }
+            })),
+        ];
+
+        for i in 0..20 {
+            let state = Arc::clone(&state);
+            let (uri, body) = payloads[i % payloads.len()].clone();
+
+            join_set.spawn(async move {
+                let app = create_router(state);
+
+                let req = axum::http::Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap();
+
+                let resp = app.oneshot(req).await.unwrap();
+                assert!(
+                    !resp.status().is_server_error(),
+                    "concurrent request #{i} returned 5xx: {}",
+                    resp.status()
+                );
+            });
+        }
+
+        // All tasks must complete without panic
+        while let Some(result) = join_set.join_next().await {
+            result.expect("concurrent hook task panicked");
+        }
+    }
+
+    // -- Concurrent requests: mixed valid and invalid -------------------------
+
+    #[tokio::test]
+    async fn hook_concurrent_mixed_valid_invalid_no_panic() {
+        use tokio::task::JoinSet;
+
+        let state = test_state();
+        let mut join_set = JoinSet::new();
+
+        for i in 0..10 {
+            let state = Arc::clone(&state);
+            join_set.spawn(async move {
+                let app = create_router(state);
+
+                let (uri, body): (&str, Body) = if i % 2 == 0 {
+                    // Valid request
+                    let b = serde_json::json!({
+                        "event": "PostToolUse",
+                        "data": { "tool_name": "Read", "success": true }
+                    });
+                    ("/api/v1/hooks/post-tool", Body::from(serde_json::to_vec(&b).unwrap()))
+                } else {
+                    // Invalid (bad JSON)
+                    ("/api/v1/hooks/post-tool", Body::from(b"not-json".to_vec()))
+                };
+
+                let req = axum::http::Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap();
+
+                let resp = app.oneshot(req).await.unwrap();
+                assert!(
+                    !resp.status().is_server_error(),
+                    "request #{i} should not produce 5xx: {}",
+                    resp.status()
+                );
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            result.expect("mixed concurrent hook task panicked");
+        }
+    }
+
+    // -- Hook failure recovery: handler does not 500 on missing data fields ---
+
+    #[tokio::test]
+    async fn hook_stop_with_null_data_fields_does_not_500() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "Stop",
+            "session_id": null,
+            "data": {
+                "reason": null,
+                "last_message": null
+            }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/stop")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            !resp.status().is_server_error(),
+            "null data fields should not cause 500, got {}",
+            resp.status()
+        );
+    }
+
+    // -- Hook failure recovery: missing `data` field entirely ------------------
+
+    #[tokio::test]
+    async fn hook_post_tool_missing_data_field_returns_4xx() {
+        let app = create_router(test_state());
+
+        // HookPayload has `data` as serde_json::Value with #[serde(default)]
+        // so missing data → null → PostToolUseData deser fails (tool_name required)
+        let body = serde_json::json!({
+            "event": "PostToolUse"
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            resp.status().is_client_error(),
+            "missing data field should produce 4xx, got {}",
+            resp.status()
+        );
+    }
+
+    // -- Hook failure recovery: missing `event` field entirely -----------------
+
+    #[tokio::test]
+    async fn hook_missing_event_field_returns_4xx() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(
+            resp.status().is_client_error(),
+            "missing event field should produce 4xx, got {}",
+            resp.status()
+        );
+    }
+
+    // -- Hook failure recovery: empty string event name -----------------------
+
+    #[tokio::test]
+    async fn hook_empty_event_name_returns_400() {
+        let app = create_router(test_state());
+
+        let body = serde_json::json!({
+            "event": "",
+            "data": { "tool_name": "Edit", "success": true }
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/hooks/post-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "empty event name should be treated as mismatch → 400"
+        );
+    }
+
+    // -- GET instead of POST should return 405 --------------------------------
+
+    #[tokio::test]
+    async fn hook_get_method_returns_405() {
+        let app = create_router(test_state());
+
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/v1/hooks/post-tool")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "GET on a POST-only hook route should return 405"
+        );
+    }
 }
