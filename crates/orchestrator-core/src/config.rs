@@ -182,6 +182,21 @@ pub fn load_gate_config(workspace: &Path) -> GateConfig {
     config.gate
 }
 
+/// Strict gate config loader: returns an error if `oco.toml` exists but is
+/// invalid.  Returns `GateConfig::default()` only when no config file is
+/// present (which is a legitimate "use defaults" signal).
+///
+/// Use this in commands that *depend* on the gate contract (`eval-gate`,
+/// `baseline-save`) so that a broken config is never silently swallowed.
+pub fn load_gate_config_strict(workspace: &Path) -> Result<GateConfig, ConfigError> {
+    let config_path = workspace.join("oco.toml");
+    if !config_path.exists() {
+        return Ok(GateConfig::default());
+    }
+    let config = OrchestratorConfig::from_file(&config_path)?;
+    Ok(config.gate)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("failed to read config file {0}: {1}")]
@@ -332,5 +347,87 @@ baseline_path = "quality/baseline.json"
         let dir = tempfile::tempdir().unwrap();
         let gate = load_gate_config(dir.path());
         assert_eq!(gate, GateConfig::default());
+    }
+
+    // ── load_gate_config_strict ──
+
+    #[test]
+    fn strict_no_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = load_gate_config_strict(dir.path()).unwrap();
+        assert_eq!(gate, GateConfig::default());
+    }
+
+    #[test]
+    fn strict_valid_file_returns_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+default_policy = "strict"
+baseline_path = "my/baseline.json"
+"#
+        )
+        .unwrap();
+
+        let gate = load_gate_config_strict(dir.path()).unwrap();
+        assert_eq!(gate.default_policy, "strict");
+        assert_eq!(gate.baseline_path, "my/baseline.json");
+    }
+
+    #[test]
+    fn strict_invalid_gate_policy_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+default_policy = "ultra-strict"
+"#
+        )
+        .unwrap();
+
+        let result = load_gate_config_strict(dir.path());
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("unknown gate policy"), "got: {msg}");
+    }
+
+    #[test]
+    fn strict_broken_toml_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("oco.toml"), "invalid [[[ toml").unwrap();
+
+        let result = load_gate_config_strict(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn strict_invalid_min_score_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("oco.toml")).unwrap();
+        writeln!(
+            f,
+            r#"
+[llm]
+provider = "stub"
+
+[gate]
+min_overall_score = 2.0
+"#
+        )
+        .unwrap();
+
+        let result = load_gate_config_strict(dir.path());
+        assert!(result.is_err());
     }
 }

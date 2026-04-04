@@ -1203,15 +1203,18 @@ fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
 
     let mut issues = 0u32;
 
-    // Check oco.toml
+    // Check oco.toml — capture result for downstream gate check
     let config_path = ws_path.join("oco.toml");
-    if config_path.exists() {
+    let parsed_config = if config_path.exists() {
         match oco_orchestrator_core::OrchestratorConfig::from_file(&config_path) {
-            Ok(_) => r.emit(UiEvent::DoctorCheck {
-                name: "oco.toml".into(),
-                status: CheckStatus::Pass,
-                detail: Some("valid".into()),
-            }),
+            Ok(cfg) => {
+                r.emit(UiEvent::DoctorCheck {
+                    name: "oco.toml".into(),
+                    status: CheckStatus::Pass,
+                    detail: Some("valid".into()),
+                });
+                Some(cfg)
+            }
             Err(e) => {
                 r.emit(UiEvent::DoctorCheck {
                     name: "oco.toml".into(),
@@ -1219,6 +1222,7 @@ fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
                     detail: Some(format!("parse error: {e}")),
                 });
                 issues += 1;
+                None
             }
         }
     } else {
@@ -1227,7 +1231,8 @@ fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
             status: CheckStatus::Warn,
             detail: Some("not found — using defaults".into()),
         });
-    }
+        None
+    };
 
     // Check .oco directory
     let oco_dir = ws_path.join(".oco");
@@ -1373,46 +1378,65 @@ fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
         });
     }
 
-    // Q7: Check gate configuration
+    // Q7: Check gate configuration — uses parsed config when available,
+    // defaults when no file exists, and skips when oco.toml was invalid
+    // (to avoid contradictory "oco.toml: FAIL" + "gate config: PASS").
     {
-        let config = oco_orchestrator_core::OrchestratorConfig::load_from_dir(&ws_path);
-        let gate = &config.gate;
-        match gate.validate() {
-            Ok(()) => {
+        let gate = if let Some(ref cfg) = parsed_config {
+            cfg.gate.clone()
+        } else if config_path.exists() {
+            // oco.toml exists but failed to parse — signal the inconsistency
+            r.emit(UiEvent::DoctorCheck {
+                name: "gate config".into(),
+                status: CheckStatus::Fail,
+                detail: Some("skipped — oco.toml is invalid".into()),
+            });
+            issues += 1;
+            // Skip baseline check too
+            oco_shared_types::GateConfig::default() // for the let-binding; we already emitted
+        } else {
+            oco_shared_types::GateConfig::default()
+        };
+
+        // Only run the detailed gate checks if oco.toml was absent or valid
+        if !config_path.exists() || parsed_config.is_some() {
+            match gate.validate() {
+                Ok(()) => {
+                    r.emit(UiEvent::DoctorCheck {
+                        name: "gate config".into(),
+                        status: CheckStatus::Pass,
+                        detail: Some(format!(
+                            "policy={}, baseline={}",
+                            gate.default_policy, gate.baseline_path
+                        )),
+                    });
+                }
+                Err(e) => {
+                    r.emit(UiEvent::DoctorCheck {
+                        name: "gate config".into(),
+                        status: CheckStatus::Fail,
+                        detail: Some(format!("invalid: {e}")),
+                    });
+                    issues += 1;
+                }
+            }
+            let baseline_full = ws_path.join(&gate.baseline_path);
+            if baseline_full.exists() {
                 r.emit(UiEvent::DoctorCheck {
-                    name: "gate config".into(),
+                    name: "gate baseline".into(),
                     status: CheckStatus::Pass,
+                    detail: Some(gate.baseline_path.clone()),
+                });
+            } else {
+                r.emit(UiEvent::DoctorCheck {
+                    name: "gate baseline".into(),
+                    status: CheckStatus::Warn,
                     detail: Some(format!(
-                        "policy={}, baseline={}",
-                        gate.default_policy, gate.baseline_path
+                        "{} not found — run `oco baseline-save` first",
+                        gate.baseline_path
                     )),
                 });
             }
-            Err(e) => {
-                r.emit(UiEvent::DoctorCheck {
-                    name: "gate config".into(),
-                    status: CheckStatus::Fail,
-                    detail: Some(format!("invalid: {e}")),
-                });
-                issues += 1;
-            }
-        }
-        let baseline_full = ws_path.join(&gate.baseline_path);
-        if baseline_full.exists() {
-            r.emit(UiEvent::DoctorCheck {
-                name: "gate baseline".into(),
-                status: CheckStatus::Pass,
-                detail: Some(gate.baseline_path.clone()),
-            });
-        } else {
-            r.emit(UiEvent::DoctorCheck {
-                name: "gate baseline".into(),
-                status: CheckStatus::Warn,
-                detail: Some(format!(
-                    "{} not found — run `oco baseline-save` first",
-                    gate.baseline_path
-                )),
-            });
         }
     }
 
@@ -1917,6 +1941,19 @@ fn load_or_build_scorecard(run_dir: &Path, run_id: &str) -> Result<oco_shared_ty
 // Q6: Eval gate and baseline commands
 // ════════════════════════════════════════════════════════���══
 
+/// Parse a policy name into a `GatePolicy`, failing on unknown values.
+fn parse_policy_name(name: &str) -> Result<oco_shared_types::GatePolicy> {
+    match name {
+        "strict" => Ok(oco_shared_types::GatePolicy::strict()),
+        "balanced" => Ok(oco_shared_types::GatePolicy::default_balanced()),
+        "lenient" => Ok(oco_shared_types::GatePolicy::lenient()),
+        other => anyhow::bail!(
+            "unknown gate policy '{}', expected: strict, balanced, lenient",
+            other
+        ),
+    }
+}
+
 /// Run a quality gate: compare candidate against baseline with pass/warn/fail verdict.
 /// Returns the exit code (0=pass, 1=warn, 2=fail).
 ///
@@ -1929,20 +1966,16 @@ fn cmd_eval_gate(
     json_output: bool,
     workspace: String,
 ) -> Result<i32> {
-    use oco_shared_types::{GatePolicy, GateResult};
+    use oco_shared_types::GateResult;
 
-    // Load repo gate config from oco.toml (Q7)
+    // Load repo gate config from oco.toml (Q7) — strict: fail on invalid config
     let ws = Path::new(&workspace);
-    let repo_config = oco_orchestrator_core::OrchestratorConfig::load_from_dir(ws);
-    let gate_cfg = &repo_config.gate;
+    let gate_cfg = oco_orchestrator_core::load_gate_config_strict(ws)
+        .map_err(|e| anyhow::anyhow!("cannot resolve gate config: {e}"))?;
 
     // Resolve policy: explicit CLI arg > repo config > balanced default
     let policy = if let Some(ref name) = policy_name {
-        match name.as_str() {
-            "strict" => GatePolicy::strict(),
-            "lenient" => GatePolicy::lenient(),
-            _ => GatePolicy::default_balanced(),
-        }
+        parse_policy_name(name)?
     } else {
         gate_cfg.resolve_policy()
     };
@@ -2111,13 +2144,17 @@ fn cmd_baseline_save(
 ) -> Result<()> {
     use oco_shared_types::EvalBaseline;
 
-    // Q7: resolve output path from repo config when not explicitly provided
-    let effective_output = output.unwrap_or_else(|| {
-        let ws = Path::new(&workspace);
-        let repo_config = oco_orchestrator_core::OrchestratorConfig::load_from_dir(ws);
-        let cfg_path = ws.join(&repo_config.gate.baseline_path);
-        cfg_path.to_string_lossy().to_string()
-    });
+    // Q7: resolve output path from repo config when not explicitly provided — strict
+    let effective_output = match output {
+        Some(o) => o,
+        None => {
+            let ws = Path::new(&workspace);
+            let gate_cfg = oco_orchestrator_core::load_gate_config_strict(ws)
+                .map_err(|e| anyhow::anyhow!("cannot resolve gate config: {e}"))?;
+            let cfg_path = ws.join(&gate_cfg.baseline_path);
+            cfg_path.to_string_lossy().to_string()
+        }
+    };
     let output_path = PathBuf::from(&effective_output);
 
     // Ensure parent directory exists

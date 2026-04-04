@@ -23,7 +23,7 @@ pub mod runtime;
 pub mod scorecard;
 pub mod state;
 
-pub use config::{OrchestratorConfig, load_gate_config};
+pub use config::{OrchestratorConfig, load_gate_config, load_gate_config_strict};
 pub use error::OrchestratorError;
 pub use graph_runner::GraphRunner;
 pub use llm::RetryingLlmProvider;
