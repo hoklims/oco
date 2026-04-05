@@ -104,6 +104,18 @@
     events = [...events, event]
     const kind = event.kind as Record<string, unknown>
     const type = kind.type as string
+    // Auto-transition execMode based on event type (drives Full Flow).
+    if (type === 'run_started' && execMode !== 'classifying') {
+      execMode = 'classifying'
+      complexity = '' // will be filled by classifier or plan_generated
+    }
+    if (type === 'plan_exploration' && execMode !== 'explorer') {
+      execMode = 'explorer'
+    }
+    if (type === 'plan_generated' && execMode !== 'planmap') {
+      execMode = 'planmap'
+    }
+
     switch (type) {
       case 'run_started': missionRequest = kind.request_summary as string; break
       case 'plan_generated': {
