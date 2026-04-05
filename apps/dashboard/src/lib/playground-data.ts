@@ -64,8 +64,10 @@ function buildLinear(): PlaygroundScenario {
     evt(200, 1, { type: 'plan_generated', plan_id: 'p-lin', step_count: 3, parallel_group_count: 1, critical_path_length: 3, estimated_total_tokens: 14000, strategy: 'linear', team: null, steps }),
     evt(1000, 1, { type: 'step_started', step_id: ids[0], step_name: 'Root config', role: 'scout', execution_mode: 'inline' }),
     evt(3000, 1, { type: 'step_completed', step_id: ids[0], step_name: 'Root config', success: true, duration_ms: 2000, tokens_used: 1800, detail_ref: null }),
+    evt(3200, 1, { type: 'progress', completed: 1, total: 3, active_steps: [], budget: budgetAt(1800, 1, 3) }),
     evt(3500, 1, { type: 'step_started', step_id: ids[1], step_name: 'Shared schemas', role: 'architect', execution_mode: 'inline' }),
     evt(6500, 1, { type: 'step_completed', step_id: ids[1], step_name: 'Shared schemas', success: true, duration_ms: 3000, tokens_used: 3600, detail_ref: null }),
+    evt(6700, 1, { type: 'progress', completed: 2, total: 3, active_steps: [], budget: budgetAt(5400, 2, 7) }),
     evt(7000, 1, { type: 'step_started', step_id: ids[2], step_name: 'API endpoint', role: 'implementer', execution_mode: 'inline' }),
     evt(12000, 1, { type: 'step_completed', step_id: ids[2], step_name: 'API endpoint', success: true, duration_ms: 5000, tokens_used: 7200, detail_ref: null }),
     evt(12500, 1, { type: 'verify_gate_result', step_id: ids[2], step_name: 'API endpoint', checks: [{ check_type: 'build', passed: true, summary: '0 errors' }, { check_type: 'test', passed: true, summary: '3 tests passed' }], overall_passed: true, replan_triggered: false }),
@@ -334,6 +336,93 @@ function buildHierarchical(): PlaygroundScenario {
   return { id: 'hierarchical', name: 'Hierarchical (sub-plans)', description: 'Two subagents with internal sub-plan decomposition (3 sub-steps each)', steps, events, thoughts: [] }
 }
 
+// ── 7. Verify failure + Replan ───────────────────────────────
+
+function buildReplan(): PlaygroundScenario {
+  resetSeq()
+  const ids = [uid('rpl', 1), uid('rpl', 2), uid('rpl', 3)]
+  // After replan: step 2 is removed, replaced by 2' and 3'
+  const replanIds = [uid('rpl', 4), uid('rpl', 5)]
+
+  const steps: StepSummary[] = [
+    { id: ids[0], name: 'Investigate auth', description: 'Scan auth module', role: 'scout', execution_mode: 'inline', depends_on: [], verify_after: false, estimated_tokens: 3000, preferred_model: null },
+    { id: ids[1], name: 'Patch handler', description: 'Fix session handler', role: 'implementer', execution_mode: 'inline', depends_on: [ids[0]], verify_after: true, estimated_tokens: 8000, preferred_model: null },
+    { id: ids[2], name: 'Final verify', description: 'Run full test suite', role: 'verifier', execution_mode: 'inline', depends_on: [ids[1]], verify_after: true, estimated_tokens: 4000, preferred_model: null },
+  ]
+
+  const stepsAfterReplan: StepSummary[] = [
+    ...steps,
+    { id: replanIds[0], name: 'Fix session type', description: 'Change session.user_id to String', role: 'implementer', execution_mode: 'inline', depends_on: [ids[0]], verify_after: true, estimated_tokens: 6000, preferred_model: null },
+    { id: replanIds[1], name: 'Re-verify', description: 'Run tests after fix', role: 'verifier', execution_mode: 'inline', depends_on: [replanIds[0]], verify_after: true, estimated_tokens: 4000, preferred_model: null },
+  ]
+
+  const events: DashboardEvent[] = [
+    evt(0, 0, { type: 'run_started', provider: 'claude-code', model: 'sonnet', request_summary: 'Fix session auth handler type mismatch' }),
+    evt(200, 1, { type: 'plan_generated', plan_id: 'p-rpl', step_count: 3, parallel_group_count: 1, critical_path_length: 3, estimated_total_tokens: 15000, strategy: 'linear', team: null, steps }),
+    // Step 1: investigate
+    evt(1000, 1, { type: 'step_started', step_id: ids[0], step_name: 'Investigate auth', role: 'scout', execution_mode: 'inline' }),
+    evt(3000, 1, { type: 'step_completed', step_id: ids[0], step_name: 'Investigate auth', success: true, duration_ms: 2000, tokens_used: 2500, detail_ref: null }),
+    evt(3200, 1, { type: 'progress', completed: 1, total: 3, active_steps: [], budget: budgetAt(2500, 1, 3) }),
+    // Step 2: patch — succeeds but verify fails
+    evt(3500, 1, { type: 'step_started', step_id: ids[1], step_name: 'Patch handler', role: 'implementer', execution_mode: 'inline' }),
+    evt(8000, 1, { type: 'step_completed', step_id: ids[1], step_name: 'Patch handler', success: true, duration_ms: 4500, tokens_used: 7200, detail_ref: null }),
+    evt(8500, 1, { type: 'verify_gate_result', step_id: ids[1], step_name: 'Patch handler', checks: [
+      { check_type: 'build', passed: true, summary: '0 errors' },
+      { check_type: 'test', passed: false, summary: '2 failures in auth_test.rs: expected String, got i32' },
+    ], overall_passed: false, replan_triggered: true }),
+    evt(8700, 1, { type: 'progress', completed: 1, total: 3, active_steps: [], budget: budgetAt(9700, 3, 9) }),
+    // Replan triggered
+    evt(9000, 2, { type: 'replan_triggered', failed_step_name: 'Patch handler', attempt: 1, max_attempts: 3, steps_preserved: 1, steps_removed: 2, steps_added: 2 }),
+    evt(10000, 2, { type: 'plan_generated', plan_id: 'p-rpl-v2', step_count: 4, parallel_group_count: 1, critical_path_length: 3, estimated_total_tokens: 13000, strategy: 'linear (replan v2)', team: null, steps: stepsAfterReplan }),
+    // New step: fix session type
+    evt(10500, 2, { type: 'step_started', step_id: replanIds[0], step_name: 'Fix session type', role: 'implementer', execution_mode: 'inline' }),
+    evt(14000, 2, { type: 'step_completed', step_id: replanIds[0], step_name: 'Fix session type', success: true, duration_ms: 3500, tokens_used: 5500, detail_ref: null }),
+    evt(14500, 2, { type: 'verify_gate_result', step_id: replanIds[0], step_name: 'Fix session type', checks: [
+      { check_type: 'build', passed: true, summary: '0 errors' },
+      { check_type: 'test', passed: true, summary: '8 tests passed' },
+    ], overall_passed: true, replan_triggered: false }),
+    evt(14700, 2, { type: 'progress', completed: 3, total: 4, active_steps: [], budget: budgetAt(17700, 6, 15) }),
+    // Re-verify
+    evt(15000, 2, { type: 'step_started', step_id: replanIds[1], step_name: 'Re-verify', role: 'verifier', execution_mode: 'inline' }),
+    evt(18000, 2, { type: 'step_completed', step_id: replanIds[1], step_name: 'Re-verify', success: true, duration_ms: 3000, tokens_used: 3800, detail_ref: null }),
+    evt(18500, 2, { type: 'verify_gate_result', step_id: replanIds[1], step_name: 'Re-verify', checks: [
+      { check_type: 'build', passed: true, summary: '0 errors' },
+      { check_type: 'test', passed: true, summary: '12 tests passed' },
+      { check_type: 'lint', passed: true, summary: '0 warnings' },
+    ], overall_passed: true, replan_triggered: false }),
+    evt(18700, 2, { type: 'progress', completed: 4, total: 4, active_steps: [], budget: budgetAt(21500, 8, 19) }),
+    evt(19000, 2, { type: 'run_stopped', reason: { type: 'task_complete' }, total_steps: 4, total_tokens: 21500 }),
+  ]
+
+  return { id: 'replan', name: 'Verify + Replan', description: 'Verify gate fails → replan with different approach → success', steps, events, thoughts: [] }
+}
+
+// ── 8. Trivial fast-exit ────────────────────────────────────
+
+function buildTrivial(): PlaygroundScenario {
+  resetSeq()
+  const ids = [uid('trv', 1), uid('trv', 2)]
+
+  const steps: StepSummary[] = [
+    { id: ids[0], name: 'Read config', description: 'Inspect tsconfig.json', role: 'scout', execution_mode: 'inline', depends_on: [], verify_after: false, estimated_tokens: 1500, preferred_model: null },
+    { id: ids[1], name: 'Fix strict flag', description: 'Set strict: true in tsconfig', role: 'implementer', execution_mode: 'inline', depends_on: [ids[0]], verify_after: false, estimated_tokens: 2000, preferred_model: null },
+  ]
+
+  const events: DashboardEvent[] = [
+    evt(0, 0, { type: 'run_started', provider: 'claude-code', model: 'sonnet', request_summary: 'Enable strict mode in tsconfig.json' }),
+    evt(200, 1, { type: 'plan_generated', plan_id: 'p-trv', step_count: 2, parallel_group_count: 1, critical_path_length: 2, estimated_total_tokens: 3500, strategy: 'direct (fast-exit)', team: null, steps }),
+    evt(500, 1, { type: 'step_started', step_id: ids[0], step_name: 'Read config', role: 'scout', execution_mode: 'inline' }),
+    evt(1500, 1, { type: 'step_completed', step_id: ids[0], step_name: 'Read config', success: true, duration_ms: 1000, tokens_used: 1200, detail_ref: null }),
+    evt(1600, 1, { type: 'progress', completed: 1, total: 2, active_steps: [], budget: budgetAt(1200, 1, 2) }),
+    evt(1800, 1, { type: 'step_started', step_id: ids[1], step_name: 'Fix strict flag', role: 'implementer', execution_mode: 'inline' }),
+    evt(3000, 1, { type: 'step_completed', step_id: ids[1], step_name: 'Fix strict flag', success: true, duration_ms: 1200, tokens_used: 1800, detail_ref: null }),
+    evt(3200, 1, { type: 'progress', completed: 2, total: 2, active_steps: [], budget: budgetAt(3000, 2, 3) }),
+    evt(3500, 1, { type: 'run_stopped', reason: { type: 'task_complete' }, total_steps: 2, total_tokens: 3000 }),
+  ]
+
+  return { id: 'trivial', name: 'Trivial (fast-exit)', description: '2 inline steps, no verify, no parallel — skips GraphRunner', steps, events, thoughts: [] }
+}
+
 // ── Export all scenarios ──────────────────────────────────────
 
 export const SCENARIOS: PlaygroundScenario[] = [
@@ -343,6 +432,8 @@ export const SCENARIOS: PlaygroundScenario[] = [
   buildComplex(),
   buildTeamComm(),
   buildHierarchical(),
+  buildReplan(),
+  buildTrivial(),
 ]
 
 export function getScenario(id: string): PlaygroundScenario {

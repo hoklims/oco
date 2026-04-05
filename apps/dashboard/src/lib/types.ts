@@ -39,6 +39,7 @@ export interface PlanCandidateSummary {
   score: number
   strengths: string[]
   weaknesses: string[]
+  planning_tokens?: number
 }
 
 export interface BudgetSnapshot {
