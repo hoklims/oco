@@ -106,23 +106,70 @@
     const type = kind.type as string
     switch (type) {
       case 'run_started': missionRequest = kind.request_summary as string; break
-      case 'plan_generated':
-        stepSummaries = ((kind.steps as Array<Record<string, unknown>>) ?? []).map(s => ({
+      case 'plan_generated': {
+        const incomingSteps = ((kind.steps as Array<Record<string, unknown>>) ?? []).map(s => ({
           id: s.id as string, name: s.name as string, depends_on: s.depends_on as string[],
           verify_after: s.verify_after as boolean, execution_mode: s.execution_mode as string,
+          role: (s.role as string) ?? 'implementer',
         }))
-        steps = stepSummaries.map(s => ({
-          id: s.id, name: s.name,
-          role: ((kind.steps as Array<Record<string, unknown>>)?.find(ss => ss.id === s.id)?.role as string) ?? 'implementer',
-          status: 'pending' as const, duration_ms: null, tokens_used: null,
-          execution_mode: s.execution_mode, verify_passed: null,
-        }))
+
+        const isReplan = event.plan_version > 1 && steps.length > 0
+
+        if (isReplan) {
+          // Merge: keep existing completed/failed steps, add new pending ones
+          const existingById = new Map(steps.map(s => [s.id, s]))
+          const newSummaries = [...stepSummaries]
+          const newSteps = [...steps]
+
+          // Mark removed steps (exist in old but not in new plan) as 'failed'
+          const incomingIds = new Set(incomingSteps.map(s => s.id))
+          for (const s of newSteps) {
+            if (!incomingIds.has(s.id) && s.status === 'pending') {
+              s.status = 'failed'
+            }
+          }
+
+          // Add genuinely new steps
+          for (const s of incomingSteps) {
+            if (!existingById.has(s.id)) {
+              newSummaries.push({ id: s.id, name: s.name, depends_on: s.depends_on, verify_after: s.verify_after, execution_mode: s.execution_mode })
+              newSteps.push({
+                id: s.id, name: s.name, role: s.role,
+                status: 'pending' as const, duration_ms: null, tokens_used: null,
+                execution_mode: s.execution_mode, verify_passed: null,
+              })
+            }
+          }
+
+          stepSummaries = newSummaries
+          steps = newSteps
+        } else {
+          // First plan: initialize from scratch
+          stepSummaries = incomingSteps.map(s => ({ id: s.id, name: s.name, depends_on: s.depends_on, verify_after: s.verify_after, execution_mode: s.execution_mode }))
+          steps = incomingSteps.map(s => ({
+            id: s.id, name: s.name, role: s.role,
+            status: 'pending' as const, duration_ms: null, tokens_used: null,
+            execution_mode: s.execution_mode, verify_passed: null,
+          }))
+        }
+
         { const t = kind.team as Record<string, unknown> | null
           teamInfo = t ? { name: t.name as string, topology: t.topology as string, member_count: t.member_count as number } : null }
         break
+      }
       case 'step_started': steps = steps.map(s => s.id === (kind.step_id as string) ? { ...s, status: 'running' as const } : s); break
       case 'step_completed': { const id = kind.step_id as string; steps = steps.map(s => s.id === id ? { ...s, status: (kind.success ? 'passed' : 'failed') as StepRow['status'], duration_ms: kind.duration_ms as number, tokens_used: kind.tokens_used as number } : s); break }
-      case 'verify_gate_result': steps = steps.map(s => s.id === (kind.step_id as string) ? { ...s, verify_passed: kind.overall_passed as boolean } : s); break
+      case 'verify_gate_result': {
+        const vid = kind.step_id as string
+        const passed = kind.overall_passed as boolean
+        steps = steps.map(s => s.id === vid ? {
+          ...s,
+          verify_passed: passed,
+          // When verify fails, override step status to 'failed' so the node turns red
+          ...(passed ? {} : { status: 'failed' as const }),
+        } : s)
+        break
+      }
       case 'progress': { const snap = kind.budget as BudgetSnapshot | undefined; if (snap?.tokens_used !== undefined) budget = snap; break }
       case 'sub_plan_started': { const pid = kind.parent_step_id as string; const subs = ((kind.sub_steps as Array<Record<string, unknown>>) ?? []).map(s => ({ id: s.id as string, name: s.name as string, status: 'pending' as const })); subPlanState = new Map(subPlanState).set(pid, { subSteps: subs, completed: false }); break }
       case 'sub_step_progress': { const pid = kind.parent_step_id as string; const sid = kind.sub_step_id as string; const st = kind.status as 'pending' | 'running' | 'passed' | 'failed'; const entry = subPlanState.get(pid); if (entry) { subPlanState = new Map(subPlanState).set(pid, { ...entry, subSteps: entry.subSteps.map(s => s.id === sid ? { ...s, status: st } : s) }) } break }
@@ -140,7 +187,13 @@
     if (planEvt) { const t = (planEvt.kind as Record<string, unknown>).team as Record<string, unknown> | null; teamInfo = t ? { name: t.name as string, topology: t.topology as string, member_count: t.member_count as number } : null }
     isPlaying = true; playStartTime = Date.now()
     timerHandle = setInterval(() => { elapsedMs = Date.now() - (playStartTime ?? Date.now()) }, 100)
-    const stepEvents = selectedScenario.events.filter(e => { const t = (e.kind as Record<string, unknown>).type as string; return ['step_started', 'step_completed', 'verify_gate_result', 'teammate_message', 'sub_plan_started', 'sub_step_progress', 'sub_plan_completed'].includes(t) })
+    // Include replan/progress events; skip first plan_generated (already handled above)
+    let skippedFirstPlan = false
+    const stepEvents = selectedScenario.events.filter(e => {
+      const t = (e.kind as Record<string, unknown>).type as string
+      if (t === 'plan_generated' && !skippedFirstPlan) { skippedFirstPlan = true; return false }
+      return ['step_started', 'step_completed', 'verify_gate_result', 'plan_generated', 'replan_triggered', 'progress', 'budget_warning', 'teammate_message', 'sub_plan_started', 'sub_step_progress', 'sub_plan_completed'].includes(t)
+    })
     const baseTime = stepEvents.length > 0 ? new Date(stepEvents[0].ts).getTime() : Date.now()
     const timeouts: ReturnType<typeof setTimeout>[] = []
     for (const event of stepEvents) { timeouts.push(setTimeout(() => handleEvent(event), new Date(event.ts).getTime() - baseTime)) }
