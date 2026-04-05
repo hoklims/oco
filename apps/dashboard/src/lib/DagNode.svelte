@@ -70,8 +70,7 @@
     max-width: 240px;
     box-shadow: {statusGlow};
     {stripeStyle}
-    transition: background 0.6s, border-color 0.6s, box-shadow 0.6s, opacity 0.5s, filter 0.8s, scale 0.5s;
-    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    transition: background 0.6s ease, border-color 0.6s ease, box-shadow 0.6s ease, opacity 0.5s ease, filter 0.8s ease;
   "
 >
   <Handle type="target" position={Position.Left} />
@@ -165,7 +164,6 @@
    */
   .dag-node-failed {
     filter: saturate(0.15) brightness(0.7) blur(0.5px);
-    scale: 0.94;
     opacity: 0.55;
   }
 
