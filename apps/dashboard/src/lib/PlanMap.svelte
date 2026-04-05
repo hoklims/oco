@@ -18,6 +18,7 @@
   import PulseEdge from './PulseEdge.svelte'
   import ThoughtBubble from './ThoughtBubble.svelte'
   import type { TeammateMessage } from './event-player'
+  import { createGraphAnimator } from './graph-animator'
 
   /** Sub-plan state driven by events. Map: parentStepId → array of sub-step states. */
   export interface SubPlanEntry {
@@ -414,6 +415,9 @@
     return batches
   }
 
+  // ── Organic animation engine ────────────────────────────────
+  const animator = createGraphAnimator()
+
   function startReveal(g: { nodes: Node[]; edges: Edge[] }) {
     revealTimers.forEach(clearTimeout); revealTimers = []
     const batches = computeRevealBatches(g)
@@ -421,43 +425,94 @@
     // Always reveal special nodes immediately
     g.nodes.filter(n => n.type === 'teamGroup').forEach(n => newRevealed.add(n.id))
 
+    // Build depth map for stagger
+    const depthMap = new Map<string, number>()
+    batches.forEach((batch, depth) => batch.forEach(id => depthMap.set(id, depth)))
+
+    // Seed the animator with initial targets
+    animator.setTargets(g.nodes, (animated) => {
+      nodes = animated.map(n => revealedIds.has(n.id) ? n : { ...n, style: 'opacity:0; transform: scale(0.3); pointer-events: none;' })
+    }, depthMap)
+
     if (batches.length <= 1) { g.nodes.forEach(n => newRevealed.add(n.id)); revealedIds = newRevealed; nodes = g.nodes; edges = g.edges; return }
-    nodes = g.nodes.map(n => newRevealed.has(n.id) ? n : { ...n, style: 'opacity:0; transform: scale(0.85) translateX(-10px); transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);' })
+    nodes = g.nodes.map(n => newRevealed.has(n.id) ? n : { ...n, style: 'opacity:0; transform: scale(0.3); pointer-events: none;' })
     edges = g.edges.map(e => ({ ...e, style: (e.style ?? '') + (newRevealed.has(e.source) && newRevealed.has(e.target) ? '' : ' opacity: 0;') }))
 
     batches.forEach((batch, idx) => {
       revealTimers.push(setTimeout(() => {
         batch.forEach(id => newRevealed.add(id)); revealedIds = new Set(newRevealed)
-        nodes = g.nodes.map(n => newRevealed.has(n.id) ? n : { ...n, style: 'opacity:0; transform: scale(0.85) translateX(-10px); transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);' })
-        edges = g.edges.map(e => newRevealed.has(e.source) && newRevealed.has(e.target) ? e : { ...e, style: (e.style ?? '') + ' opacity: 0;' })
+        // Let the CSS dag-emerge animation handle the visual entrance
+        nodes = nodes.map(n => newRevealed.has(n.id) ? { ...n, style: '' } : n)
+        edges = edges.map(e => newRevealed.has(e.source) && newRevealed.has(e.target) ? { ...e, style: (e.style ?? '').replace(' opacity: 0;', '') } : e)
       }, idx * 350))
     })
   }
 
   let lastStepCount = 0
   let initialized = false
+  /** IDs known from the previous frame — used to detect new nodes during replan. */
+  let previousNodeIds = new Set<string>()
 
   $effect(() => {
     const g = fullGraph
-    if (g.nodes.length === 0) { nodes = []; edges = []; initialized = false; lastStepCount = 0; return }
+    if (g.nodes.length === 0) { nodes = []; edges = []; initialized = false; lastStepCount = 0; previousNodeIds.clear(); return }
     const mainCount = g.nodes.filter(n => n.type === 'dagNode' || n.type === 'verifyGate').length
 
     if (!initialized || Math.abs(mainCount - lastStepCount) > 2) {
-      initialized = true; lastStepCount = mainCount; startReveal(g); return
+      initialized = true; lastStepCount = mainCount; previousNodeIds = new Set(g.nodes.map(n => n.id)); startReveal(g); return
     }
     lastStepCount = mainCount
 
+    // Detect new nodes (replan adds them)
+    const currentIds = new Set(g.nodes.map(n => n.id))
+    const newIds = new Set<string>()
+    for (const id of currentIds) {
+      if (!previousNodeIds.has(id)) newIds.add(id)
+    }
+    previousNodeIds = currentIds
+
+    // Build depth map for stagger of new nodes
+    const depthMap = new Map<string, number>()
+    if (newIds.size > 0) {
+      const batches = computeRevealBatches(g)
+      batches.forEach((batch, depth) => batch.forEach(id => depthMap.set(id, depth)))
+    }
+
+    // Feed the animator — existing nodes glide via spring, new ones appear
+    animator.setTargets(g.nodes, (animated) => {
+      nodes = animated.map(n => {
+        // New nodes: start hidden, reveal after stagger delay
+        if (newIds.has(n.id) && !revealedIds.has(n.id)) {
+          return { ...n, style: 'opacity:0; transform: scale(0.3); pointer-events: none;' }
+        }
+        return n
+      })
+    }, depthMap)
+
+    // Stagger-reveal new nodes (replan additions)
+    if (newIds.size > 0) {
+      const batches = computeRevealBatches({ nodes: g.nodes.filter(n => newIds.has(n.id)), edges: [] })
+      const newRevealed = new Set(revealedIds)
+      batches.forEach((batch, idx) => {
+        revealTimers.push(setTimeout(() => {
+          batch.forEach(id => newRevealed.add(id))
+          revealedIds = new Set(newRevealed)
+          // Refresh nodes to remove the hidden style — dag-emerge CSS takes over
+          nodes = nodes.map(n => newRevealed.has(n.id) && newIds.has(n.id) ? { ...n, style: '' } : n)
+        }, 200 + idx * 300)) // slight initial delay for the "replan pause" feel
+      })
+    }
+
+    // Update edges with proper visibility
     const allRevealed = new Set(revealedIds)
     g.nodes.filter(n => n.type === 'teamGroup').forEach(n => allRevealed.add(n.id))
-
-    nodes = g.nodes.map(n => allRevealed.has(n.id) ? n : { ...n, style: 'opacity:0; transform: scale(0.85) translateX(-10px); transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);' })
     edges = g.edges.map(e => {
       if (e.id.startsWith('e-sub-')) return e
       return allRevealed.has(e.source) && allRevealed.has(e.target) ? e : { ...e, style: (e.style ?? '') + ' opacity: 0;' }
     })
   })
 
-  onMount(() => () => { revealTimers.forEach(clearTimeout); subTimers.forEach(clearTimeout) })
+  onMount(() => () => { revealTimers.forEach(clearTimeout); subTimers.forEach(clearTimeout); animator.destroy() })
 
   function thoughtsFor(stepId: string): Thought[] { return thoughts.filter(t => t.stepId === stepId) }
   let activeStepId = $derived(steps.find(s => s.status === 'running')?.id ?? null)
@@ -525,8 +580,16 @@
 <style>
   :global(.svelte-flow) { background: transparent !important; }
   :global(.svelte-flow__handle) { opacity: 0 !important; width: 1px !important; height: 1px !important; }
-  :global(.svelte-flow__edge-path) { transition: d 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.6s, stroke-width 0.5s; }
-  :global(.svelte-flow__node) { transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1), transform 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+  :global(.svelte-flow__edge-path) {
+    transition: d 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.6s, stroke-width 0.5s, stroke-dashoffset 0.8s ease-out;
+    /* New edges animate in via stroke-dashoffset (trace effect) */
+    animation: edge-trace 0.7s ease-out both;
+  }
+  @keyframes edge-trace {
+    from { stroke-dasharray: 200; stroke-dashoffset: 200; opacity: 0; }
+    to   { stroke-dasharray: 200; stroke-dashoffset: 0; opacity: 1; }
+  }
+  :global(.svelte-flow__node) { transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1), transform 0.6s cubic-bezier(0.34, 1.3, 0.64, 1); }
   :global(.svelte-flow__node.selected) { box-shadow: 0 0 0 2px #4b8df840 !important; border-radius: 10px; }
 
   .legend {

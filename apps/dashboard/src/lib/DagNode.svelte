@@ -60,7 +60,7 @@
 </script>
 
 <div
-  class="dag-node {status === 'running' ? 'dag-node-running' : ''} {status === 'pending' ? 'dag-node-pending' : ''}"
+  class="dag-node {status === 'running' ? 'dag-node-running' : ''} {status === 'pending' ? 'dag-node-pending' : ''} {status === 'failed' ? 'dag-node-failed' : ''}"
   style="
     background: {statusBg};
     border: 1px solid {statusBorder};
@@ -70,7 +70,8 @@
     max-width: 240px;
     box-shadow: {statusGlow};
     {stripeStyle}
-    transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: background 0.6s, border-color 0.6s, box-shadow 0.6s, opacity 0.5s, filter 0.8s, scale 0.5s;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   "
 >
   <Handle type="target" position={Position.Left} />
@@ -135,14 +136,57 @@
 <style>
   .dag-node {
     font-family: var(--font-sans, system-ui);
+    /* Organic entrance — node grows in with slight overshoot */
+    animation: dag-emerge 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
   }
+  @keyframes dag-emerge {
+    from {
+      opacity: 0;
+      scale: 0.3;
+      filter: blur(4px);
+    }
+    60% {
+      opacity: 0.9;
+      scale: 1.04;
+      filter: blur(0.5px);
+    }
+    to {
+      opacity: 1;
+      scale: 1;
+      filter: blur(0);
+    }
+  }
+
   .dag-node-pending { opacity: 0.4; }
+
   .dag-node-running {
     animation: dag-glow 2.5s ease-in-out infinite;
   }
   @keyframes dag-glow {
     0%, 100% { filter: brightness(1); }
     50% { filter: brightness(1.15); }
+  }
+
+  /* Organic decay — failed node visually decomposes */
+  .dag-node-failed {
+    animation: dag-decay 0.8s ease-in forwards;
+  }
+  @keyframes dag-decay {
+    0% {
+      filter: none;
+      scale: 1;
+      opacity: 1;
+    }
+    40% {
+      filter: saturate(0.4) brightness(0.9);
+      scale: 0.98;
+      opacity: 0.85;
+    }
+    100% {
+      filter: saturate(0.15) brightness(0.7) blur(0.5px);
+      scale: 0.94;
+      opacity: 0.55;
+    }
   }
 
   .dag-header { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
