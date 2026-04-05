@@ -156,6 +156,7 @@ impl Renderer for TerminalRenderer {
                 tokens_max,
                 duration_ms,
                 success,
+                planning_tokens,
             } => {
                 let _ = self.term.write_line("");
                 let status = if success {
@@ -166,6 +167,21 @@ impl Renderer for TerminalRenderer {
                 let _ = self.term.write_line(&format!(
                     "{status}  {steps} steps, {tokens_used}/{tokens_max} tokens, {duration_ms}ms",
                 ));
+                // Planning overhead display (P2 2.2)
+                if planning_tokens > 0 && tokens_used > 0 {
+                    let overhead_pct = planning_tokens as f64 / tokens_used as f64 * 100.0;
+                    let overhead_str = format!(
+                        "  Planning overhead: {:.0}% ({planning_tokens}/{tokens_used} tokens)",
+                        overhead_pct
+                    );
+                    if overhead_pct > 20.0 {
+                        let _ = self
+                            .term
+                            .write_line(&format!("  {} {overhead_str}", style("!").yellow()));
+                    } else {
+                        let _ = self.term.write_line(&style(overhead_str).dim().to_string());
+                    }
+                }
                 let _ = self
                     .term
                     .write_line(&format!("  session: {}", style(session_id).dim()));

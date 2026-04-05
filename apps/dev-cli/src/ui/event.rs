@@ -42,6 +42,8 @@ pub enum UiEvent {
         tokens_max: u64,
         duration_ms: u64,
         success: bool,
+        /// Tokens spent on planning (0 for flat-loop / direct plans).
+        planning_tokens: u64,
     },
     RunResponse {
         content: String,

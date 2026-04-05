@@ -26,6 +26,7 @@ impl Renderer for QuietRenderer {
                 tokens_max,
                 duration_ms,
                 success,
+                planning_tokens: _,
             } => {
                 let status = if success { "ok" } else { "fail" };
                 let _ = self.term.write_line(&format!(

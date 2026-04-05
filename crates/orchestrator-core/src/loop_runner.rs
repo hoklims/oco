@@ -923,6 +923,7 @@ impl OrchestrationLoop {
                                 parallel_groups: c.plan.parallel_groups().len(),
                                 score: c.score,
                                 winner: c.winner,
+                                planning_tokens: c.tokens_used,
                             })
                             .collect();
 
@@ -949,8 +950,29 @@ impl OrchestrationLoop {
             plan_id = %plan.id,
             steps = plan.steps.len(),
             strategy = ?plan.strategy,
+            trivial = plan.is_trivial_plan(),
             "plan generated for Medium+ task"
         );
+
+        // P2 3.2: Mesh cost warning — if team uses Mesh topology, warn about overhead.
+        if let Some(ref team) = plan.team
+            && team.communication == oco_shared_types::TeamCommunication::Mesh
+        {
+            let member_count = team.members.len();
+            self.emit_event(OrchestrationEvent::BudgetWarning {
+                resource: format!(
+                    "Mesh topology selected ({member_count} agents, ~2x token cost vs HubSpoke)"
+                ),
+                utilization: 0.0,
+            });
+        }
+
+        // P2 2.4: Fast-exit — if the plan is trivial (≤3 inline steps, no
+        // verify, no parallelism), execute sequentially without GraphRunner.
+        if plan.is_trivial_plan() {
+            debug!("trivial plan detected, using fast sequential execution");
+            return self.execute_trivial_plan(state, plan).await;
+        }
 
         let executor = Arc::new(LoopStepExecutor {
             llm: self.llm.clone(),
@@ -1075,6 +1097,80 @@ impl OrchestrationLoop {
                 }
                 _ => {}
             }
+        }
+
+        Ok(())
+    }
+
+    /// Fast-path execution for trivial plans: run steps sequentially via LLM
+    /// without GraphRunner overhead (no DAG scheduler, no parallel dispatch).
+    async fn execute_trivial_plan(
+        &self,
+        state: &mut OrchestrationState,
+        plan: oco_shared_types::ExecutionPlan,
+    ) -> Result<(), OrchestratorError> {
+        let mut outputs: Vec<String> = Vec::new();
+        let mut total_tokens: u64 = 0;
+        let mut context: Vec<String> = Vec::new();
+
+        for step in &plan.steps {
+            let start = std::time::Instant::now();
+            let mut prompt = format!(
+                "You are acting as role: {}.\n\nTask: {}",
+                step.agent_role.name, step.description
+            );
+            if !context.is_empty() {
+                prompt.push_str("\n\nContext from previous steps:\n");
+                for ctx in &context {
+                    prompt.push_str(ctx);
+                    prompt.push('\n');
+                }
+            }
+
+            let request = crate::llm::LlmRequest {
+                messages: vec![crate::llm::LlmMessage {
+                    role: crate::llm::LlmRole::User,
+                    content: prompt,
+                }],
+                max_tokens: step.estimated_tokens.min(4096),
+                temperature: 0.0,
+                system_prompt: Some(format!(
+                    "You are a {} agent. Execute the task precisely and concisely.",
+                    step.agent_role.name
+                )),
+                effort_override: None,
+            };
+
+            let response = self.llm.complete(request).await?;
+            let tokens = (response.input_tokens + response.output_tokens) as u64;
+            total_tokens += tokens;
+            let duration_ms = start.elapsed().as_millis() as u64;
+
+            self.emit_event(OrchestrationEvent::PlanStepCompleted {
+                step_id: step.id,
+                step_name: step.name.clone(),
+                success: true,
+                duration_ms,
+                tokens_used: tokens,
+            });
+
+            context.push(format!("Output from '{}': {}", step.name, response.content));
+            outputs.push(response.content);
+        }
+
+        state.session.budget.tokens_used += total_tokens;
+
+        if !outputs.is_empty() {
+            let combined = outputs.join("\n\n");
+            state.push_observation(Observation::new(
+                ObservationSource::LlmResponse,
+                ObservationKind::Text {
+                    content: combined.clone(),
+                    metadata: None,
+                },
+                total_tokens as u32,
+            ));
+            state.push_action(OrchestratorAction::Respond { content: combined });
         }
 
         Ok(())

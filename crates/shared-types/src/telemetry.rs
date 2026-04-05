@@ -188,6 +188,9 @@ pub struct PlanCandidateSummary {
     pub parallel_groups: usize,
     pub score: f64,
     pub winner: bool,
+    /// Tokens consumed by the LLM to generate this candidate plan.
+    #[serde(default)]
+    pub planning_tokens: u64,
 }
 
 /// Events emitted by the orchestration loop in real time via channel.

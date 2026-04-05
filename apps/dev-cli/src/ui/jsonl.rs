@@ -69,6 +69,7 @@ impl Renderer for JsonlRenderer {
                 tokens_max,
                 duration_ms,
                 success,
+                planning_tokens,
             } => self.emit_json(
                 "run_finished",
                 serde_json::json!({
@@ -78,6 +79,7 @@ impl Renderer for JsonlRenderer {
                     "tokens_max": tokens_max,
                     "duration_ms": duration_ms,
                     "success": success,
+                    "planning_tokens": planning_tokens,
                 }),
             ),
 

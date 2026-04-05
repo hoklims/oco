@@ -875,6 +875,18 @@ async fn cmd_run(
 
     let session_id = state.session.id.0.to_string();
 
+    // Compute planning overhead from trace events (sum of all candidate generation costs).
+    let planning_tokens: u64 = trace_events
+        .iter()
+        .filter_map(|e| {
+            if let oco_shared_types::OrchestrationEvent::PlanExploration { candidates, .. } = e {
+                Some(candidates.iter().map(|c| c.planning_tokens).sum::<u64>())
+            } else {
+                None
+            }
+        })
+        .sum();
+
     r.emit(UiEvent::RunFinished {
         session_id: session_id.clone(),
         steps: state.session.step_count,
@@ -882,6 +894,7 @@ async fn cmd_run(
         tokens_max: state.session.budget.max_total_tokens,
         duration_ms: run_duration,
         success,
+        planning_tokens,
     });
 
     // Extract and display final response
@@ -1778,6 +1791,7 @@ fn cmd_runs_show(r: &mut dyn Renderer, id: String, workspace: String) -> Result<
             tokens_max: summary["tokens_max"].as_u64().unwrap_or(0),
             duration_ms: summary["duration_ms"].as_u64().unwrap_or(0),
             success: summary["success"].as_bool().unwrap_or(false),
+            planning_tokens: summary["planning_tokens"].as_u64().unwrap_or(0),
         });
 
         if let Some(resp) = summary["final_response"].as_str() {

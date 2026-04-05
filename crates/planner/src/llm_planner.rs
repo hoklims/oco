@@ -254,6 +254,14 @@ impl LlmPlanner {
             .map_err(|e| PlannerError::ValidationError(format!("invalid DAG: {e}")))?;
         plan.check_step_limit(context.task_complexity)
             .map_err(|e| PlannerError::ValidationError(format!("step limit: {e}")))?;
+
+        // Post-generation: collapse consecutive read-only steps with same role (P2 2.3).
+        let max_step_tokens = context.budget.max_total_tokens.min(50_000) as u32;
+        let collapsed = plan.collapse_consecutive_read_only(max_step_tokens);
+        if collapsed > 0 {
+            tracing::debug!(collapsed, "collapsed consecutive read-only steps");
+        }
+
         plan.team = Self::generate_team(&plan, context);
 
         Ok((plan, tokens_used))
