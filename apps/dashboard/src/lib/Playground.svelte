@@ -710,11 +710,19 @@
     {:else if activeTab === 'full'}
       <div class="flex-1 flex flex-col min-w-0">
         <div class="h-[60%] border-b border-border relative">
-          <PlanExplorer phase={explorationPhase} />
-          {#if explorationPhase === 'done' || steps.length > 0}
-            <PlanMap {steps} selectedId={selectedStepId} onSelect={(id) => selectedStepId = id} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
-          {:else if explorationPhase === 'idle' && missionRequest}
+          {#if execMode === 'classifying'}
             <ClassifyingScene mission={missionRequest} {complexity} />
+          {:else if execMode === 'explorer'}
+            <PlanExplorer phase={explorationPhase} />
+          {:else if execMode === 'planmap'}
+            <PlanMap {steps} selectedId={selectedStepId} onSelect={(id) => selectedStepId = id} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
+          {:else}
+            <div class="flex items-center justify-center h-full">
+              <div class="text-center opacity-30">
+                <div class="text-2xl">▶</div>
+                <p class="text-xs text-text-3 mt-2">Press Play Full Flow</p>
+              </div>
+            </div>
           {/if}
         </div>
         <div class="flex-1 overflow-hidden">
