@@ -136,25 +136,15 @@
 <style>
   .dag-node {
     font-family: var(--font-sans, system-ui);
-    /* Organic entrance — node grows in with slight overshoot */
-    animation: dag-emerge 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-  }
-  @keyframes dag-emerge {
-    from {
-      opacity: 0;
-      scale: 0.3;
-      filter: blur(4px);
-    }
-    60% {
-      opacity: 0.9;
-      scale: 1.04;
-      filter: blur(0.5px);
-    }
-    to {
-      opacity: 1;
-      scale: 1;
-      filter: blur(0);
-    }
+    /*
+     * No CSS animation here — entrance is handled by PlanMap's reveal system
+     * (inline style removal + CSS transition on .svelte-flow__node).
+     * Putting an animation here would re-trigger on every data change
+     * (pending→running→passed), causing flicker.
+     *
+     * State transitions (colors, opacity, filter) use CSS transitions
+     * declared on the inline style of the wrapper div.
+     */
   }
 
   .dag-node-pending { opacity: 0.4; }
@@ -167,26 +157,16 @@
     50% { filter: brightness(1.15); }
   }
 
-  /* Organic decay — failed node visually decomposes */
+  /*
+   * Failed node decay — pure transition, no animation.
+   * Transitions only fire when the class is added (status change to failed),
+   * not on subsequent re-renders. The transition properties are declared
+   * on the wrapper div's inline style attribute.
+   */
   .dag-node-failed {
-    animation: dag-decay 0.8s ease-in forwards;
-  }
-  @keyframes dag-decay {
-    0% {
-      filter: none;
-      scale: 1;
-      opacity: 1;
-    }
-    40% {
-      filter: saturate(0.4) brightness(0.9);
-      scale: 0.98;
-      opacity: 0.85;
-    }
-    100% {
-      filter: saturate(0.15) brightness(0.7) blur(0.5px);
-      scale: 0.94;
-      opacity: 0.55;
-    }
+    filter: saturate(0.15) brightness(0.7) blur(0.5px);
+    scale: 0.94;
+    opacity: 0.55;
   }
 
   .dag-header { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
