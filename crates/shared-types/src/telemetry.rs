@@ -188,6 +188,9 @@ pub struct PlanCandidateSummary {
     pub parallel_groups: usize,
     pub score: f64,
     pub winner: bool,
+    /// Tokens consumed by the LLM to generate this candidate plan.
+    #[serde(default)]
+    pub planning_tokens: u64,
 }
 
 /// Events emitted by the orchestration loop in real time via channel.
@@ -249,6 +252,10 @@ pub enum OrchestrationEvent {
         total: usize,
         active_steps: Vec<(Uuid, String)>,
         budget_used_pct: f32,
+        /// Tokens consumed so far during graph execution.
+        tokens_used: u64,
+        /// Total token budget for this graph execution.
+        tokens_budget: u64,
     },
 
     /// A verify gate was evaluated after a step.
@@ -318,6 +325,95 @@ pub enum OrchestrationEvent {
     },
 }
 
+// ── Q3: Run Summary & Trust Verdict ──────────────────────
+
+/// A review-friendly summary of an orchestration run.
+///
+/// Designed to answer: what changed? what was verified? what's risky?
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunSummary {
+    pub session_id: crate::SessionId,
+    pub request: String,
+    pub complexity: crate::TaskComplexity,
+    pub policy_pack: crate::PolicyPack,
+    pub total_steps: u32,
+    pub total_tokens: u64,
+    pub total_duration_ms: u64,
+    pub files_modified: Vec<String>,
+    pub files_verified: Vec<String>,
+    pub files_unverified: Vec<String>,
+    pub verification_freshness: crate::VerificationFreshness,
+    pub checks_run: Vec<RunCheckSummary>,
+    pub replans: u32,
+    pub key_decisions: Vec<String>,
+    pub trust_verdict: TrustVerdict,
+    pub risks: Vec<String>,
+}
+
+/// Summary of a single verification check within a run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunCheckSummary {
+    pub strategy: String,
+    pub passed: bool,
+    pub duration_ms: u64,
+    pub mandatory: bool,
+}
+
+/// Composite trust verdict for a run.
+///
+/// Answers: should a reviewer trust this run's output?
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustVerdict {
+    /// All mandatory checks passed, verification is fresh, no unverified files.
+    High,
+    /// Some checks passed, minor gaps remain (e.g. partial freshness).
+    Medium,
+    /// Significant gaps: stale verification, failed mandatory checks, or high risk.
+    Low,
+    /// No verification at all, or critical failures.
+    None,
+}
+
+impl TrustVerdict {
+    /// Compute verdict from verification state, policy pack, and check results.
+    pub fn compute(
+        freshness: crate::VerificationFreshness,
+        all_mandatory_passed: bool,
+        has_unverified_sensitive: bool,
+    ) -> Self {
+        use crate::VerificationFreshness;
+        match (freshness, all_mandatory_passed, has_unverified_sensitive) {
+            (VerificationFreshness::Fresh, true, false) => Self::High,
+            (VerificationFreshness::Fresh, true, true) => Self::Medium,
+            (VerificationFreshness::Partial, true, _) => Self::Medium,
+            (VerificationFreshness::Stale, _, _) => Self::Low,
+            (_, false, _) => Self::Low,
+            (VerificationFreshness::None, _, _) => Self::None,
+        }
+    }
+
+    /// Human-readable label for display.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::None => "none",
+        }
+    }
+
+    /// Emoji-free symbol for terminal display.
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            Self::High => "[PASS]",
+            Self::Medium => "[WARN]",
+            Self::Low => "[RISK]",
+            Self::None => "[NONE]",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +478,95 @@ mod tests {
         };
         let json = serde_json::to_string(&trace).unwrap();
         assert!(json.contains("\"external_session_id\":\"claude-xyz\""));
+    }
+
+    // ── TrustVerdict tests ──
+
+    #[test]
+    fn trust_verdict_high_when_fresh_and_all_pass() {
+        let v = TrustVerdict::compute(crate::VerificationFreshness::Fresh, true, false);
+        assert_eq!(v, TrustVerdict::High);
+    }
+
+    #[test]
+    fn trust_verdict_medium_when_fresh_but_sensitive_unverified() {
+        let v = TrustVerdict::compute(crate::VerificationFreshness::Fresh, true, true);
+        assert_eq!(v, TrustVerdict::Medium);
+    }
+
+    #[test]
+    fn trust_verdict_medium_when_partial() {
+        let v = TrustVerdict::compute(crate::VerificationFreshness::Partial, true, false);
+        assert_eq!(v, TrustVerdict::Medium);
+    }
+
+    #[test]
+    fn trust_verdict_low_when_stale() {
+        let v = TrustVerdict::compute(crate::VerificationFreshness::Stale, true, false);
+        assert_eq!(v, TrustVerdict::Low);
+    }
+
+    #[test]
+    fn trust_verdict_low_when_mandatory_failed() {
+        let v = TrustVerdict::compute(crate::VerificationFreshness::Fresh, false, false);
+        assert_eq!(v, TrustVerdict::Low);
+    }
+
+    #[test]
+    fn trust_verdict_none_when_no_verification() {
+        let v = TrustVerdict::compute(crate::VerificationFreshness::None, true, false);
+        assert_eq!(v, TrustVerdict::None);
+    }
+
+    #[test]
+    fn trust_verdict_labels() {
+        assert_eq!(TrustVerdict::High.label(), "high");
+        assert_eq!(TrustVerdict::Medium.label(), "medium");
+        assert_eq!(TrustVerdict::Low.label(), "low");
+        assert_eq!(TrustVerdict::None.label(), "none");
+    }
+
+    #[test]
+    fn trust_verdict_serde_round_trip() {
+        for verdict in [
+            TrustVerdict::High,
+            TrustVerdict::Medium,
+            TrustVerdict::Low,
+            TrustVerdict::None,
+        ] {
+            let json = serde_json::to_string(&verdict).unwrap();
+            let parsed: TrustVerdict = serde_json::from_str(&json).unwrap();
+            assert_eq!(verdict, parsed);
+        }
+    }
+
+    #[test]
+    fn run_summary_serializes() {
+        let summary = RunSummary {
+            session_id: crate::SessionId::new(),
+            request: "fix auth bug".into(),
+            complexity: crate::TaskComplexity::Medium,
+            policy_pack: crate::PolicyPack::Balanced,
+            total_steps: 5,
+            total_tokens: 10000,
+            total_duration_ms: 30000,
+            files_modified: vec!["src/auth.rs".into()],
+            files_verified: vec!["src/auth.rs".into()],
+            files_unverified: vec![],
+            verification_freshness: crate::VerificationFreshness::Fresh,
+            checks_run: vec![RunCheckSummary {
+                strategy: "test".into(),
+                passed: true,
+                duration_ms: 5000,
+                mandatory: true,
+            }],
+            replans: 0,
+            key_decisions: vec!["chose direct fix over refactor".into()],
+            trust_verdict: TrustVerdict::High,
+            risks: vec![],
+        };
+        let json = serde_json::to_string_pretty(&summary).unwrap();
+        assert!(json.contains("\"trust_verdict\": \"high\""));
+        assert!(json.contains("\"policy_pack\": \"balanced\""));
     }
 }

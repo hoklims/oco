@@ -1,6 +1,6 @@
 use oco_shared_types::{
-    Budget, Observation, ObservationKind, ObservationSource, OrchestratorAction, RetrievalSource,
-    RiskLevel, StopReason, TaskCategory, TaskComplexity, VerificationStrategy,
+    Budget, Observation, ObservationKind, ObservationSource, OrchestratorAction, PolicyPack,
+    RetrievalSource, RiskLevel, StopReason, TaskCategory, TaskComplexity, VerificationStrategy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +45,9 @@ pub struct PolicyState {
     /// v2: Task category for skill recommendation routing.
     #[serde(default)]
     pub task_category: TaskCategory,
+    /// v3: Policy pack controlling verification strictness.
+    #[serde(default)]
+    pub policy_pack: PolicyPack,
 }
 
 /// A scored action alternative considered during selection.
@@ -226,6 +229,22 @@ impl DefaultActionSelector {
         if state.has_memory_errors && !state.has_verified {
             score += 0.2;
             reasons.push("working memory has unresolved errors");
+        }
+
+        // v3: Policy pack boosts verification under Strict.
+        if state.has_called_tools && !state.has_verified {
+            match state.policy_pack {
+                PolicyPack::Strict => {
+                    score += 0.4;
+                    reasons.push("strict policy pack demands verification");
+                }
+                PolicyPack::Balanced => {
+                    // Already handled by risk_level above; small nudge.
+                    score += 0.1;
+                    reasons.push("balanced policy pack prefers verification");
+                }
+                PolicyPack::Fast => {} // no extra nudge
+            }
         }
 
         let reason = if reasons.is_empty() {
@@ -533,6 +552,7 @@ mod tests {
             has_memory_errors: false,
             memory_active_count: 0,
             task_category: TaskCategory::General,
+            policy_pack: PolicyPack::Balanced,
         }
     }
 
@@ -784,6 +804,83 @@ mod tests {
         assert!(
             decision_with_errors.score <= decision_without_errors.score,
             "memory errors should reduce decision score"
+        );
+    }
+
+    // --- PolicyPack selector tests ---
+
+    #[test]
+    fn strict_policy_pack_boosts_verify() {
+        let selector = DefaultActionSelector::new(BudgetEnforcer::new());
+        let mut state = default_state();
+        state.has_retrieved_context = true;
+        state.has_called_tools = true;
+        state.knowledge_confidence = 0.7;
+        state.is_write_task = true;
+
+        // Balanced baseline
+        state.policy_pack = PolicyPack::Balanced;
+        let decision_balanced = selector.select_action(&state);
+        let verify_score_balanced =
+            if matches!(decision_balanced.action, OrchestratorAction::Verify { .. }) {
+                decision_balanced.score
+            } else {
+                decision_balanced
+                    .alternatives
+                    .iter()
+                    .find(|a| a.action_type == "verify")
+                    .map(|a| a.score)
+                    .unwrap_or(0.0)
+            };
+
+        // Strict: verify score should be higher
+        state.policy_pack = PolicyPack::Strict;
+        let decision_strict = selector.select_action(&state);
+        let is_verify = matches!(decision_strict.action, OrchestratorAction::Verify { .. });
+        let verify_score_strict = if is_verify {
+            decision_strict.score
+        } else {
+            decision_strict
+                .alternatives
+                .iter()
+                .find(|a| a.action_type == "verify")
+                .map(|a| a.score)
+                .unwrap_or(0.0)
+        };
+        assert!(
+            verify_score_strict > verify_score_balanced || is_verify,
+            "strict policy pack should boost verify score: strict={verify_score_strict}, balanced={verify_score_balanced}"
+        );
+    }
+
+    #[test]
+    fn fast_policy_pack_does_not_boost_verify() {
+        let selector = DefaultActionSelector::new(BudgetEnforcer::new());
+        let mut state = default_state();
+        state.has_retrieved_context = true;
+        state.has_called_tools = true;
+        state.knowledge_confidence = 0.7;
+
+        // Fast pack should not add extra verify score beyond what risk_level gives
+        state.policy_pack = PolicyPack::Fast;
+        state.risk_level = RiskLevel::Standard;
+        let decision = selector.select_action(&state);
+        // Verify should not be the top action for a low-risk, fast-pack scenario
+        // with decent confidence and context already retrieved
+        let verify_score = if matches!(decision.action, OrchestratorAction::Verify { .. }) {
+            decision.score
+        } else {
+            decision
+                .alternatives
+                .iter()
+                .find(|a| a.action_type == "verify")
+                .map(|a| a.score)
+                .unwrap_or(0.0)
+        };
+        // Just ensure it's not excessively high (no strict boost applied)
+        assert!(
+            verify_score < 1.0,
+            "fast pack should not max out verify score"
         );
     }
 }

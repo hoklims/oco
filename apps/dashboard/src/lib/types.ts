@@ -39,6 +39,7 @@ export interface PlanCandidateSummary {
   score: number
   strengths: string[]
   weaknesses: string[]
+  planning_tokens?: number
 }
 
 export interface BudgetSnapshot {
@@ -106,4 +107,186 @@ export interface StepRow {
   tokens_used: number | null
   execution_mode: string
   verify_passed: boolean | null
+}
+
+// ── Post-run intelligence types ───────────────────────────────
+
+export type ScorecardDimension =
+  | 'Success'
+  | 'TrustVerdict'
+  | 'VerificationCoverage'
+  | 'MissionContinuity'
+  | 'CostEfficiency'
+  | 'ReplanStability'
+  | 'ErrorRate'
+
+export interface DimensionScore {
+  dimension: ScorecardDimension
+  score: number
+  detail: string
+}
+
+export interface CostMetrics {
+  steps: number
+  tokens: number
+  duration_ms: number
+  tool_calls: number
+  verify_cycles: number
+  replans: number
+}
+
+export interface RunScorecard {
+  run_id: string
+  computed_at: string
+  dimensions: DimensionScore[]
+  overall_score: number
+  cost: CostMetrics
+}
+
+// ── Gate types ────────────────────────────────────────────────
+
+export type GateVerdict = 'Pass' | 'Warn' | 'Fail'
+export type GateStrategy = 'Strict' | 'Balanced' | 'Lenient'
+export type ComparisonVerdict = 'Improved' | 'Stable' | 'Regressed'
+
+export interface GateThreshold {
+  dimension: ScorecardDimension
+  min_score: number
+  max_regression: number
+}
+
+export interface GatePolicy {
+  thresholds: GateThreshold[]
+  strategy: GateStrategy
+  min_overall_score: number
+  max_overall_regression: number
+}
+
+export interface DimensionGateCheck {
+  dimension: ScorecardDimension
+  candidate_score: number
+  baseline_score: number
+  delta: number
+  min_score: number
+  max_regression: number
+  verdict: GateVerdict
+  reason: string
+}
+
+export interface GateResult {
+  baseline_id: string
+  candidate_id: string
+  policy: GatePolicy
+  dimension_checks: DimensionGateCheck[]
+  baseline_overall: number
+  candidate_overall: number
+  overall_delta: number
+  verdict: GateVerdict
+  reasons: string[]
+}
+
+// ── Mission Memory ────────────────────────────────────────────
+
+export interface MissionFact {
+  content: string
+  source: string | null
+  established_at: string
+}
+
+export interface MissionHypothesis {
+  content: string
+  confidence_pct: number
+  supporting_evidence: string[]
+}
+
+export interface MissionPlan {
+  current_objective: string | null
+  completed_steps: string[]
+  remaining_steps: string[]
+  phase: string | null
+}
+
+export type TrustVerdict = 'High' | 'Medium' | 'Low' | 'None'
+
+export interface MissionVerificationStatus {
+  freshness: string
+  unverified_files: string[]
+  last_check: string | null
+  checks_passed: string[]
+  checks_failed: string[]
+}
+
+export interface MissionMemory {
+  schema_version: number
+  session_id: string
+  created_at: string
+  mission: string
+  facts: MissionFact[]
+  hypotheses: MissionHypothesis[]
+  open_questions: string[]
+  plan: MissionPlan
+  verification: MissionVerificationStatus
+  modified_files: string[]
+  key_decisions: string[]
+  risks: string[]
+}
+
+// ── Review Packet ─────────────────────────────────────────────
+
+export type MergeReadiness = 'Ready' | 'ConditionallyReady' | 'NotReady' | 'Unknown'
+export type BaselineFreshness = 'Fresh' | 'Aging' | 'Stale' | 'Unknown'
+
+export interface BaselineFreshnessCheck {
+  freshness: BaselineFreshness
+  age_days: number | null
+  fresh_threshold_days: number
+  stale_threshold_days: number
+  recommendation: string
+}
+
+export interface ChangesSummary {
+  modified_files: string[]
+  key_decisions: string[]
+  narrative: string | null
+}
+
+export interface VerificationSummary {
+  trust_verdict: TrustVerdict
+  checks_passed: string[]
+  checks_failed: string[]
+  unverified_files: string[]
+}
+
+export interface OpenRisks {
+  risks: string[]
+  open_questions: string[]
+  unavailable_data: string[]
+}
+
+export interface ReviewPacket {
+  schema_version: number
+  generated_at: string
+  run_id: string
+  merge_readiness: MergeReadiness
+  trust_verdict: TrustVerdict | null
+  gate_verdict: GateVerdict | null
+  changes: ChangesSummary
+  verification: VerificationSummary
+  open_risks: OpenRisks
+  scorecard: RunScorecard | null
+  gate_result: GateResult | null
+  baseline_freshness: BaselineFreshnessCheck | null
+}
+
+// ── Compact Snapshot ──────────────────────────────────────────
+
+export interface CompactSnapshot {
+  verified_facts: string[]
+  hypotheses: [string, number][]
+  questions: string[]
+  plan: string[]
+  verification_freshness: string
+  unverified_files: string[]
+  inspected_paths: string[]
+  created_at: string
 }

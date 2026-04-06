@@ -18,6 +18,8 @@
   import PulseEdge from './PulseEdge.svelte'
   import ThoughtBubble from './ThoughtBubble.svelte'
   import type { TeammateMessage } from './event-player'
+  // graph-animator removed — xyflow manages node positions via transform:translate()
+  // inline; animating transform externally causes jank. Entry/exit uses opacity only.
 
   /** Sub-plan state driven by events. Map: parentStepId → array of sub-step states. */
   export interface SubPlanEntry {
@@ -41,6 +43,27 @@
 
   const nodeTypes = { dagNode: DagNode, verifyGate: VerifyGate, teamGroup: TeamGroup }
   const edgeTypes = { pulse: PulseEdge }
+
+  /**
+   * Shared animation clock for all running nodes. Each step gets ONE phase
+   * at first render and keeps it forever — so the glow animation never
+   * shifts between renders. All nodes born near the same instant share a
+   * close phase, giving parallel `running` steps a visually in-phase pulse.
+   *
+   * The phase is `(now - epoch) % period`, applied as a negative
+   * `animation-delay` so the CSS animation is "already" at that offset.
+   */
+  const GLOW_PERIOD_MS = 2500
+  const planAnimEpoch = performance.now()
+  const nodePhaseCache = new Map<string, number>()
+  function phaseFor(stepId: string): number {
+    let p = nodePhaseCache.get(stepId)
+    if (p === undefined) {
+      p = (performance.now() - planAnimEpoch) % GLOW_PERIOD_MS
+      nodePhaseCache.set(stepId, p)
+    }
+    return p
+  }
 
   // ── Dependency map ─────────────────────────────────────────
   function getDepsMap(): Map<string, { depends_on: string[]; verify_after: boolean; execution_mode: string }> {
@@ -85,28 +108,68 @@
   const SUB_LINE_H = 20         // each sub-step row
   const STATS_ROW_H = 20        // duration + tokens row (shown on completed nodes)
 
+  /** Sub-steps count reserved for subagent nodes before `sub_plan_started`. */
+  const SUBAGENT_RESERVED_SUBSTEPS = 3
+
   function nodeHeight(data: Record<string, unknown>): number {
     let h = NODE_H_BASE
     // Sub-steps expand the node
     const subs = data?.subSteps as Array<unknown> | null
-    if (subs && subs.length > 0) h += SUB_STRIP_OVERHEAD + subs.length * SUB_LINE_H
-    // Stats row appears on completed nodes with duration
-    if (data?.duration_ms != null) h += STATS_ROW_H
+    const mode = data?.execution_mode as string | undefined
+    if (subs && subs.length > 0) {
+      h += SUB_STRIP_OVERHEAD + subs.length * SUB_LINE_H
+    } else if (mode === 'subagent') {
+      // Subagent nodes reserve space for sub-steps BEFORE the `sub_plan_started`
+      // event arrives. Otherwise the node grows 90px when sub-steps appear,
+      // forcing Dagre to relayout and making the node "jump".
+      h += SUB_STRIP_OVERHEAD + SUBAGENT_RESERVED_SUBSTEPS * SUB_LINE_H
+    }
+    // Stats row space is ALWAYS reserved (even before completion) so the node
+    // height stays stable across the pending→running→passed transition.
+    h += STATS_ROW_H
     return h
   }
 
   function gateHeight(): number { return GATE_SIZE }
 
-  // ── Sub-activity labels per step name pattern ──────────────
-  function subLabelsFor(stepName: string): string[] {
-    const lower = stepName.toLowerCase()
-    if (lower.includes('auth')) return ['Scanning auth flow', 'Writing middleware', 'Adding token refresh']
-    if (lower.includes('api')) return ['Mapping endpoints', 'Generating handlers', 'Wiring routes']
-    if (lower.includes('ui') || lower.includes('frontend')) return ['Scaffolding components', 'Styling views', 'Binding state']
-    if (lower.includes('schema') || lower.includes('migration')) return ['Reading schema', 'Writing migrations', 'Validating constraints']
-    if (lower.includes('test')) return ['Generating fixtures', 'Writing assertions', 'Running suite']
-    if (lower.includes('benchmark') || lower.includes('perf')) return ['Setting up harness', 'Running load test', 'Collecting metrics']
-    return ['Analyzing scope', 'Implementing changes', 'Self-checking']
+  // ── Layout memoization ─────────────────────────────────────
+  //
+  // Dagre re-runs on every steps/subPlanState change because `buildGraph` is
+  // `$derived`. For high-frequency updates (sub_step_progress fires many
+  // times per second), this causes node positions to be recalculated from
+  // scratch and the DAG to "jump" visually by a few pixels each time.
+  //
+  // The topology (nodes + edges + per-node height) only changes on a handful
+  // of events (plan_generated, sub_plan_started, replan_triggered). Status
+  // changes, duration updates, and sub-step progress do NOT change
+  // topology — so we memoize layout positions by a topology hash and reuse
+  // them when the hash matches.
+  type PositionMap = Map<string, { x: number; y: number }>
+  let layoutCache = new Map<string, PositionMap>()
+
+  function topologyHash(
+    nodesForHash: Array<{ id: string; type?: string; data?: unknown }>,
+    edgesForHash: Array<{ source: string; target: string }>,
+  ): string {
+    const parts: string[] = []
+    for (const n of nodesForHash) {
+      const h = n.type === 'verifyGate' ? gateHeight() : nodeHeight(n.data as Record<string, unknown>)
+      parts.push(`${n.id}:${h}`)
+    }
+    parts.sort()
+    const edgeParts = edgesForHash.map(e => `${e.source}->${e.target}`).sort()
+    return `N:${parts.join('|')}#E:${edgeParts.join('|')}`
+  }
+
+  // ── Sub-activity labels for the synthetic fallback ──────────
+  //
+  // These are only shown when a subagent has been running for 2.5s+
+  // without ever emitting `sub_plan_started`. Using neutral placeholders
+  // (not topic-specific guesses) prevents the user from mistaking them
+  // for real data and wondering "wait, these names don't match what the
+  // agent is supposed to do".
+  function subLabelsFor(_stepName: string): string[] {
+    return ['Working...', 'Working...', 'Working...']
   }
 
   // ── Edge style helpers ─────────────────────────────────────
@@ -136,10 +199,12 @@
       const d = deps.get(step.id)
       const mode = d?.execution_mode ?? step.execution_mode
       const tmColor = teammateColorMap.get(step.id) ?? null
-      // Resolve sub-steps: event-driven first, synthetic fallback
+      // Resolve sub-steps: event-driven takes priority (including after
+      // completion, so the user keeps seeing the real names). Synthetic
+      // fallback only when we never received any sub_plan_started event.
       let nodeSubSteps: Array<{ id: string; name: string; status: string }> | null = null
       const eventSub = subPlanState.get(step.id)
-      if (eventSub && !eventSub.completed) {
+      if (eventSub) {
         nodeSubSteps = eventSub.subSteps
       } else {
         const synth = syntheticStates.get(step.id)
@@ -150,7 +215,7 @@
       }
       nodes.push({
         id: step.id, type: 'dagNode', position: { x: 0, y: 0 },
-        data: { name: step.name, role: step.role, status: step.status, execution_mode: mode, verify_passed: step.verify_passed, duration_ms: step.duration_ms, tokens_used: step.tokens_used, teammateColor: tmColor, subSteps: nodeSubSteps },
+        data: { name: step.name, role: step.role, status: step.status, execution_mode: mode, verify_passed: step.verify_passed, duration_ms: step.duration_ms, tokens_used: step.tokens_used, teammateColor: tmColor, subSteps: nodeSubSteps, animPhaseMs: phaseFor(step.id) },
         sourcePosition: Position.Right, targetPosition: Position.Left,
       })
       if (d?.verify_after) {
@@ -202,6 +267,19 @@
       }
     }
 
+    // Topology hash: if identical to a previous build, reuse cached positions
+    // instead of relaunching Dagre. This eliminates micro-jumps on every
+    // sub_step_progress or status change.
+    const hash = topologyHash(nodes, edges)
+    const cached = layoutCache.get(hash)
+    if (cached) {
+      for (const n of nodes) {
+        const pos = cached.get(n.id)
+        if (pos) n.position = pos
+      }
+      return { nodes, edges }
+    }
+
     const g = new dagre.graphlib.Graph()
     g.setDefaultEdgeLabel(() => ({}))
     g.setGraph({ rankdir: 'LR', ranksep: RANKSEP, nodesep: NODESEP })
@@ -217,12 +295,23 @@
     for (const e of edges) g.setEdge(e.source, e.target)
     dagre.layout(g)
 
+    const positions: PositionMap = new Map()
     for (const n of nodes) {
       const pos = g.node(n.id)
       const w = n.type === 'verifyGate' ? GATE_SIZE : NODE_W
       const h = nodeHeights.get(n.id) ?? NODE_H_BASE
-      n.position = { x: pos.x - w / 2, y: pos.y - h / 2 }
+      const finalPos = { x: pos.x - w / 2, y: pos.y - h / 2 }
+      n.position = finalPos
+      positions.set(n.id, finalPos)
     }
+    layoutCache.set(hash, positions)
+
+    // Bound the cache so it doesn't grow unbounded across replans.
+    if (layoutCache.size > 32) {
+      const firstKey = layoutCache.keys().next().value
+      if (firstKey !== undefined) layoutCache.delete(firstKey)
+    }
+
     return { nodes, edges }
   }
 
@@ -232,7 +321,27 @@
   // The synthetic mode activates only for subagent steps that have NO event-driven sub-plan.
 
   let syntheticStates = $state<Map<string, ('pending' | 'running' | 'passed')[]>>(new Map())
-  let subTimers: ReturnType<typeof setTimeout>[] = []
+  /** Timers keyed by stepId so we can kill them atomically when switching modes. */
+  let syntheticTimers = new Map<string, ReturnType<typeof setTimeout>[]>()
+  /**
+   * Step IDs that have ever received an event-driven sub-plan. Once a step
+   * is in this set, we NEVER fall back to synthetic again — even if the
+   * entry is momentarily missing from `subPlanState`. This eliminates the
+   * race where a late `sub_plan_started` causes synthetic to fire first,
+   * then event arrives, and the two render modes fight each other.
+   */
+  let eventDrivenStepIds = $state<Set<string>>(new Set())
+
+  // Track subPlanState entries to lock a stepId into event-driven mode.
+  $effect(() => {
+    if (subPlanState.size === 0) return
+    let changed = false
+    const next = new Set(eventDrivenStepIds)
+    for (const id of subPlanState.keys()) {
+      if (!next.has(id)) { next.add(id); changed = true }
+    }
+    if (changed) eventDrivenStepIds = next
+  })
 
   // Detect running subagents that need synthetic expansion (no event-driven sub-plan)
   let runningSubagentKey = $derived.by(() => {
@@ -241,8 +350,10 @@
     for (const step of steps) {
       const d = deps.get(step.id)
       if (d?.execution_mode === 'subagent' && step.status === 'running') {
-        // Only synthetic if no event-driven sub-plan exists for this step
-        if (!subPlanState.has(step.id)) ids.push(step.id)
+        // Skip synthetic for any step that has ever been event-driven.
+        if (!subPlanState.has(step.id) && !eventDrivenStepIds.has(step.id)) {
+          ids.push(step.id)
+        }
       }
     }
     return ids.sort().join(',')
@@ -260,29 +371,68 @@
     for (const id of prevIds) { if (!currIds.has(id)) collapseSynthetic(id) }
   })
 
+  /**
+   * Grace window before activating the synthetic fallback.
+   *
+   * Synthetic is a last-resort fallback for subagent nodes that will
+   * NEVER receive `sub_plan_started` events. In all normal cases the
+   * event arrives within a second, so we wait long enough that synthetic
+   * never fires during a real run. Only if the orchestrator is genuinely
+   * silent for 2.5s+ do we show placeholder sub-steps — at that point
+   * the user WANTS to see something moving.
+   */
+  const SYNTHETIC_GRACE_MS = 2500
+
   function expandSynthetic(stepId: string) {
-    const step = steps.find(s => s.id === stepId)
-    const labels = subLabelsFor(step?.name ?? '')
-    const states: ('pending' | 'running' | 'passed')[] = labels.map(() => 'pending')
-    syntheticStates = new Map(syntheticStates).set(stepId, states)
-    for (let i = 0; i < labels.length; i++) {
-      subTimers.push(setTimeout(() => {
-        const c = syntheticStates.get(stepId); if (!c) return
-        const n = [...c]; n[i] = 'running'
-        syntheticStates = new Map(syntheticStates).set(stepId, n)
-      }, 600 + i * 1800))
-      subTimers.push(setTimeout(() => {
-        const c = syntheticStates.get(stepId); if (!c) return
-        const n = [...c]; n[i] = 'passed'
-        syntheticStates = new Map(syntheticStates).set(stepId, n)
-      }, 1800 + i * 1800))
-    }
+    // Never start synthetic for a step that is (or was) event-driven.
+    if (eventDrivenStepIds.has(stepId) || subPlanState.has(stepId)) return
+    killSyntheticTimers(stepId)
+
+    // Deferred start: re-check the event-driven condition when the grace
+    // window expires. If a `sub_plan_started` arrived in the meantime,
+    // skip synthetic entirely — the user never sees fake names.
+    const stepTimers: ReturnType<typeof setTimeout>[] = []
+    stepTimers.push(setTimeout(() => {
+      if (eventDrivenStepIds.has(stepId) || subPlanState.has(stepId)) return
+      const step = steps.find(s => s.id === stepId)
+      const labels = subLabelsFor(step?.name ?? '')
+      const states: ('pending' | 'running' | 'passed')[] = labels.map(() => 'pending')
+      syntheticStates = new Map(syntheticStates).set(stepId, states)
+      for (let i = 0; i < labels.length; i++) {
+        stepTimers.push(setTimeout(() => {
+          const c = syntheticStates.get(stepId); if (!c) return
+          const n = [...c]; n[i] = 'running'
+          syntheticStates = new Map(syntheticStates).set(stepId, n)
+        }, 600 + i * 1800))
+        stepTimers.push(setTimeout(() => {
+          const c = syntheticStates.get(stepId); if (!c) return
+          const n = [...c]; n[i] = 'passed'
+          syntheticStates = new Map(syntheticStates).set(stepId, n)
+        }, 1800 + i * 1800))
+      }
+    }, SYNTHETIC_GRACE_MS))
+    syntheticTimers.set(stepId, stepTimers)
   }
 
+  /**
+   * Collapse synchronously — no `setTimeout`. Delaying the delete created a
+   * window where event-driven and synthetic state both affected the render
+   * and produced visual flicker. The disappearance is smoothed by CSS
+   * transitions on the sub-strip.
+   */
   function collapseSynthetic(stepId: string) {
-    subTimers.push(setTimeout(() => {
-      const next = new Map(syntheticStates); next.delete(stepId); syntheticStates = next
-    }, 600))
+    killSyntheticTimers(stepId)
+    if (!syntheticStates.has(stepId)) return
+    const next = new Map(syntheticStates)
+    next.delete(stepId)
+    syntheticStates = next
+  }
+
+  function killSyntheticTimers(stepId: string) {
+    const timers = syntheticTimers.get(stepId)
+    if (!timers) return
+    for (const t of timers) clearTimeout(t)
+    syntheticTimers.delete(stepId)
   }
 
   // ── Team group as real Svelte Flow node ────────────────────
@@ -355,11 +505,26 @@
         const bothRunning = stepA?.status === 'running' && stepB?.status === 'running'
         const colorA = teammateColorMap.get(idA) ?? '#a78bfa'
         const colorB = teammateColorMap.get(idB) ?? '#22d3ee'
-        const flash = teammateMessages.find(m =>
-          (m.fromStepId === idA && m.toStepId === idB) || (m.fromStepId === idB && m.toStepId === idA))
-        // Determine flash direction: is sender the source or target of this edge?
-        const flashIsReverse = flash ? flash.fromStepId === idB : false
-        const flashSenderColor = flash ? (teammateColorMap.get(flash.fromStepId) ?? '#e8ecf4') : '#e8ecf4'
+
+        // All in-flight messages between this pair, each with a stable id
+        // so PulseEdge can key them independently. A flash that is already
+        // mid-animation is NEVER re-mounted when another message arrives.
+        type FlashHint = { id: string; color: string; reverse: boolean }
+        const flashes: FlashHint[] = []
+        for (const m of teammateMessages) {
+          const forward = m.fromStepId === idA && m.toStepId === idB
+          const reverse = m.fromStepId === idB && m.toStepId === idA
+          if (!forward && !reverse) continue
+          const tagged = m as typeof m & { _ts?: number }
+          const flashId = tagged._ts !== undefined
+            ? `${idA}-${idB}-${tagged._ts}`
+            : `${idA}-${idB}-${m.summary}-${flashes.length}`
+          flashes.push({
+            id: flashId,
+            color: teammateColorMap.get(m.fromStepId) ?? '#e8ecf4',
+            reverse,
+          })
+        }
 
         extraEdges.push({
           id: `e-comm-${idA}-${idB}`,
@@ -371,10 +536,7 @@
             isActive: bothRunning,
             sourceColor: colorA,
             targetColor: colorB,
-            flashMessage: flash?.summary ?? '',
-            flashSender: flash?.fromName ?? '',
-            flashColor: flashSenderColor,
-            flashReverse: flashIsReverse,
+            flashes,
           },
         })
       }
@@ -391,8 +553,9 @@
   // ── Reactive graph ─────────────────────────────────────────
   let mainGraph = $derived(buildGraph(steps))
   let fullGraph = $derived(mergeAll(mainGraph))
-  let nodes = $state<Node[]>([])
-  let edges = $state<Edge[]>([])
+  // $state.raw per xyflow docs — avoids deep proxy overhead on frequent updates.
+  let nodes = $state.raw<Node[]>([])
+  let edges = $state.raw<Edge[]>([])
 
   let revealedIds = $state<Set<string>>(new Set())
   let revealTimers: ReturnType<typeof setTimeout>[] = []
@@ -414,21 +577,31 @@
     return batches
   }
 
+  // ── Stagger reveal (opacity only — never touch transform/position) ──
+
   function startReveal(g: { nodes: Node[]; edges: Edge[] }) {
     revealTimers.forEach(clearTimeout); revealTimers = []
     const batches = computeRevealBatches(g)
     const newRevealed = new Set<string>()
-    // Always reveal special nodes immediately
     g.nodes.filter(n => n.type === 'teamGroup').forEach(n => newRevealed.add(n.id))
 
-    if (batches.length <= 1) { g.nodes.forEach(n => newRevealed.add(n.id)); revealedIds = newRevealed; nodes = g.nodes; edges = g.edges; return }
-    nodes = g.nodes.map(n => newRevealed.has(n.id) ? n : { ...n, style: 'opacity:0; transform: scale(0.85) translateX(-10px); transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);' })
-    edges = g.edges.map(e => ({ ...e, style: (e.style ?? '') + (newRevealed.has(e.source) && newRevealed.has(e.target) ? '' : ' opacity: 0;') }))
+    if (batches.length <= 1) {
+      g.nodes.forEach(n => newRevealed.add(n.id))
+      revealedIds = newRevealed
+      nodes = g.nodes
+      edges = g.edges
+      return
+    }
+
+    // Hide unrevealed nodes with opacity only (no transform — xyflow owns that).
+    nodes = g.nodes.map(n => newRevealed.has(n.id) ? n : { ...n, style: 'opacity: 0; pointer-events: none;' })
+    edges = g.edges.map(e => newRevealed.has(e.source) && newRevealed.has(e.target) ? e : { ...e, style: (e.style ?? '') + ' opacity: 0;' })
 
     batches.forEach((batch, idx) => {
       revealTimers.push(setTimeout(() => {
-        batch.forEach(id => newRevealed.add(id)); revealedIds = new Set(newRevealed)
-        nodes = g.nodes.map(n => newRevealed.has(n.id) ? n : { ...n, style: 'opacity:0; transform: scale(0.85) translateX(-10px); transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);' })
+        batch.forEach(id => newRevealed.add(id))
+        revealedIds = new Set(newRevealed)
+        nodes = g.nodes.map(n => newRevealed.has(n.id) ? n : { ...n, style: 'opacity: 0; pointer-events: none;' })
         edges = g.edges.map(e => newRevealed.has(e.source) && newRevealed.has(e.target) ? e : { ...e, style: (e.style ?? '') + ' opacity: 0;' })
       }, idx * 350))
     })
@@ -436,33 +609,76 @@
 
   let lastStepCount = 0
   let initialized = false
+  let previousNodeIds = new Set<string>()
 
   $effect(() => {
     const g = fullGraph
-    if (g.nodes.length === 0) { nodes = []; edges = []; initialized = false; lastStepCount = 0; return }
+    if (g.nodes.length === 0) { nodes = []; edges = []; initialized = false; lastStepCount = 0; previousNodeIds.clear(); return }
     const mainCount = g.nodes.filter(n => n.type === 'dagNode' || n.type === 'verifyGate').length
 
     if (!initialized || Math.abs(mainCount - lastStepCount) > 2) {
-      initialized = true; lastStepCount = mainCount; startReveal(g); return
+      initialized = true
+      lastStepCount = mainCount
+      previousNodeIds = new Set(g.nodes.map(n => n.id))
+      startReveal(g)
+      return
     }
     lastStepCount = mainCount
 
+    // Detect new nodes (replan adds them)
+    const currentIds = new Set(g.nodes.map(n => n.id))
+    const newIds = new Set<string>()
+    for (const id of currentIds) {
+      if (!previousNodeIds.has(id)) newIds.add(id)
+    }
+    previousNodeIds = currentIds
+
+    // Stagger-reveal new nodes if any appeared (replan)
+    if (newIds.size > 0) {
+      const newRevealed = new Set(revealedIds)
+      // Reveal new nodes with stagger
+      const newOnly = g.nodes.filter(n => newIds.has(n.id))
+      const batches = computeRevealBatches({ nodes: newOnly, edges: [] })
+      batches.forEach((batch, idx) => {
+        revealTimers.push(setTimeout(() => {
+          batch.forEach(id => newRevealed.add(id))
+          revealedIds = new Set(newRevealed)
+          // Re-apply visibility
+          applyVisibility(g)
+        }, 200 + idx * 300))
+      })
+    }
+
+    applyVisibility(g)
+  })
+
+  /** Apply opacity-based visibility without touching positions. */
+  function applyVisibility(g: { nodes: Node[]; edges: Edge[] }) {
     const allRevealed = new Set(revealedIds)
     g.nodes.filter(n => n.type === 'teamGroup').forEach(n => allRevealed.add(n.id))
 
-    nodes = g.nodes.map(n => allRevealed.has(n.id) ? n : { ...n, style: 'opacity:0; transform: scale(0.85) translateX(-10px); transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);' })
+    nodes = g.nodes.map(n =>
+      allRevealed.has(n.id) ? n : { ...n, style: 'opacity: 0; pointer-events: none;' }
+    )
     edges = g.edges.map(e => {
       if (e.id.startsWith('e-sub-')) return e
-      return allRevealed.has(e.source) && allRevealed.has(e.target) ? e : { ...e, style: (e.style ?? '') + ' opacity: 0;' }
+      return allRevealed.has(e.source) && allRevealed.has(e.target)
+        ? e
+        : { ...e, style: (e.style ?? '') + ' opacity: 0;' }
     })
-  })
+  }
 
-  onMount(() => () => { revealTimers.forEach(clearTimeout); subTimers.forEach(clearTimeout) })
+  onMount(() => () => {
+    revealTimers.forEach(clearTimeout)
+    for (const timers of syntheticTimers.values()) timers.forEach(clearTimeout)
+    syntheticTimers.clear()
+  })
 
   function thoughtsFor(stepId: string): Thought[] { return thoughts.filter(t => t.stepId === stepId) }
   let activeStepId = $derived(steps.find(s => s.status === 'running')?.id ?? null)
   let hasSubagents = $derived(stepSummaries.some(s => s.execution_mode === 'subagent'))
   let hasTeammates = $derived(stepSummaries.some(s => s.execution_mode === 'teammate'))
+  let hasResearch = $derived(steps.some(s => s.role.toLowerCase() === 'researcher' || s.role.toLowerCase() === 'analyst'))
 
   // Adaptive fitView: more padding for small graphs, less for dense ones
   let fitPadding = $derived(steps.length <= 3 ? 0.25 : steps.length <= 6 ? 0.15 : 0.08)
@@ -499,7 +715,7 @@
       <Background variant={BackgroundVariant.Dots} gap={24} size={0.4} bgColor="transparent" />
     </SvelteFlow>
 
-    {#if hasSubagents || hasTeammates}
+    {#if hasSubagents || hasTeammates || hasResearch}
       <div class="legend">
         <span class="legend-item"><span class="legend-line legend-inline"></span><span>inline</span></span>
         {#if hasSubagents}
@@ -508,6 +724,9 @@
         {#if hasTeammates}
           <span class="legend-item"><span class="legend-line legend-team"></span><span>team</span></span>
           <span class="legend-item"><span class="legend-dot legend-comm"></span><span>comm</span></span>
+        {/if}
+        {#if hasResearch}
+          <span class="legend-item"><span class="legend-dot legend-research"></span><span>prior art</span></span>
         {/if}
       </div>
     {/if}
@@ -525,8 +744,14 @@
 <style>
   :global(.svelte-flow) { background: transparent !important; }
   :global(.svelte-flow__handle) { opacity: 0 !important; width: 1px !important; height: 1px !important; }
-  :global(.svelte-flow__edge-path) { transition: d 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.6s, stroke-width 0.5s; }
-  :global(.svelte-flow__node) { transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1), transform 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+  /* Edge transitions: only opacity + stroke color. Never animate 'd' attribute
+     (xyflow recalculates paths on every node position change — transitioning it lags). */
+  :global(.svelte-flow__edge-path) {
+    transition: opacity 0.5s ease, stroke 0.4s ease, stroke-width 0.3s ease;
+  }
+  /* Node transitions: opacity only. Never transition transform — xyflow sets
+     transform:translate() inline and competing CSS transitions cause jank. */
+  :global(.svelte-flow__node) { transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
   :global(.svelte-flow__node.selected) { box-shadow: 0 0 0 2px #4b8df840 !important; border-radius: 10px; }
 
   .legend {
@@ -540,5 +765,6 @@
   .legend-team { background: #a78bfa; opacity: 0.5; }
   .legend-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
   .legend-comm { background: #a78bfa; box-shadow: 0 0 4px #a78bfa60; animation: legend-pulse 2s ease-in-out infinite; }
+  .legend-research { background: #f97316; box-shadow: 0 0 4px #f9731660; }
   @keyframes legend-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
 </style>

@@ -12,6 +12,7 @@ mod context;
 mod direct;
 mod error;
 mod llm_planner;
+pub mod prior_art;
 mod prompt;
 pub mod risk_analysis;
 
@@ -19,6 +20,7 @@ pub use context::PlanningContext;
 pub use direct::DirectPlanner;
 pub use error::PlannerError;
 pub use llm_planner::{LlmCallFn, LlmPlanner, PlanCandidate};
+pub use prior_art::{PriorArtAdvice, analyze_prior_art};
 pub use prompt::PlanBias;
 pub use risk_analysis::{FailurePreview, Risk, analyze_risks};
 

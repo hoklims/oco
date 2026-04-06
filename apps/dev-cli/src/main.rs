@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use ui::{CheckStatus, OutputFormat, Renderer, UiEvent};
+use ui::{CheckStatus, OutputFormat, Renderer, UiEvent, UiStepSummary};
 
 #[derive(Parser)]
 #[command(name = "oco", version, about = "Open Context Orchestrator — Dev CLI")]
@@ -57,6 +57,15 @@ enum Commands {
         /// Maximum steps
         #[arg(long, default_value_t = 25)]
         max_steps: u32,
+        /// Override maximum token budget for this run
+        #[arg(long)]
+        max_tokens: Option<u64>,
+        /// Override maximum tool calls for this run
+        #[arg(long)]
+        max_tools: Option<u32>,
+        /// Resume from a previous run's mission memory (session ID or "last")
+        #[arg(long)]
+        resume: Option<String>,
     },
     /// Index a workspace for retrieval
     Index {
@@ -137,6 +146,116 @@ enum Commands {
         #[arg(long, default_value = "claude-code")]
         provider: String,
     },
+    /// Compare two evaluation result files (Q5 scorecard comparison)
+    EvalCompare {
+        /// Baseline results file (JSON from `oco eval --output`)
+        baseline: String,
+        /// Candidate results file (JSON from `oco eval --output`)
+        candidate: String,
+        /// Output as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a quality gate: compare candidate against baseline with pass/warn/fail verdict (Q6/Q7)
+    ///
+    /// Q7: When baseline or policy are omitted, reads [gate] config from oco.toml.
+    EvalGate {
+        /// Baseline file (omit to use repo config's baseline_path)
+        baseline: Option<String>,
+        /// Candidate file (scorecard.json, eval results JSON, or a run directory)
+        candidate: Option<String>,
+        /// Gate policy: strict, balanced, lenient (omit to use repo config)
+        #[arg(long)]
+        policy: Option<String>,
+        /// Output full result as JSON
+        #[arg(long)]
+        json: bool,
+        /// Write a review report (Markdown + JSON) to a directory
+        #[arg(long)]
+        report: Option<String>,
+        /// Workspace path (to find oco.toml and .oco/)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+    },
+    /// Save a baseline from a run's scorecard or eval results (Q6/Q7)
+    ///
+    /// Q7: When --output is omitted, uses the baseline_path from repo config.
+    BaselineSave {
+        /// Source: run ID ("last"), eval results file, or scorecard.json path
+        source: String,
+        /// Baseline name (e.g., "v0.5-stable")
+        #[arg(long)]
+        name: String,
+        /// Output path (omit to use repo config's baseline_path)
+        #[arg(long)]
+        output: Option<String>,
+        /// Workspace path (for resolving run IDs and repo config)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Optional description
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Promote a candidate to become the new baseline (Q11)
+    ///
+    /// Loads the current baseline, evaluates the candidate against it,
+    /// backs up the old baseline, saves the new one, and appends an
+    /// audit trail entry to `.oco/baseline-history.json`.
+    ///
+    /// If the gate verdict is Fail (recommendation: reject), the promotion
+    /// is aborted unless --force is provided.
+    BaselinePromote {
+        /// Source: run ID ("last"), eval results file, or scorecard.json path
+        source: String,
+        /// Name for the new baseline (e.g., "v2-stable")
+        #[arg(long)]
+        name: String,
+        /// Reason for the promotion (shown in audit trail)
+        #[arg(long)]
+        reason: Option<String>,
+        /// Optional description for the new baseline
+        #[arg(long)]
+        description: Option<String>,
+        /// Workspace path (for resolving run IDs and repo config)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Output the promotion record as JSON
+        #[arg(long)]
+        json: bool,
+        /// Force promotion even when recommendation is reject
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show the baseline promotion audit trail (Q11)
+    BaselineHistory {
+        /// Workspace path
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Output as Markdown
+        #[arg(long)]
+        markdown: bool,
+        /// Maximum entries to show (most recent first)
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Prune old entries from the baseline history, keeping only the most recent N
+    BaselineHistoryPrune {
+        /// Number of entries to keep (most recent)
+        #[arg(long)]
+        keep: usize,
+        /// Workspace path
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Preview what would be removed without modifying anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Check plugin health and configuration
     Doctor {
         /// Workspace path to check
@@ -159,6 +278,9 @@ enum RunsAction {
         /// Workspace path (to find .oco/runs/)
         #[arg(long, default_value = ".")]
         workspace: String,
+        /// Show mission memory (durable handoff artifact) instead of trace
+        #[arg(long)]
+        mission: bool,
     },
     /// List recent runs
     List {
@@ -168,6 +290,47 @@ enum RunsAction {
         /// Max entries
         #[arg(long, default_value_t = 10)]
         limit: usize,
+    },
+    /// Display a run's mission memory as a handoff document
+    Handoff {
+        /// Run/session ID (or "last" for most recent)
+        id: String,
+        /// Workspace path (to find .oco/runs/)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Output as JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate a unified review packet for a run (Q9 merge-readiness bundle)
+    ReviewPack {
+        /// Run/session ID (or "last" for most recent)
+        id: String,
+        /// Workspace path (to find .oco/runs/ and oco.toml)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Output full packet as JSON
+        #[arg(long)]
+        json: bool,
+        /// Output as Markdown
+        #[arg(long)]
+        markdown: bool,
+        /// Write review packet files (relative paths resolve from --workspace)
+        #[arg(long)]
+        save: Option<Option<String>>,
+    },
+    /// Compare two runs' scorecards (Q5 regression detection)
+    Compare {
+        /// First run ID (or "last" for most recent)
+        baseline: String,
+        /// Second run ID
+        candidate: String,
+        /// Workspace path (to find .oco/runs/)
+        #[arg(long, default_value = ".")]
+        workspace: String,
+        /// Output as JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -210,7 +373,16 @@ async fn main() -> Result<()> {
             provider,
             model,
             max_steps: _,
-        } => cmd_run(&mut *r, out_format, request, workspace, provider, model).await?,
+            max_tokens,
+            max_tools,
+            resume,
+        } => {
+            cmd_run(
+                &mut *r, out_format, request, workspace, provider, model, resume, max_tokens,
+                max_tools,
+            )
+            .await?
+        }
         Commands::Index { path } => cmd_index(&mut *r, path)?,
         Commands::Search {
             query,
@@ -236,10 +408,95 @@ async fn main() -> Result<()> {
             output,
             provider,
         } => cmd_eval(&mut *r, out_format, scenarios, output, provider).await?,
+        Commands::EvalCompare {
+            baseline,
+            candidate,
+            json,
+        } => cmd_eval_compare(&mut *r, baseline, candidate, json)?,
+        Commands::EvalGate {
+            baseline,
+            candidate,
+            policy,
+            json,
+            report,
+            workspace,
+        } => {
+            let exit_code = cmd_eval_gate(
+                &mut *r, baseline, candidate, policy, json, report, workspace,
+            )?;
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+        }
+        Commands::BaselineSave {
+            source,
+            name,
+            output,
+            workspace,
+            description,
+        } => cmd_baseline_save(&mut *r, source, name, output, workspace, description)?,
+        Commands::BaselinePromote {
+            source,
+            name,
+            reason,
+            description,
+            workspace,
+            json,
+            force,
+        } => cmd_baseline_promote(
+            &mut *r,
+            source,
+            name,
+            reason,
+            description,
+            workspace,
+            json,
+            force,
+        )?,
+        Commands::BaselineHistory {
+            workspace,
+            json,
+            markdown,
+            limit,
+        } => cmd_baseline_history(&mut *r, workspace, json, markdown, limit)?,
+        Commands::BaselineHistoryPrune {
+            keep,
+            workspace,
+            dry_run,
+            json,
+        } => cmd_baseline_history_prune(&mut *r, workspace, keep, dry_run, json)?,
         Commands::Doctor { workspace } => cmd_doctor(&mut *r, workspace)?,
         Commands::Runs { action } => match action {
-            RunsAction::Show { id, workspace } => cmd_runs_show(&mut *r, id, workspace)?,
+            RunsAction::Show {
+                id,
+                workspace,
+                mission,
+            } => {
+                if mission {
+                    cmd_runs_handoff(&mut *r, id, workspace, false)?;
+                } else {
+                    cmd_runs_show(&mut *r, id, workspace)?;
+                }
+            }
             RunsAction::List { workspace, limit } => cmd_runs_list(&mut *r, workspace, limit)?,
+            RunsAction::Handoff {
+                id,
+                workspace,
+                json,
+            } => cmd_runs_handoff(&mut *r, id, workspace, json)?,
+            RunsAction::ReviewPack {
+                id,
+                workspace,
+                json,
+                markdown,
+                save,
+            } => cmd_runs_review_pack(&mut *r, id, workspace, json, markdown, save)?,
+            RunsAction::Compare {
+                baseline,
+                candidate,
+                workspace,
+                json,
+            } => cmd_runs_compare(&mut *r, baseline, candidate, workspace, json)?,
         },
     }
 
@@ -305,6 +562,7 @@ async fn cmd_serve(r: &mut dyn Renderer, host: String, port: u16, headless: bool
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_run(
     r: &mut dyn Renderer,
     format: OutputFormat,
@@ -312,9 +570,20 @@ async fn cmd_run(
     workspace: Option<String>,
     provider: String,
     model: Option<String>,
+    resume: Option<String>,
+    max_tokens: Option<u64>,
+    max_tools: Option<u32>,
 ) -> Result<()> {
     let mut config = oco_orchestrator_core::OrchestratorConfig::default();
     config.default_budget.max_duration_secs = 120;
+
+    // P1 5.3: Per-run budget overrides from CLI flags.
+    if let Some(tokens) = max_tokens {
+        config.default_budget.max_total_tokens = tokens;
+    }
+    if let Some(tools) = max_tools {
+        config.default_budget.max_tool_calls = tools;
+    }
 
     let base_llm: Arc<dyn oco_orchestrator_core::llm::LlmProvider> = match provider.as_str() {
         "claude-code" => {
@@ -361,6 +630,9 @@ async fn cmd_run(
         workspace: workspace.clone(),
     });
 
+    let run_profile = config.profile.clone();
+    // Capture budget for plan overview display before config is moved.
+    let run_budget_tokens = config.default_budget.max_total_tokens;
     let mut orchestrator = oco_orchestrator_core::OrchestrationLoop::new(config, llm);
 
     // Index workspace if provided
@@ -390,6 +662,31 @@ async fn cmd_run(
                 duration_ms: t.elapsed().as_millis() as u64,
             });
         }
+    }
+
+    // Load and apply mission memory from a previous run if --resume was specified.
+    if let Some(ref resume_id) = resume {
+        let ws_for_resume = workspace.as_deref().unwrap_or(".");
+        let run_dir = resolve_run_dir(resume_id, ws_for_resume)?;
+        let mission_path = run_dir.join("mission.json");
+        if !mission_path.exists() {
+            anyhow::bail!(
+                "no mission.json in run {}. Cannot resume without a mission memory.",
+                run_dir.display()
+            );
+        }
+        let mission = oco_shared_types::MissionMemory::load_from(&mission_path)
+            .map_err(|e| anyhow::anyhow!("failed to load mission memory: {e}"))?;
+        r.emit(UiEvent::Info {
+            message: format!(
+                "Resuming from session {} ({} facts, {} hypotheses, {} questions)",
+                mission.session_id.0,
+                mission.facts.len(),
+                mission.hypotheses.len(),
+                mission.open_questions.len(),
+            ),
+        });
+        orchestrator.with_resume_mission(mission);
     }
 
     // Set up live event channel
@@ -448,6 +745,116 @@ async fn cmd_run(
                     ),
                 });
             }
+            oco_shared_types::OrchestrationEvent::PlanGenerated {
+                plan_id,
+                step_count,
+                parallel_group_count,
+                critical_path_length,
+                estimated_total_tokens,
+                ref strategy,
+                ref team,
+                ref steps,
+            } => {
+                r.emit(UiEvent::PlanOverview {
+                    step_count,
+                    parallel_groups: parallel_group_count,
+                    critical_path_length,
+                    estimated_tokens: estimated_total_tokens as u32,
+                    budget_tokens: run_budget_tokens,
+                    strategy: strategy.clone(),
+                    team: team
+                        .as_ref()
+                        .map(|t| (t.name.clone(), t.topology.clone(), t.member_count)),
+                    steps: steps
+                        .iter()
+                        .map(|s| UiStepSummary {
+                            id: s.id,
+                            name: s.name.clone(),
+                            role: s.role.clone(),
+                            execution_mode: s.execution_mode.clone(),
+                            depends_on: s.depends_on.clone(),
+                            verify_after: s.verify_after,
+                            estimated_tokens: s.estimated_tokens,
+                            preferred_model: s.preferred_model.clone(),
+                        })
+                        .collect(),
+                });
+                let _ = plan_id; // referenced in trace_events
+            }
+            oco_shared_types::OrchestrationEvent::PlanStepStarted {
+                ref step_name,
+                ref role,
+                ref execution_mode,
+                ..
+            } => {
+                r.emit(UiEvent::PlanStepStarted {
+                    step_name: step_name.clone(),
+                    role: role.clone(),
+                    execution_mode: execution_mode.clone(),
+                });
+            }
+            oco_shared_types::OrchestrationEvent::PlanStepCompleted {
+                ref step_name,
+                success,
+                duration_ms,
+                tokens_used,
+                ..
+            } => {
+                r.emit(UiEvent::PlanStepCompleted {
+                    step_name: step_name.clone(),
+                    success,
+                    duration_ms,
+                    tokens_used,
+                });
+            }
+            oco_shared_types::OrchestrationEvent::PlanProgress {
+                completed,
+                total,
+                ref active_steps,
+                budget_used_pct,
+                ..
+            } => {
+                r.emit(UiEvent::PlanProgress {
+                    completed,
+                    total,
+                    active_steps: active_steps.iter().map(|(_, name)| name.clone()).collect(),
+                    budget_used_pct,
+                });
+            }
+            oco_shared_types::OrchestrationEvent::VerifyGateResult {
+                ref step_name,
+                ref checks,
+                overall_passed,
+                replan_triggered,
+                ..
+            } => {
+                r.emit(UiEvent::PlanVerifyGateResult {
+                    step_name: step_name.clone(),
+                    checks: checks
+                        .iter()
+                        .map(|c| (c.check_type.clone(), c.passed, c.summary.clone()))
+                        .collect(),
+                    overall_passed,
+                    replan_triggered,
+                });
+            }
+            oco_shared_types::OrchestrationEvent::ReplanTriggered {
+                ref failed_step_name,
+                attempt,
+                max_attempts,
+                steps_preserved,
+                steps_removed,
+                steps_added,
+            } => {
+                r.emit(UiEvent::PlanReplanTriggered {
+                    failed_step: failed_step_name.clone(),
+                    attempt,
+                    max_attempts,
+                    steps_preserved,
+                    steps_removed,
+                    steps_added,
+                });
+            }
             _ => {}
         }
     }
@@ -468,6 +875,18 @@ async fn cmd_run(
 
     let session_id = state.session.id.0.to_string();
 
+    // Compute planning overhead from trace events (sum of all candidate generation costs).
+    let planning_tokens: u64 = trace_events
+        .iter()
+        .filter_map(|e| {
+            if let oco_shared_types::OrchestrationEvent::PlanExploration { candidates, .. } = e {
+                Some(candidates.iter().map(|c| c.planning_tokens).sum::<u64>())
+            } else {
+                None
+            }
+        })
+        .sum();
+
     r.emit(UiEvent::RunFinished {
         session_id: session_id.clone(),
         steps: state.session.step_count,
@@ -475,6 +894,7 @@ async fn cmd_run(
         tokens_max: state.session.budget.max_total_tokens,
         duration_ms: run_duration,
         success,
+        planning_tokens,
     });
 
     // Extract and display final response
@@ -501,6 +921,7 @@ async fn cmd_run(
     if let Err(e) = save_run_artifacts(
         &session_id,
         &state,
+        &run_profile,
         &trace_events,
         run_duration,
         success,
@@ -514,10 +935,11 @@ async fn cmd_run(
     Ok(())
 }
 
-/// Save run artifacts (trace.jsonl, summary.json) to .oco/runs/<id>/
+/// Save run artifacts (trace.jsonl, summary.json, mission.json) to .oco/runs/<id>/
 fn save_run_artifacts(
     session_id: &str,
     state: &oco_orchestrator_core::OrchestrationState,
+    profile: &oco_shared_types::RepoProfile,
     events: &[oco_shared_types::OrchestrationEvent],
     duration_ms: u64,
     success: bool,
@@ -562,6 +984,65 @@ fn save_run_artifacts(
         &run_dir.join("summary.json"),
         serde_json::to_string_pretty(&summary)?,
     )?;
+
+    // mission.json — durable mission memory for handoff/resume
+    let mission = state.create_mission_memory(profile);
+    let has_mission_content = mission.has_content();
+    if has_mission_content {
+        mission
+            .save_to(&run_dir.join("mission.json"))
+            .map_err(|e| anyhow::anyhow!("failed to save mission memory: {e}"))?;
+    }
+
+    // scorecard.json — Q5 evaluation scorecard via canonical ScorecardBuilder
+    {
+        let replan_count = state
+            .memory
+            .planner_state
+            .as_ref()
+            .map(|ps| ps.replan_count)
+            .unwrap_or(0);
+
+        let verified_count = state
+            .verification
+            .runs
+            .iter()
+            .filter(|r| r.passed)
+            .flat_map(|r| r.covered_files.iter())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+
+        let error_count = state
+            .observations
+            .iter()
+            .filter(|o| matches!(o.kind, oco_shared_types::ObservationKind::Error { .. }))
+            .count();
+
+        // Load per-repo scorecard weight overrides from oco.toml (if present).
+        let weights = oco_orchestrator_core::load_scorecard_weights(&base).unwrap_or_default();
+
+        let scorecard = oco_orchestrator_core::ScorecardBuilder::new(session_id)
+            .success(success)
+            .trust_verdict(mission.trust_verdict)
+            .file_counts(state.verification.modified_files.len(), verified_count)
+            .mission_continuity(has_mission_content)
+            .cost(
+                state.session.budget.tokens_used,
+                state.session.step_count,
+                duration_ms,
+                state.session.budget.tool_calls_used,
+                state.session.budget.verify_cycles_used,
+            )
+            .replans(replan_count)
+            .errors(error_count, state.session.step_count)
+            .with_weights(weights)
+            .build();
+
+        atomic_write(
+            &run_dir.join("scorecard.json"),
+            serde_json::to_string_pretty(&scorecard)?,
+        )?;
+    }
 
     Ok(())
 }
@@ -991,15 +1472,18 @@ fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
 
     let mut issues = 0u32;
 
-    // Check oco.toml
+    // Check oco.toml — capture result for downstream gate check
     let config_path = ws_path.join("oco.toml");
-    if config_path.exists() {
+    let parsed_config = if config_path.exists() {
         match oco_orchestrator_core::OrchestratorConfig::from_file(&config_path) {
-            Ok(_) => r.emit(UiEvent::DoctorCheck {
-                name: "oco.toml".into(),
-                status: CheckStatus::Pass,
-                detail: Some("valid".into()),
-            }),
+            Ok(cfg) => {
+                r.emit(UiEvent::DoctorCheck {
+                    name: "oco.toml".into(),
+                    status: CheckStatus::Pass,
+                    detail: Some("valid".into()),
+                });
+                Some(cfg)
+            }
             Err(e) => {
                 r.emit(UiEvent::DoctorCheck {
                     name: "oco.toml".into(),
@@ -1007,6 +1491,7 @@ fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
                     detail: Some(format!("parse error: {e}")),
                 });
                 issues += 1;
+                None
             }
         }
     } else {
@@ -1015,7 +1500,8 @@ fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
             status: CheckStatus::Warn,
             detail: Some("not found — using defaults".into()),
         });
-    }
+        None
+    };
 
     // Check .oco directory
     let oco_dir = ws_path.join(".oco");
@@ -1161,6 +1647,68 @@ fn cmd_doctor(r: &mut dyn Renderer, workspace: String) -> Result<()> {
         });
     }
 
+    // Q7: Check gate configuration — uses parsed config when available,
+    // defaults when no file exists, and skips when oco.toml was invalid
+    // (to avoid contradictory "oco.toml: FAIL" + "gate config: PASS").
+    {
+        let gate = if let Some(ref cfg) = parsed_config {
+            cfg.gate.clone()
+        } else if config_path.exists() {
+            // oco.toml exists but failed to parse — signal the inconsistency
+            r.emit(UiEvent::DoctorCheck {
+                name: "gate config".into(),
+                status: CheckStatus::Fail,
+                detail: Some("skipped — oco.toml is invalid".into()),
+            });
+            issues += 1;
+            // Skip baseline check too
+            oco_shared_types::GateConfig::default() // for the let-binding; we already emitted
+        } else {
+            oco_shared_types::GateConfig::default()
+        };
+
+        // Only run the detailed gate checks if oco.toml was absent or valid
+        if !config_path.exists() || parsed_config.is_some() {
+            match gate.validate() {
+                Ok(()) => {
+                    r.emit(UiEvent::DoctorCheck {
+                        name: "gate config".into(),
+                        status: CheckStatus::Pass,
+                        detail: Some(format!(
+                            "policy={}, baseline={}",
+                            gate.default_policy, gate.baseline_path
+                        )),
+                    });
+                }
+                Err(e) => {
+                    r.emit(UiEvent::DoctorCheck {
+                        name: "gate config".into(),
+                        status: CheckStatus::Fail,
+                        detail: Some(format!("invalid: {e}")),
+                    });
+                    issues += 1;
+                }
+            }
+            let baseline_full = ws_path.join(&gate.baseline_path);
+            if baseline_full.exists() {
+                r.emit(UiEvent::DoctorCheck {
+                    name: "gate baseline".into(),
+                    status: CheckStatus::Pass,
+                    detail: Some(gate.baseline_path.clone()),
+                });
+            } else {
+                r.emit(UiEvent::DoctorCheck {
+                    name: "gate baseline".into(),
+                    status: CheckStatus::Warn,
+                    detail: Some(format!(
+                        "{} not found — run `oco baseline-save` first",
+                        gate.baseline_path
+                    )),
+                });
+            }
+        }
+    }
+
     // Detect repo profile
     let profile = oco_shared_types::RepoProfile::detect(&ws_path);
     r.emit(UiEvent::DoctorProfile {
@@ -1243,6 +1791,7 @@ fn cmd_runs_show(r: &mut dyn Renderer, id: String, workspace: String) -> Result<
             tokens_max: summary["tokens_max"].as_u64().unwrap_or(0),
             duration_ms: summary["duration_ms"].as_u64().unwrap_or(0),
             success: summary["success"].as_bool().unwrap_or(false),
+            planning_tokens: summary["planning_tokens"].as_u64().unwrap_or(0),
         });
 
         if let Some(resp) = summary["final_response"].as_str() {
@@ -1347,6 +1896,1129 @@ fn cmd_runs_list(r: &mut dyn Renderer, workspace: String, limit: usize) -> Resul
                 ),
             });
         }
+    }
+
+    Ok(())
+}
+
+/// Resolve a run directory from an ID (or "last") and a workspace path.
+fn resolve_run_dir(id: &str, workspace: &str) -> Result<PathBuf> {
+    let runs_dir = PathBuf::from(workspace).join(".oco").join("runs");
+
+    if id == "last" {
+        let mut entries: Vec<_> = std::fs::read_dir(&runs_dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect();
+        entries.sort_by_key(|e| {
+            std::cmp::Reverse(
+                e.metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
+        });
+        entries
+            .first()
+            .map(|e| e.path())
+            .ok_or_else(|| anyhow::anyhow!("no runs found in {}", runs_dir.display()))
+    } else {
+        let dir = runs_dir.join(id);
+        if !dir.exists() {
+            anyhow::bail!("run {} not found", dir.display());
+        }
+        Ok(dir)
+    }
+}
+
+/// Display a run's mission memory as a handoff document.
+fn cmd_runs_handoff(
+    r: &mut dyn Renderer,
+    id: String,
+    workspace: String,
+    json_output: bool,
+) -> Result<()> {
+    let run_dir = resolve_run_dir(&id, &workspace)?;
+    let mission_path = run_dir.join("mission.json");
+
+    if !mission_path.exists() {
+        r.emit(UiEvent::Info {
+            message: format!(
+                "No mission memory found for this run.\n  Expected: {}",
+                mission_path.display()
+            ),
+        });
+        return Ok(());
+    }
+
+    let mission = oco_shared_types::MissionMemory::load_from(&mission_path)
+        .map_err(|e| anyhow::anyhow!("failed to load mission memory: {e}"))?;
+
+    if json_output {
+        let json = serde_json::to_string_pretty(&mission)?;
+        r.emit(UiEvent::Info { message: json });
+    } else {
+        r.emit(UiEvent::Info {
+            message: mission.to_handoff_text(),
+        });
+    }
+
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Q5: Scorecard comparison commands
+// ═══════════════════════════════════════════════════════════
+
+/// Compare two eval result files and show regression analysis.
+fn cmd_eval_compare(
+    r: &mut dyn Renderer,
+    baseline_path: String,
+    candidate_path: String,
+    json_output: bool,
+) -> Result<()> {
+    use oco_shared_types::{BatchComparison, ScenarioResult};
+
+    // Load baseline results
+    let baseline_content = std::fs::read_to_string(&baseline_path)
+        .map_err(|e| anyhow::anyhow!("failed to read baseline '{}': {e}", baseline_path))?;
+    let baseline_envelope: serde_json::Value = serde_json::from_str(&baseline_content)?;
+    let baseline_results: Vec<ScenarioResult> =
+        serde_json::from_value(baseline_envelope["results"].clone())
+            .map_err(|e| anyhow::anyhow!("failed to parse baseline results: {e}"))?;
+
+    // Load candidate results
+    let candidate_content = std::fs::read_to_string(&candidate_path)
+        .map_err(|e| anyhow::anyhow!("failed to read candidate '{}': {e}", candidate_path))?;
+    let candidate_envelope: serde_json::Value = serde_json::from_str(&candidate_content)?;
+    let candidate_results: Vec<ScenarioResult> =
+        serde_json::from_value(candidate_envelope["results"].clone())
+            .map_err(|e| anyhow::anyhow!("failed to parse candidate results: {e}"))?;
+
+    // Build scorecards from results (no workspace context → default weights)
+    let default_weights = oco_shared_types::ScorecardWeights::default();
+    let baseline_scorecards: Vec<oco_shared_types::RunScorecard> = baseline_results
+        .iter()
+        .map(|sr| scorecard_from_scenario_result(sr, &default_weights))
+        .collect();
+    let candidate_scorecards: Vec<oco_shared_types::RunScorecard> = candidate_results
+        .iter()
+        .map(|sr| scorecard_from_scenario_result(sr, &default_weights))
+        .collect();
+
+    let batch = BatchComparison::from_paired(&baseline_scorecards, &candidate_scorecards);
+
+    if json_output {
+        let json = serde_json::to_string_pretty(&batch)?;
+        r.emit(UiEvent::Info { message: json });
+    } else {
+        r.emit(UiEvent::Info {
+            message: format!("Eval Comparison: {} vs {}", baseline_path, candidate_path),
+        });
+        r.emit(UiEvent::Info {
+            message: format!(
+                "  {} scenario(s) compared: {} improved, {} stable, {} regressed",
+                batch.total_scenarios,
+                batch.improved_count,
+                batch.stable_count,
+                batch.regressed_count,
+            ),
+        });
+
+        for cmp in &batch.comparisons {
+            r.emit(UiEvent::ComparisonResult {
+                baseline_id: cmp.baseline_id.clone(),
+                candidate_id: cmp.candidate_id.clone(),
+                overall_delta: cmp.overall_delta,
+                regressions: cmp.regressions.len(),
+                improvements: cmp.improvements.len(),
+                verdict: cmp.verdict.label().to_string(),
+            });
+
+            for reg in &cmp.regressions {
+                r.emit(UiEvent::ComparisonDetail {
+                    dimension: reg.dimension.label().to_string(),
+                    baseline_score: reg.baseline_score,
+                    candidate_score: reg.candidate_score,
+                    delta: reg.delta,
+                    kind: "regression".to_string(),
+                });
+            }
+            for imp in &cmp.improvements {
+                r.emit(UiEvent::ComparisonDetail {
+                    dimension: imp.dimension.label().to_string(),
+                    baseline_score: imp.baseline_score,
+                    candidate_score: imp.candidate_score,
+                    delta: imp.delta,
+                    kind: "improvement".to_string(),
+                });
+            }
+        }
+
+        // Overall verdict
+        let verdict_str = batch.overall_verdict.label();
+        let symbol = batch.overall_verdict.symbol();
+        r.emit(UiEvent::Info {
+            message: format!("\n  Overall: {symbol} {verdict_str}"),
+        });
+    }
+
+    Ok(())
+}
+
+/// Load both gate and review config from `oco.toml` in one pass.
+///
+/// Avoids double-parsing and ensures that a broken `[review]` section is not
+/// mis-attributed to the gate config (or vice versa).  Returns defaults for
+/// both sections when no config file exists.
+fn load_review_pack_config(
+    ws: &Path,
+) -> Result<(
+    oco_shared_types::GateConfig,
+    oco_shared_types::ReviewConfig,
+    oco_shared_types::ScorecardWeights,
+)> {
+    let config_path = ws.join("oco.toml");
+    if !config_path.exists() {
+        return Ok((
+            oco_shared_types::GateConfig::default(),
+            oco_shared_types::ReviewConfig::default(),
+            oco_shared_types::ScorecardWeights::default(),
+        ));
+    }
+    let config = oco_orchestrator_core::OrchestratorConfig::from_file(&config_path)
+        .map_err(|e| anyhow::anyhow!("cannot load oco.toml: {e}"))?;
+    Ok((config.gate, config.review, config.scorecard))
+}
+
+/// Generate a unified review packet for a run (Q9).
+fn cmd_runs_review_pack(
+    r: &mut dyn Renderer,
+    id: String,
+    workspace: String,
+    json_output: bool,
+    markdown_output: bool,
+    save: Option<Option<String>>,
+) -> Result<()> {
+    let run_dir = resolve_run_dir(&id, &workspace)?;
+    let run_id = run_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| id.clone());
+
+    let ws = Path::new(&workspace);
+    let (gate_cfg, review_cfg, scorecard_weights) = load_review_pack_config(ws)?;
+
+    let packet = oco_orchestrator_core::build_review_packet_with_config(
+        &run_dir,
+        &run_id,
+        &gate_cfg,
+        ws,
+        &scorecard_weights,
+        &review_cfg.merge_readiness,
+    )?;
+
+    // Resolve output format: CLI flags override config default_format.
+    let use_json = json_output || (!markdown_output && review_cfg.default_format == "json");
+    let use_markdown = !use_json && (markdown_output || review_cfg.default_format == "markdown");
+
+    if use_json {
+        let json = packet.to_json().map_err(|e| anyhow::anyhow!("{e}"))?;
+        r.emit(UiEvent::Info { message: json });
+    } else if use_markdown {
+        r.emit(UiEvent::Info {
+            message: packet.to_markdown(),
+        });
+    } else {
+        // Structured terminal output via UiEvents
+        r.emit(UiEvent::ReviewPacketHeader {
+            run_id: packet.run_id.clone(),
+            merge_readiness: packet.merge_readiness.label().to_string(),
+            trust_verdict: packet.trust_verdict.map(|tv| tv.label().to_string()),
+            gate_verdict: packet.gate_verdict.map(|gv| gv.label().to_string()),
+        });
+
+        if let Some(ref sc) = packet.scorecard {
+            r.emit(UiEvent::ReviewPacketScorecard {
+                overall_score: sc.overall_score,
+                dimensions: sc
+                    .dimensions
+                    .iter()
+                    .map(|d| (d.dimension.label().to_string(), d.score))
+                    .collect(),
+            });
+        }
+
+        r.emit(UiEvent::ReviewPacketChanges {
+            modified_files: packet.changes.modified_files.clone(),
+            key_decisions: packet.changes.key_decisions.clone(),
+            narrative: packet.changes.narrative.clone(),
+        });
+
+        r.emit(UiEvent::ReviewPacketRisks {
+            risks: packet.open_risks.risks.clone(),
+            open_questions: packet.open_risks.open_questions.clone(),
+            unavailable_data: packet.open_risks.unavailable_data.clone(),
+        });
+
+        // Show baseline freshness if available
+        if let Some(ref bf) = packet.baseline_freshness {
+            r.emit(UiEvent::BaselineFreshness {
+                freshness: bf.freshness.label().to_string(),
+                age_days: bf.age_days,
+                recommendation: bf.recommendation.clone(),
+            });
+        }
+    }
+
+    // Resolve whether to save: explicit --save overrides config auto_save.
+    let effective_save: Option<Option<String>> = match save {
+        Some(_) => save, // User passed --save explicitly — honour as-is
+        None if review_cfg.auto_save => Some(None), // Config auto_save triggers save with no explicit dir
+        None => None,
+    };
+
+    // Save to disk if saving was resolved
+    if let Some(save_dir) = effective_save {
+        // Resolve target directory: explicit --save <dir> > config output_dir > run_dir.
+        // Relative paths are always resolved from the workspace root (--workspace).
+        let target_dir = match save_dir {
+            Some(dir) => {
+                let p = PathBuf::from(&dir);
+                if p.is_absolute() { p } else { ws.join(p) }
+            }
+            None => match review_cfg.output_dir {
+                Some(ref dir) => ws.join(dir),
+                None => run_dir.clone(),
+            },
+        };
+
+        if !target_dir.exists() {
+            std::fs::create_dir_all(&target_dir)?;
+        }
+
+        let json_path = target_dir.join("review-packet.json");
+        let md_path = target_dir.join("review-packet.md");
+
+        packet
+            .save_to(&json_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        packet
+            .save_markdown(&md_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        r.emit(UiEvent::Success {
+            message: format!(
+                "Review packet saved to {} and {}",
+                json_path.display(),
+                md_path.display(),
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+/// Compare two runs' scorecards from their persisted artifacts.
+fn cmd_runs_compare(
+    r: &mut dyn Renderer,
+    baseline_id: String,
+    candidate_id: String,
+    workspace: String,
+    json_output: bool,
+) -> Result<()> {
+    use oco_shared_types::ScorecardComparison;
+
+    let baseline_dir = resolve_run_dir(&baseline_id, &workspace)?;
+    let candidate_dir = resolve_run_dir(&candidate_id, &workspace)?;
+
+    let weights = load_weights_for_workspace(&workspace);
+    let baseline_sc = load_or_build_scorecard(&baseline_dir, &baseline_id, &weights)?;
+    let candidate_sc = load_or_build_scorecard(&candidate_dir, &candidate_id, &weights)?;
+
+    let comparison = ScorecardComparison::compare(&baseline_sc, &candidate_sc);
+
+    if json_output {
+        let json = serde_json::to_string_pretty(&comparison)?;
+        r.emit(UiEvent::Info { message: json });
+    } else {
+        r.emit(UiEvent::ScorecardSummary {
+            run_id: baseline_sc.run_id.clone(),
+            overall_score: baseline_sc.overall_score,
+            dimension_count: baseline_sc.dimensions.len(),
+        });
+        r.emit(UiEvent::ScorecardSummary {
+            run_id: candidate_sc.run_id.clone(),
+            overall_score: candidate_sc.overall_score,
+            dimension_count: candidate_sc.dimensions.len(),
+        });
+
+        r.emit(UiEvent::ComparisonResult {
+            baseline_id: comparison.baseline_id.clone(),
+            candidate_id: comparison.candidate_id.clone(),
+            overall_delta: comparison.overall_delta,
+            regressions: comparison.regressions.len(),
+            improvements: comparison.improvements.len(),
+            verdict: comparison.verdict.label().to_string(),
+        });
+
+        for reg in &comparison.regressions {
+            r.emit(UiEvent::ComparisonDetail {
+                dimension: reg.dimension.label().to_string(),
+                baseline_score: reg.baseline_score,
+                candidate_score: reg.candidate_score,
+                delta: reg.delta,
+                kind: "regression".to_string(),
+            });
+        }
+        for imp in &comparison.improvements {
+            r.emit(UiEvent::ComparisonDetail {
+                dimension: imp.dimension.label().to_string(),
+                baseline_score: imp.baseline_score,
+                candidate_score: imp.candidate_score,
+                delta: imp.delta,
+                kind: "improvement".to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Build a scorecard from a ScenarioResult using the canonical ScorecardBuilder.
+fn scorecard_from_scenario_result(
+    sr: &oco_shared_types::ScenarioResult,
+    weights: &oco_shared_types::ScorecardWeights,
+) -> oco_shared_types::RunScorecard {
+    oco_orchestrator_core::ScorecardBuilder::new(&sr.scenario_name)
+        .with_scenario_result(sr)
+        .with_weights(weights.clone())
+        .build()
+}
+
+/// Load per-repo scorecard weight overrides from `oco.toml`.
+///
+/// Returns `ScorecardWeights::default()` (all `None`) on any failure — this is
+/// intentional: missing or broken config should never block scorecard loading.
+fn load_weights_for_workspace(workspace: &str) -> oco_shared_types::ScorecardWeights {
+    oco_orchestrator_core::load_scorecard_weights(Path::new(workspace)).unwrap_or_default()
+}
+
+/// Load a scorecard from disk, or reconstruct honestly from available artifacts.
+///
+/// Priority: scorecard.json > reconstruction from summary.json + mission.json + trace.jsonl.
+/// Dimensions without data are left at the ScorecardBuilder's documented defaults
+/// (which produce honest "no data" details), not fabricated scores.
+///
+/// `weights` are applied when reconstructing from summary.json. When loading a
+/// pre-existing scorecard.json the weights have already been baked in at save time.
+fn load_or_build_scorecard(
+    run_dir: &Path,
+    run_id: &str,
+    weights: &oco_shared_types::ScorecardWeights,
+) -> Result<oco_shared_types::RunScorecard> {
+    use oco_shared_types::TrustVerdict;
+
+    // Try scorecard.json first (saved by oco run since Q5).
+    let scorecard_path = run_dir.join("scorecard.json");
+    if scorecard_path.exists() {
+        let content = std::fs::read_to_string(&scorecard_path)?;
+        let sc: oco_shared_types::RunScorecard = serde_json::from_str(&content)?;
+        return Ok(sc);
+    }
+
+    // Reconstruct from available artifacts.
+    let summary_path = run_dir.join("summary.json");
+    if !summary_path.exists() {
+        anyhow::bail!("no scorecard.json or summary.json in {}", run_dir.display());
+    }
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&summary_path)?)?;
+
+    let success = summary["success"].as_bool().unwrap_or(false);
+    let tokens = summary["tokens_used"].as_u64().unwrap_or(0);
+    let steps = summary["steps"].as_u64().unwrap_or(0) as u32;
+    let duration_ms = summary["duration_ms"].as_u64().unwrap_or(0);
+
+    let trust = match summary.get("trust_verdict").and_then(|v| v.as_str()) {
+        Some("high") => TrustVerdict::High,
+        Some("medium") => TrustVerdict::Medium,
+        Some("low") => TrustVerdict::Low,
+        _ => TrustVerdict::None,
+    };
+
+    let mut builder = oco_orchestrator_core::ScorecardBuilder::new(run_id)
+        .success(success)
+        .trust_verdict(trust)
+        .cost(tokens, steps, duration_ms, 0, 0)
+        .with_weights(weights.clone());
+
+    // Mission memory — use the real artifact if present.
+    let mission_path = run_dir.join("mission.json");
+    if mission_path.exists()
+        && let Ok(mission) = oco_shared_types::MissionMemory::load_from(&mission_path)
+    {
+        builder = builder.with_mission_memory(&mission);
+    }
+
+    // Replan count — reconstruct from trace.jsonl by counting ReplanTriggered events.
+    let trace_path = run_dir.join("trace.jsonl");
+    if trace_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&trace_path)
+    {
+        let replan_count = content
+            .lines()
+            .filter(|line| line.contains("\"replan_triggered\""))
+            .count() as u32;
+        builder = builder.replans(replan_count);
+    }
+
+    // Note: VerificationCoverage and ErrorRate are left at builder defaults
+    // because summary.json doesn't carry file-level or error-level data.
+    // The builder will produce honest "no data" details for those dimensions.
+
+    Ok(builder.build())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Q6: Eval gate and baseline commands
+// ════════════════════════════════════════════════════════���══
+
+/// Parse a policy name into a `GatePolicy`, failing on unknown values.
+fn parse_policy_name(name: &str) -> Result<oco_shared_types::GatePolicy> {
+    match name {
+        "strict" => Ok(oco_shared_types::GatePolicy::strict()),
+        "balanced" => Ok(oco_shared_types::GatePolicy::default_balanced()),
+        "lenient" => Ok(oco_shared_types::GatePolicy::lenient()),
+        other => anyhow::bail!(
+            "unknown gate policy '{}', expected: strict, balanced, lenient",
+            other
+        ),
+    }
+}
+
+/// Run a quality gate: compare candidate against baseline with pass/warn/fail verdict.
+/// Returns the exit code (0=pass, 1=warn, 2=fail).
+///
+/// Q7: When `baseline_path` or `policy_name` are `None`, reads `[gate]` from `oco.toml`.
+/// Q8: `--report <dir>` generates a review artifact (Markdown + JSON).
+fn cmd_eval_gate(
+    r: &mut dyn Renderer,
+    baseline_path: Option<String>,
+    candidate_path: Option<String>,
+    policy_name: Option<String>,
+    json_output: bool,
+    report_dir: Option<String>,
+    workspace: String,
+) -> Result<i32> {
+    use oco_shared_types::{BaselineFreshnessCheck, GateResult, GateReviewArtifact};
+
+    // Load repo gate config from oco.toml (Q7) — strict: fail on invalid config
+    let ws = Path::new(&workspace);
+    let gate_cfg = oco_orchestrator_core::load_gate_config_strict(ws)
+        .map_err(|e| anyhow::anyhow!("cannot resolve gate config: {e}"))?;
+
+    // Resolve policy: explicit CLI arg > repo config > balanced default
+    let policy = if let Some(ref name) = policy_name {
+        parse_policy_name(name)?
+    } else {
+        gate_cfg.resolve_policy()
+    };
+
+    // Resolve baseline path: explicit CLI arg > repo config
+    let effective_baseline = baseline_path.unwrap_or_else(|| {
+        let cfg_path = ws.join(&gate_cfg.baseline_path);
+        cfg_path.to_string_lossy().to_string()
+    });
+
+    // Resolve candidate: explicit CLI arg > "last" run
+    let effective_candidate = candidate_path.unwrap_or_else(|| "last".to_string());
+
+    // Load baseline scorecard — supports both EvalBaseline and raw RunScorecard
+    let baseline_sc = load_baseline_scorecard(&effective_baseline)?;
+
+    // Load candidate scorecard — supports scorecard.json, eval results, run dir, or "last"
+    let weights = load_weights_for_workspace(&workspace);
+    let candidate_sc = if effective_candidate == "last" {
+        let run_dir = resolve_run_dir("last", &workspace)?;
+        load_or_build_scorecard(&run_dir, "last", &weights)?
+    } else {
+        load_candidate_scorecard(&effective_candidate, &weights)?
+    };
+
+    // Evaluate gate
+    let result = GateResult::evaluate(&baseline_sc, &candidate_sc, &policy);
+
+    if json_output {
+        let json = serde_json::to_string_pretty(&result)?;
+        r.emit(UiEvent::Info { message: json });
+    } else {
+        // Structured output via UI events
+        r.emit(UiEvent::GateHeader {
+            baseline_id: result.baseline_id.clone(),
+            candidate_id: result.candidate_id.clone(),
+            policy: format!("{:?}", policy.strategy),
+        });
+
+        for check in &result.dimension_checks {
+            r.emit(UiEvent::GateDimensionCheck {
+                dimension: check.dimension.label().to_string(),
+                baseline_score: check.baseline_score,
+                candidate_score: check.candidate_score,
+                delta: check.delta,
+                min_score: check.min_score,
+                verdict: check.verdict.label().to_string(),
+            });
+        }
+
+        r.emit(UiEvent::GateVerdict {
+            verdict: result.verdict.label().to_string(),
+            exit_code: result.verdict.exit_code(),
+            reasons: result.reasons.clone(),
+            failed_count: result.failed_dimension_count(),
+            warned_count: result.warned_dimension_count(),
+        });
+
+        // Q8: Show baseline freshness status in terminal (non-JSON) mode.
+        // Works for both EvalBaseline (with created_at) and raw RunScorecard (Unknown).
+        let freshness = resolve_freshness(&effective_baseline, &gate_cfg)?;
+        r.emit(UiEvent::BaselineFreshness {
+            freshness: freshness.freshness.label().to_string(),
+            age_days: freshness.age_days,
+            recommendation: freshness.recommendation.clone(),
+        });
+    }
+
+    // Q8: Generate review artifact report if --report is provided.
+    // Supports both EvalBaseline and raw RunScorecard baselines (Unknown freshness).
+    if let Some(ref dir) = report_dir {
+        let report_path = PathBuf::from(dir);
+
+        if !report_path.exists() {
+            std::fs::create_dir_all(&report_path)
+                .map_err(|e| anyhow::anyhow!("failed to create report directory '{}': {e}", dir))?;
+        }
+
+        let (baseline_name, freshness) = match load_eval_baseline(&effective_baseline)? {
+            Some(eval_baseline) => {
+                let name = eval_baseline.name.clone();
+                let fc = BaselineFreshnessCheck::from_baseline(
+                    &eval_baseline,
+                    gate_cfg.fresh_days,
+                    gate_cfg.stale_days,
+                );
+                (name, fc)
+            }
+            None => {
+                // Raw RunScorecard — use run_id as name, Unknown freshness
+                (
+                    result.baseline_id.clone(),
+                    BaselineFreshnessCheck::unknown(),
+                )
+            }
+        };
+
+        let artifact =
+            GateReviewArtifact::generate_with_name(result.clone(), &baseline_name, freshness);
+
+        let md_path = report_path.join("gate-report.md");
+        let json_path = report_path.join("gate-report.json");
+
+        artifact
+            .save_markdown(&md_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        artifact
+            .save_json(&json_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        r.emit(UiEvent::Success {
+            message: format!(
+                "Review report written to {} and {}",
+                md_path.display(),
+                json_path.display(),
+            ),
+        });
+    }
+
+    Ok(result.verdict.exit_code())
+}
+
+/// Try to load a file as a full `EvalBaseline` (with `created_at` metadata).
+/// Returns `Ok(None)` if the file is a raw `RunScorecard` without baseline metadata.
+fn load_eval_baseline(path: &str) -> Result<Option<oco_shared_types::EvalBaseline>> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read baseline '{}': {e}", path))?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("failed to parse baseline JSON: {e}"))?;
+
+    // EvalBaseline has both "scorecard" and "name" fields
+    if value.get("scorecard").is_some() && value.get("name").is_some() {
+        let baseline: oco_shared_types::EvalBaseline = serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("failed to parse as EvalBaseline: {e}"))?;
+        return Ok(Some(baseline));
+    }
+
+    // Raw RunScorecard — no baseline metadata available
+    Ok(None)
+}
+
+/// Resolve baseline freshness: EvalBaseline → real check, raw RunScorecard → Unknown.
+fn resolve_freshness(
+    baseline_path: &str,
+    gate_cfg: &oco_shared_types::GateConfig,
+) -> Result<oco_shared_types::BaselineFreshnessCheck> {
+    match load_eval_baseline(baseline_path)? {
+        Some(eval_baseline) => Ok(oco_shared_types::BaselineFreshnessCheck::from_baseline(
+            &eval_baseline,
+            gate_cfg.fresh_days,
+            gate_cfg.stale_days,
+        )),
+        None => Ok(oco_shared_types::BaselineFreshnessCheck::unknown()),
+    }
+}
+
+/// Load a scorecard from a baseline file (EvalBaseline JSON) or a raw RunScorecard JSON.
+fn load_baseline_scorecard(path: &str) -> Result<oco_shared_types::RunScorecard> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read baseline '{}': {e}", path))?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("failed to parse baseline JSON: {e}"))?;
+
+    // Try EvalBaseline first (has "scorecard" field)
+    if value.get("scorecard").is_some() && value.get("name").is_some() {
+        let baseline: oco_shared_types::EvalBaseline = serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("failed to parse as EvalBaseline: {e}"))?;
+        return Ok(baseline.scorecard);
+    }
+
+    // Try raw RunScorecard (has "run_id" and "dimensions")
+    if value.get("run_id").is_some() && value.get("dimensions").is_some() {
+        let sc: oco_shared_types::RunScorecard = serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("failed to parse as RunScorecard: {e}"))?;
+        return Ok(sc);
+    }
+
+    anyhow::bail!(
+        "baseline file '{}' is neither an EvalBaseline nor a RunScorecard",
+        path
+    )
+}
+
+/// Load a candidate scorecard from various sources.
+///
+/// `weights` are applied when reconstructing from eval results or summary.json.
+/// Pre-existing scorecard.json and EvalBaseline files already have weights baked in.
+fn load_candidate_scorecard(
+    path: &str,
+    weights: &oco_shared_types::ScorecardWeights,
+) -> Result<oco_shared_types::RunScorecard> {
+    let p = PathBuf::from(path);
+
+    // If it's a directory (run dir), load scorecard.json from it
+    if p.is_dir() {
+        let scorecard_path = p.join("scorecard.json");
+        if scorecard_path.exists() {
+            let content = std::fs::read_to_string(&scorecard_path)?;
+            let sc: oco_shared_types::RunScorecard = serde_json::from_str(&content)?;
+            return Ok(sc);
+        }
+        // Fall back to reconstruct from summary
+        return load_or_build_scorecard(
+            &p,
+            &p.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            weights,
+        );
+    }
+
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read candidate '{}': {e}", path))?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("failed to parse candidate JSON: {e}"))?;
+
+    // Try EvalBaseline format
+    if value.get("scorecard").is_some() && value.get("name").is_some() {
+        let baseline: oco_shared_types::EvalBaseline = serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("failed to parse as EvalBaseline: {e}"))?;
+        return Ok(baseline.scorecard);
+    }
+
+    // Try raw RunScorecard
+    if value.get("run_id").is_some() && value.get("dimensions").is_some() {
+        let sc: oco_shared_types::RunScorecard = serde_json::from_value(value)?;
+        return Ok(sc);
+    }
+
+    // Try eval results envelope (has "results" array) — aggregate all scenarios into a suite scorecard
+    if let Some(results) = value.get("results").and_then(|r| r.as_array()) {
+        let scenario_results: Vec<oco_shared_types::ScenarioResult> =
+            serde_json::from_value(serde_json::Value::Array(results.clone()))
+                .map_err(|e| anyhow::anyhow!("failed to parse eval results array: {e}"))?;
+
+        if scenario_results.is_empty() {
+            anyhow::bail!(
+                "eval results file '{}' contains an empty results array",
+                path
+            );
+        }
+
+        let scorecards: Vec<oco_shared_types::RunScorecard> = scenario_results
+            .iter()
+            .map(|sr| scorecard_from_scenario_result(sr, weights))
+            .collect();
+
+        return oco_shared_types::RunScorecard::aggregate(&scorecards)
+            .ok_or_else(|| anyhow::anyhow!("failed to aggregate scorecards from '{}'", path));
+    }
+
+    anyhow::bail!(
+        "candidate file '{}' is not a recognized format (EvalBaseline, RunScorecard, or eval results)",
+        path
+    )
+}
+
+/// Save a baseline from a run's scorecard or eval results.
+///
+/// Q7: When `output` is `None`, reads baseline_path from repo config.
+fn cmd_baseline_save(
+    r: &mut dyn Renderer,
+    source: String,
+    name: String,
+    output: Option<String>,
+    workspace: String,
+    description: Option<String>,
+) -> Result<()> {
+    use oco_shared_types::EvalBaseline;
+
+    // Q7: resolve output path from repo config when not explicitly provided — strict
+    let effective_output = match output {
+        Some(o) => o,
+        None => {
+            let ws = Path::new(&workspace);
+            let gate_cfg = oco_orchestrator_core::load_gate_config_strict(ws)
+                .map_err(|e| anyhow::anyhow!("cannot resolve gate config: {e}"))?;
+            let cfg_path = ws.join(&gate_cfg.baseline_path);
+            cfg_path.to_string_lossy().to_string()
+        }
+    };
+    let output_path = PathBuf::from(&effective_output);
+
+    // Ensure parent directory exists
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let weights = load_weights_for_workspace(&workspace);
+    let (scorecard, source_label) = if source == "last" || uuid::Uuid::parse_str(&source).is_ok() {
+        // Load from run dir
+        let run_dir = resolve_run_dir(&source, &workspace)?;
+        let sc = load_or_build_scorecard(&run_dir, &source, &weights)?;
+        (sc, format!("run:{source}"))
+    } else {
+        // Try loading as a file
+        let sc = load_candidate_scorecard(&source, &weights)?;
+        (sc, format!("file:{source}"))
+    };
+
+    let mut baseline = EvalBaseline::from_scorecard(name.clone(), scorecard, source_label);
+    if let Some(desc) = description {
+        baseline = baseline.with_description(desc);
+    }
+
+    baseline
+        .save_to(&output_path)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    r.emit(UiEvent::Success {
+        message: format!(
+            "Baseline '{}' saved to {} (overall: {:.2})",
+            name,
+            output_path.display(),
+            baseline.scorecard.overall_score,
+        ),
+    });
+
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Q11: Baseline promotion & audit trail
+// ═══════════════════════════════════════════════════════════
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_baseline_promote(
+    r: &mut dyn Renderer,
+    source: String,
+    name: String,
+    reason: Option<String>,
+    description: Option<String>,
+    workspace: String,
+    json: bool,
+    force: bool,
+) -> Result<()> {
+    let ws = Path::new(&workspace);
+
+    // Resolve scorecard from source (same logic as baseline-save)
+    let weights = load_weights_for_workspace(&workspace);
+    let (scorecard, source_label) = if source == "last" || uuid::Uuid::parse_str(&source).is_ok() {
+        let run_dir = resolve_run_dir(&source, &workspace)?;
+        let sc = load_or_build_scorecard(&run_dir, &source, &weights)?;
+        (sc, format!("run:{source}"))
+    } else {
+        let sc = load_candidate_scorecard(&source, &weights)?;
+        (sc, format!("file:{source}"))
+    };
+
+    let result = oco_orchestrator_core::promote_baseline(
+        ws,
+        scorecard,
+        name.clone(),
+        source_label,
+        reason,
+        description,
+        force,
+    );
+
+    // Handle PromotionRejected: show the record + diff, then abort with exit code 2
+    let record = match result {
+        Ok(record) => record,
+        Err(oco_orchestrator_core::config::ConfigError::PromotionRejected(record)) => {
+            if json {
+                // In JSON mode, output the record with an "aborted" wrapper
+                let wrapper = serde_json::json!({
+                    "status": "rejected",
+                    "message": "promotion rejected — use --force to override",
+                    "record": record,
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&wrapper)
+                        .map_err(|e| anyhow::anyhow!("serialize: {e}"))?
+                );
+            } else {
+                r.emit(UiEvent::Error {
+                    message: format!(
+                        "{} Promotion rejected: '{}' → '{}' (gate: {})",
+                        record.recommendation.symbol(),
+                        record.old_baseline_name,
+                        record.new_baseline_name,
+                        record
+                            .gate_verdict
+                            .map_or("n/a".to_string(), |v| v.symbol().to_string()),
+                    ),
+                });
+                println!();
+                println!("{}", record.diff.to_report());
+                println!();
+                r.emit(UiEvent::Info {
+                    message: "Use --force to override this safety check.".to_string(),
+                });
+            }
+            std::process::exit(2);
+        }
+        Err(e) => return Err(anyhow::anyhow!("promotion failed: {e}")),
+    };
+
+    if json {
+        let json_str = serde_json::to_string_pretty(&record)
+            .map_err(|e| anyhow::anyhow!("failed to serialize promotion record: {e}"))?;
+        println!("{json_str}");
+    } else {
+        // Terminal-friendly output
+        r.emit(UiEvent::Success {
+            message: format!(
+                "{} Promoted '{}' → '{}' (overall: {:.2} → {:.2}, {:+.2})",
+                record.recommendation.symbol(),
+                record.old_baseline_name,
+                record.new_baseline_name,
+                record.diff.old_overall,
+                record.diff.new_overall,
+                record.diff.overall_delta,
+            ),
+        });
+        if let Some(gv) = record.gate_verdict {
+            r.emit(UiEvent::Info {
+                message: format!("Gate verdict: {}", gv.symbol()),
+            });
+        }
+        if let Some(bf) = record.baseline_freshness {
+            r.emit(UiEvent::Info {
+                message: format!("Old baseline freshness: {}", bf.symbol()),
+            });
+        }
+        if record.recommendation != oco_shared_types::PromotionRecommendation::Promote {
+            r.emit(UiEvent::Warning {
+                message: format!(
+                    "Recommendation: {} — review the diff before relying on this baseline",
+                    record.recommendation.label(),
+                ),
+            });
+        }
+
+        // Show diff table
+        println!();
+        println!("{}", record.diff.to_report());
+    }
+
+    Ok(())
+}
+
+fn cmd_baseline_history(
+    r: &mut dyn Renderer,
+    workspace: String,
+    json: bool,
+    markdown: bool,
+    limit: usize,
+) -> Result<()> {
+    let ws = Path::new(&workspace);
+    let history = oco_orchestrator_core::load_baseline_history(ws)
+        .map_err(|e| anyhow::anyhow!("failed to load baseline history: {e}"))?;
+
+    if history.is_empty() {
+        r.emit(UiEvent::Info {
+            message: "No baseline promotions recorded yet.".to_string(),
+        });
+        return Ok(());
+    }
+
+    if json {
+        // In JSON mode with limit, only output the last N entries
+        let limited = if limit < history.len() {
+            let mut h = history.clone();
+            let start = h.entries.len().saturating_sub(limit);
+            h.entries = h.entries[start..].to_vec();
+            h
+        } else {
+            history
+        };
+        let json_str = limited.to_json().map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!("{json_str}");
+    } else if markdown {
+        // Apply limit: slice entries the same way as JSON and terminal
+        let limited = if limit < history.len() {
+            let mut h = history.clone();
+            let start = h.entries.len().saturating_sub(limit);
+            h.entries = h.entries[start..].to_vec();
+            h
+        } else {
+            history
+        };
+        println!("{}", limited.to_markdown());
+    } else {
+        // Terminal output — show recent entries
+        let recent = history.recent(limit);
+        r.emit(UiEvent::Info {
+            message: format!(
+                "Baseline History ({} total, showing {})",
+                history.len(),
+                recent.len()
+            ),
+        });
+        for entry in &recent {
+            println!();
+            println!("#{}", entry.sequence);
+            println!("{}", entry.promotion.to_summary());
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_baseline_history_prune(
+    r: &mut dyn Renderer,
+    workspace: String,
+    keep: usize,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    let ws = Path::new(&workspace);
+    let mut history = oco_orchestrator_core::load_baseline_history(ws)
+        .map_err(|e| anyhow::anyhow!("failed to load baseline history: {e}"))?;
+
+    if history.is_empty() {
+        r.emit(UiEvent::Info {
+            message: "No baseline promotions recorded. Nothing to prune.".to_string(),
+        });
+        return Ok(());
+    }
+
+    if dry_run {
+        let to_remove = history.prune_preview(keep);
+        if to_remove.is_empty() {
+            r.emit(UiEvent::Info {
+                message: format!(
+                    "Nothing to prune: {} entries, keeping {}.",
+                    history.len(),
+                    keep
+                ),
+            });
+        } else if json {
+            let entries: Vec<_> = to_remove.iter().map(|e| &e.promotion).collect();
+            let json_str = serde_json::to_string_pretty(&serde_json::json!({
+                "dry_run": true,
+                "total": history.len(),
+                "keep": keep,
+                "would_remove": to_remove.len(),
+                "entries": entries,
+            }))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!("{json_str}");
+        } else {
+            r.emit(UiEvent::Info {
+                message: format!(
+                    "Dry run: would remove {} of {} entries (keeping {}):",
+                    to_remove.len(),
+                    history.len(),
+                    keep
+                ),
+            });
+            for entry in &to_remove {
+                println!(
+                    "  #{}: {}",
+                    entry.sequence, entry.promotion.new_baseline_name
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let total_before = history.len();
+    let removed = history.prune(keep);
+
+    if removed == 0 {
+        r.emit(UiEvent::Info {
+            message: format!(
+                "Nothing to prune: {} entries, keeping {}.",
+                total_before, keep
+            ),
+        });
+        return Ok(());
+    }
+
+    // Save the pruned history
+    let history_path = ws.join(oco_orchestrator_core::DEFAULT_HISTORY_PATH);
+    history
+        .save_to(&history_path)
+        .map_err(|e| anyhow::anyhow!("failed to save pruned history: {e}"))?;
+
+    if json {
+        let json_str = serde_json::to_string_pretty(&serde_json::json!({
+            "pruned": removed,
+            "remaining": history.len(),
+            "total_before": total_before,
+        }))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!("{json_str}");
+    } else {
+        r.emit(UiEvent::Info {
+            message: format!(
+                "Pruned {} entries. {} entries remaining (was {}).",
+                removed,
+                history.len(),
+                total_before,
+            ),
+        });
     }
 
     Ok(())

@@ -69,6 +69,7 @@ impl Renderer for JsonlRenderer {
                 tokens_max,
                 duration_ms,
                 success,
+                planning_tokens,
             } => self.emit_json(
                 "run_finished",
                 serde_json::json!({
@@ -78,6 +79,7 @@ impl Renderer for JsonlRenderer {
                     "tokens_max": tokens_max,
                     "duration_ms": duration_ms,
                     "success": success,
+                    "planning_tokens": planning_tokens,
                 }),
             ),
 
@@ -313,6 +315,171 @@ impl Renderer for JsonlRenderer {
                 serde_json::json!({
                     "team": team_name, "members": members, "communication": communication,
                     "completed": completed, "total": total, "messages": messages,
+                }),
+            ),
+
+            UiEvent::PolicyPackActive { pack } => {
+                self.emit_json("policy_pack_active", serde_json::json!({ "pack": pack }))
+            }
+            UiEvent::TrustVerdictFinal { verdict, freshness } => self.emit_json(
+                "trust_verdict_final",
+                serde_json::json!({ "verdict": verdict, "freshness": freshness }),
+            ),
+
+            UiEvent::ScorecardSummary {
+                run_id,
+                overall_score,
+                dimension_count,
+            } => self.emit_json(
+                "scorecard_summary",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "overall_score": overall_score,
+                    "dimension_count": dimension_count,
+                }),
+            ),
+            UiEvent::ComparisonResult {
+                baseline_id,
+                candidate_id,
+                overall_delta,
+                regressions,
+                improvements,
+                verdict,
+            } => self.emit_json(
+                "comparison_result",
+                serde_json::json!({
+                    "baseline_id": baseline_id,
+                    "candidate_id": candidate_id,
+                    "overall_delta": overall_delta,
+                    "regressions": regressions,
+                    "improvements": improvements,
+                    "verdict": verdict,
+                }),
+            ),
+            UiEvent::ComparisonDetail {
+                dimension,
+                baseline_score,
+                candidate_score,
+                delta,
+                kind,
+            } => self.emit_json(
+                "comparison_detail",
+                serde_json::json!({
+                    "dimension": dimension,
+                    "baseline_score": baseline_score,
+                    "candidate_score": candidate_score,
+                    "delta": delta,
+                    "kind": kind,
+                }),
+            ),
+
+            // ── Eval Gate (Q6) ────────────────────────────
+            UiEvent::GateHeader {
+                baseline_id,
+                candidate_id,
+                policy,
+            } => self.emit_json(
+                "gate_header",
+                serde_json::json!({
+                    "baseline_id": baseline_id,
+                    "candidate_id": candidate_id,
+                    "policy": policy,
+                }),
+            ),
+            UiEvent::GateDimensionCheck {
+                dimension,
+                baseline_score,
+                candidate_score,
+                delta,
+                min_score,
+                verdict,
+            } => self.emit_json(
+                "gate_dimension_check",
+                serde_json::json!({
+                    "dimension": dimension,
+                    "baseline_score": baseline_score,
+                    "candidate_score": candidate_score,
+                    "delta": delta,
+                    "min_score": min_score,
+                    "verdict": verdict,
+                }),
+            ),
+            UiEvent::GateVerdict {
+                verdict,
+                exit_code,
+                reasons,
+                failed_count,
+                warned_count,
+            } => self.emit_json(
+                "gate_verdict",
+                serde_json::json!({
+                    "verdict": verdict,
+                    "exit_code": exit_code,
+                    "reasons": reasons,
+                    "failed_count": failed_count,
+                    "warned_count": warned_count,
+                }),
+            ),
+
+            UiEvent::BaselineFreshness {
+                freshness,
+                age_days,
+                recommendation,
+            } => self.emit_json(
+                "baseline_freshness",
+                serde_json::json!({
+                    "freshness": freshness,
+                    "age_days": age_days,
+                    "recommendation": recommendation,
+                }),
+            ),
+
+            UiEvent::ReviewPacketHeader {
+                run_id,
+                merge_readiness,
+                trust_verdict,
+                gate_verdict,
+            } => self.emit_json(
+                "review_packet_header",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "merge_readiness": merge_readiness,
+                    "trust_verdict": trust_verdict,
+                    "gate_verdict": gate_verdict,
+                }),
+            ),
+            UiEvent::ReviewPacketScorecard {
+                overall_score,
+                dimensions,
+            } => self.emit_json(
+                "review_packet_scorecard",
+                serde_json::json!({
+                    "overall_score": overall_score,
+                    "dimensions": dimensions.iter().map(|(d, s)| serde_json::json!({"dimension": d, "score": s})).collect::<Vec<_>>(),
+                }),
+            ),
+            UiEvent::ReviewPacketChanges {
+                modified_files,
+                key_decisions,
+                narrative,
+            } => self.emit_json(
+                "review_packet_changes",
+                serde_json::json!({
+                    "modified_files": modified_files,
+                    "key_decisions": key_decisions,
+                    "narrative": narrative,
+                }),
+            ),
+            UiEvent::ReviewPacketRisks {
+                risks,
+                open_questions,
+                unavailable_data,
+            } => self.emit_json(
+                "review_packet_risks",
+                serde_json::json!({
+                    "risks": risks,
+                    "open_questions": open_questions,
+                    "unavailable_data": unavailable_data,
                 }),
             ),
 

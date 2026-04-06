@@ -110,6 +110,7 @@ fn allowed_dependency_graph() -> HashMap<&'static str, Vec<&'static str>> {
             "oco-retrieval",
             "oco-code-intel",
             "oco-claude-adapter",
+            "oco-telemetry",
         ],
     );
     g.insert(
@@ -239,7 +240,7 @@ fn no_circular_layer_violations() {
         ("oco-context-engine", 2),
         ("oco-planner", 2),
         ("oco-orchestrator-core", 3),
-        ("oco-mcp-server", 4),
+        ("oco-mcp-server", 5),
         ("oco-dev-cli", 4),
     ]
     .into_iter()

@@ -8,6 +8,7 @@ description = "MCP (Model Context Protocol) server exposing OCO tools and resour
 [dependencies]
 oco-shared-types = { workspace = true }
 oco-orchestrator-core = { workspace = true }
+oco-telemetry = { workspace = true }
 oco-retrieval = { workspace = true }
 oco-code-intel = { workspace = true }
 oco-claude-adapter = { workspace = true }

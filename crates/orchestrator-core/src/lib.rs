@@ -19,15 +19,23 @@ pub mod llm_router;
 pub mod loop_runner;
 pub mod ml_client;
 pub mod replay;
+pub mod review_packet;
 pub mod runtime;
+pub mod scorecard;
 pub mod state;
 
-pub use config::OrchestratorConfig;
+pub use config::{
+    DEFAULT_HISTORY_PATH, OrchestratorConfig, evaluate_baseline_freshness, load_baseline_history,
+    load_gate_config, load_gate_config_strict, load_review_config_strict, load_scorecard_weights,
+    promote_baseline,
+};
 pub use error::OrchestratorError;
 pub use graph_runner::GraphRunner;
 pub use llm::RetryingLlmProvider;
 pub use llm_router::LlmRouter;
 pub use loop_runner::OrchestrationLoop;
 pub use replay::{LoadedTrace, ReplayControls, ReplayRegistry, ReplaySession};
+pub use review_packet::{build_review_packet, build_review_packet_with_config};
 pub use runtime::OrchestratorRuntime;
+pub use scorecard::ScorecardBuilder;
 pub use state::OrchestrationState;

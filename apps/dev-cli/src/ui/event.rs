@@ -42,6 +42,8 @@ pub enum UiEvent {
         tokens_max: u64,
         duration_ms: u64,
         success: bool,
+        /// Tokens spent on planning (0 for flat-loop / direct plans).
+        planning_tokens: u64,
     },
     RunResponse {
         content: String,
@@ -169,6 +171,97 @@ pub enum UiEvent {
         completed: u32,
         total: u32,
         messages: u32,
+    },
+
+    // ── Trust & Policy ────────────────────────────────────
+    /// The active policy pack for this run.
+    PolicyPackActive {
+        pack: String,
+    },
+    /// Final trust verdict at end of run.
+    TrustVerdictFinal {
+        verdict: String,
+        freshness: String,
+    },
+
+    // ── Scorecard Comparison (Q5) ─────────────────────────
+    ScorecardSummary {
+        run_id: String,
+        overall_score: f64,
+        dimension_count: usize,
+    },
+    ComparisonResult {
+        baseline_id: String,
+        candidate_id: String,
+        overall_delta: f64,
+        regressions: usize,
+        improvements: usize,
+        verdict: String,
+    },
+    ComparisonDetail {
+        dimension: String,
+        baseline_score: f64,
+        candidate_score: f64,
+        delta: f64,
+        kind: String, // "regression" or "improvement"
+    },
+
+    // ── Eval Gate (Q6) ────────────────────────────────────
+    /// Header for gate evaluation report.
+    GateHeader {
+        baseline_id: String,
+        candidate_id: String,
+        policy: String,
+    },
+    /// Per-dimension gate check result.
+    GateDimensionCheck {
+        dimension: String,
+        baseline_score: f64,
+        candidate_score: f64,
+        delta: f64,
+        min_score: f64,
+        verdict: String, // "pass", "warn", "fail"
+    },
+    /// Final gate verdict.
+    GateVerdict {
+        verdict: String,
+        exit_code: i32,
+        reasons: Vec<String>,
+        failed_count: usize,
+        warned_count: usize,
+    },
+
+    // ── Baseline Freshness (Q8) ─────────────────────────
+    BaselineFreshness {
+        freshness: String, // "fresh", "aging", "stale", "unknown"
+        age_days: Option<f64>,
+        recommendation: String,
+    },
+
+    // ── Review Packet (Q9) ────────────────────────────────
+    /// Header for review packet output.
+    ReviewPacketHeader {
+        run_id: String,
+        merge_readiness: String,
+        trust_verdict: Option<String>,
+        gate_verdict: Option<String>,
+    },
+    /// Review packet scorecard summary line.
+    ReviewPacketScorecard {
+        overall_score: f64,
+        dimensions: Vec<(String, f64)>,
+    },
+    /// Review packet changes summary.
+    ReviewPacketChanges {
+        modified_files: Vec<String>,
+        key_decisions: Vec<String>,
+        narrative: Option<String>,
+    },
+    /// Review packet open risks.
+    ReviewPacketRisks {
+        risks: Vec<String>,
+        open_questions: Vec<String>,
+        unavailable_data: Vec<String>,
     },
 
     // ── Generic ───────────────────────────────────────────

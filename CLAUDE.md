@@ -4,7 +4,7 @@
 
 ```bash
 cargo build                              # Build all crates
-cargo test                               # Run full test suite (502+ tests)
+cargo test                               # Run full test suite (980+ tests)
 cargo run -p oco-dev-cli -- --help       # CLI help
 
 oco index ./path                         # Index a workspace
@@ -15,6 +15,28 @@ oco doctor --workspace ./path            # Check plugin health
 oco eval scenarios.jsonl                 # Run evaluation scenarios
 oco runs list                            # List past runs
 oco runs show last                       # Replay last run's trace
+oco runs show last --mission             # Show mission memory (handoff artifact)
+oco runs handoff last                    # Human-readable handoff document
+oco runs handoff last --json             # Machine-readable mission memory
+oco eval-compare base.json cand.json    # Compare two eval runs (Q5 scorecard)
+oco runs compare <id1> <id2>            # Compare two runs' scorecards
+oco eval-gate baseline.json cand.json   # Quality gate: pass/warn/fail (Q6)
+oco eval-gate b.json c.json --policy strict  # Strict gate policy
+oco eval-gate b.json c.json --json      # Machine-readable gate result
+oco eval-gate                            # Q7: uses repo config ([gate] in oco.toml)
+oco eval-gate --candidate results.json   # Q7: explicit candidate, config baseline+policy
+oco baseline-save last --name v1-stable # Save baseline from last run
+oco baseline-save results.json --name v2 --output .oco/baseline.json
+oco baseline-save last --name v2        # Q7: output defaults to config baseline_path
+oco runs review-pack last              # Q9: unified review packet (terminal)
+oco runs review-pack last --json       # Q9: JSON review packet
+oco runs review-pack last --markdown   # Q9: Markdown review document
+oco runs review-pack last --save       # Q9: save to run directory
+oco baseline-promote last --name v2    # Q11: promote (aborts on Reject)
+oco baseline-promote last --name v2 --force  # Q11: override Reject
+oco baseline-promote res.json --name v2 --reason "CI passed" --json
+oco baseline-history                   # Q11: view promotion audit trail
+oco baseline-history --json --limit 5  # Q11: JSON audit trail (recent 5)
 ```
 
 ### CLI Output Modes
@@ -33,7 +55,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 
 | # | Crate | Role |
 |---|-------|------|
-| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase** |
+| 1 | `shared-types` | Domain types: Session, Action, Observation, Budget, Context, VerificationState, WorkingMemory, RepoProfile, **ExecutionPlan**, **CapabilityRegistry**, **TeamCoordinator**, OrchestrationEvent, **ElicitationRequest**, **EffortLevel**, **ExecutionLease**, **TaskPacket**, **StepContract**, **DecisionAffordance**, **CounterfactualResult**, **WorkProtocol**, **ExecutionPhase**, **MissionMemory**, **RunScorecard**, **ScorecardComparison**, **BatchComparison**, **GateVerdict**, **GatePolicy**, **GateResult**, **EvalBaseline**, **GateConfig**, **BaselineFreshness**, **BaselineFreshnessCheck**, **GateReviewArtifact**, **ReviewPacket**, **MergeReadiness**, **ReviewConfig**, **PromotionRecommendation**, **BaselineDiffSummary**, **PromotionRecord**, **BaselineHistoryEntry**, **BaselineHistory** |
 | 2 | `shared-proto` | Protobuf definitions (gRPC IPC) |
 | 3 | `policy-engine` | Deterministic action selection, budget enforcement, task classification |
 | 4 | `code-intel` | Tree-sitter parser (regex fallback), symbol indexer, **call graph extraction** (CallEdge) |
@@ -42,11 +64,11 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 | 7 | `verifier` | Test/build/lint/typecheck runners with auto-detection |
 | 8 | `telemetry` | Tracing init, decision trace collector, event recording |
 | 9 | `context-engine` | Context assembly, dedup, compression, staleness decay, category budgets, **step-scoped filtering** |
-| 10 | **`planner`** | **Task decomposition: DirectPlanner (Trivial/Low) + LlmPlanner (Medium+) → ExecutionPlan DAG** |
+| 10 | **`planner`** | **Task decomposition: DirectPlanner (Trivial/Low) + LlmPlanner (Medium+) → ExecutionPlan DAG, prior art analysis (OSS + research papers)** |
 | 11 | `orchestrator-core` | State machine, action loop, **GraphRunner (DAG execution)**, **LlmRouter (multi-model + effort)**, **AgentTeamsExecutor**, LLM providers, runtime, eval runner, repo profiles |
 | 12 | `mcp-server` | Axum HTTP + MCP server, session management, **HTTP hook endpoints** (Claude Code v2.1.63+), **oco_routes/oco_impact tools** |
 | 13 | **`claude-adapter`** | **Boundary layer: ClaudeVersion detection, ClaudeHookEvent (24 events), HookDecision, ClaudeCapabilities, IntegrationMode, DoctorCheck** |
-| 14 | `dev-cli` | CLI binary (index, search, run, serve, eval, doctor, runs) — event-driven UI with Terminal/JSONL/Quiet renderers |
+| 14 | `dev-cli` | CLI binary (index, search, run, serve, eval, eval-compare, eval-gate, baseline-save, doctor, runs) — event-driven UI with Terminal/JSONL/Quiet renderers, Q5 scorecard persistence, Q6 gate evaluation |
 | — | `architecture-tests` | Architecture fitness tests — enforces crate dependency DAG, layer violations, foundation isolation |
 
 ### Orchestration v2 — Emergent Plan Engine
@@ -75,15 +97,37 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - `TeamCoordinator` — spawns members (plan-scoped), shared task list, teardown
 - `SharedTaskList` — claimable/claim(ownership)/complete(ownership)/force_complete
 - `TeamCommunication` — HubSpoke (subagents) / Mesh (Agent Teams) / Pipeline (Factory)
+- `MissionMemory` — durable inter-session handoff artifact: facts, hypotheses, questions, plan, verification, trust verdict, narrative. `from_working_state()`, `to_handoff_text()`, `save_to()`/`load_from()`, `merge_from_previous()`
+- `RunScorecard` — Q5 multi-dimension evaluation: 7 dimensions (Success, TrustVerdict, VerificationCoverage, MissionContinuity, CostEfficiency, ReplanStability, ErrorRate), weighted composite, `compute_overall()`, `dimension_score()`
+- `ScorecardComparison` — pairwise run comparison with `compare()`, regression detection (Critical/Warning/Minor), `to_report()`, `has_critical_regression()`
+- `BatchComparison` — aggregate comparison across scenario suites, `from_paired()`, overall verdict (Improved/Stable/Regressed)
+- `GateVerdict` — Q6 Pass/Warn/Fail with `exit_code()` (0/1/2), `is_blocking()`, `label()`, `symbol()`
+- `GatePolicy` — Q6 per-dimension thresholds + strategy (Strict/Balanced/Lenient) + overall min score + max regression. Presets: `strict()`, `default_balanced()`, `lenient()`
+- `GateResult` — Q6 full gate evaluation: `evaluate(baseline, candidate, policy)`, per-dimension checks, reasons, `to_report()`, `failed_dimension_count()`, `warned_dimension_count()`
+- `EvalBaseline` — Q6 named scorecard snapshot with `save_to()`/`load_from()`, `from_scorecard()`, `with_description()`
+- `GateConfig` — Q7 per-repo gate configuration: `baseline_path`, `default_policy`, optional `min_overall_score`/`max_overall_regression` overrides, optional `fresh_days`/`stale_days` freshness thresholds (Q8). `resolve_policy()`, `validate()`. Deserialized from `[gate]` in `oco.toml` via `#[serde(default)]`
+- `BaselineFreshness` — Q8 freshness classification: Fresh/Aging/Stale/Unknown based on baseline age vs configurable thresholds
+- `BaselineFreshnessCheck` — Q8 evaluates `EvalBaseline::created_at` against `fresh_days`/`stale_days` thresholds (defaults: 14/30 days)
+- `GateReviewArtifact` — Q8 structured review document: gate result + freshness check + summary + recommendations. `to_markdown()`, `to_json()`
+- `ReviewPacket` — Q9 unified merge-readiness bundle: aggregates scorecard, gate result, mission memory, baseline freshness. `build()`, `to_review_text()`, `to_markdown()`, `to_json()`, `save_to()`
+- `MergeReadiness` — Q9 Ready/ConditionallyReady/NotReady/Unknown verdict. Computed from trust, gate, freshness, and open risks
+- `ReviewConfig` — Q10 per-repo review packet configuration: `auto_save`, `default_format`, `output_dir`. `validate()`, `is_json()`, `is_markdown()`. Deserialized from `[review]` in `oco.toml` via `#[serde(default)]`
+- `PromotionRecommendation` — Q11 Promote/Review/Reject, derived from gate verdict + freshness via `from_gate_and_freshness()`
+- `BaselineDiffSummary` — Q11 per-dimension deltas between old/new baseline. `compute()`, `to_report()`, `to_markdown()`
+- `PromotionRecord` — Q11 durable promotion artifact: timestamps, source, reason, recommendation, gate verdict, freshness, diff. `to_summary()`, `to_markdown()`
+- `BaselineHistoryEntry` — Q11 wrapper with sequence number
+- `BaselineHistory` — Q11 append-only audit trail, schema_version=1. `append()`, `recent()`, `save_to()`/`load_from()`, `to_report()`, `to_markdown()`, `to_json()`
 
 **Key modules**:
-- `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan)
+- `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan) + `prior_art` (deterministic OSS/paper research recommendation)
 - `orchestrator-core/graph_runner.rs` — `GraphRunner` with parallel execution (tokio::spawn), verify gates, budget pre-reservation, no-progress guard, JoinError→Failed
 - `orchestrator-core/llm_router.rs` — `LlmRouter` per-step model + effort selection (`RoutingDecision`), role heuristic + budget downgrade
 - `orchestrator-core/agent_teams.rs` — `AgentTeamsExecutor` maps PlanSteps to Claude Code Agent Teams (worktree isolation, async lifecycle, typed errors)
 - `mcp-server/hooks.rs` — HTTP hook handlers (PostToolUse, TaskCompleted, FileChanged, PostCompact, Stop) with Bearer auth + body limit
 - `shared-types/elicitation.rs` — `ElicitationRequest`/`ElicitationResponse` for interactive MCP decisions
 - `context-engine/step_scope.rs` — `StepContextBuilder` with dependency outputs, error context (Manus pattern), shared memory
+- `orchestrator-core/scorecard.rs` — `ScorecardBuilder` constructs `RunScorecard` from `ScenarioResult`/`RunSummary`/`MissionMemory`
+- `orchestrator-core/config.rs` — Q11 `promote_baseline()` (load old → backup → save new → append history), `load_baseline_history()`
 
 ### Python (`py/`)
 
@@ -136,18 +180,18 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (682+)
-cargo test -p oco-shared-types           # 218 tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans
-cargo test -p oco-policy-engine          #  67 tests — classifier, selector, budget, gates, zero-limit budgets
+cargo test                               # All tests (980+)
+cargo test -p oco-shared-types           # 417+ tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate, gate config, baseline freshness, review artifacts, review packet, review config, promotion, diff, history
+cargo test -p oco-policy-engine          #  79 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             #  37 tests — parser, indexer, language detection, call graph extraction
-cargo test -p oco-retrieval              #  19 tests — FTS5, vector, hybrid ranking, call graph storage & BFS traversal
-cargo test -p oco-telemetry              #  13 tests — event recording, JSONL export, hook telemetry
+cargo test -p oco-retrieval              #  26 tests — FTS5, vector, hybrid ranking, call graph storage & BFS traversal
+cargo test -p oco-telemetry              #  22 tests — event recording, JSONL export, hook telemetry
 cargo test -p oco-claude-adapter         #  70 tests — version detection, 24 hook events, capability matrix, integration modes, doctor checks
-cargo test -p oco-planner               #  52 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, sub-plan parsing
-cargo test -p oco-orchestrator-core      #  81 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution
+cargo test -p oco-planner               #  85 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, prior art analysis, sub-plan parsing
+cargo test -p oco-orchestrator-core      # 159 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution, mission memory, scorecard builder, gate config, gate config strict, review packet builder, review config, baseline promotion
 cargo test -p oco-mcp-server             #  37 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools
-cargo test -p oco-verifier               #  32 tests — test/build/lint/typecheck runners, auto-detection
+cargo test -p oco-verifier               #  48 tests — test/build/lint/typecheck runners, auto-detection, tiered e2e
 cargo test -p oco-architecture-tests     #   4 tests — dependency DAG, layer violations, foundation isolation, coverage
 ```
 
@@ -175,6 +219,8 @@ Key sections:
 - **Server** — bind address, port, max sessions
 - **Budget** — token limits, tool call caps, duration, verify cycles
 - **LLM** — provider, model, API key env var, retries
+- **Gate** — Q7 baseline path, default policy, threshold overrides, Q8 freshness thresholds
+- **Review** — Q10 auto-save, default format (terminal/markdown/json), output directory
 
 ## Resolved Issues (review followup)
 

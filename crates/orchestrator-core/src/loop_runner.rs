@@ -120,6 +120,8 @@ pub struct OrchestrationLoop {
     cancel: Option<crate::graph_runner::CancellationToken>,
     /// External session ID for correlation (e.g. Claude Code session).
     external_session_id: Option<String>,
+    /// Mission memory to restore on run start (for `--resume`).
+    resume_mission: Option<oco_shared_types::MissionMemory>,
 }
 
 impl OrchestrationLoop {
@@ -139,6 +141,7 @@ impl OrchestrationLoop {
             event_tx: None,
             cancel: None,
             external_session_id: None,
+            resume_mission: None,
         }
     }
 
@@ -183,6 +186,12 @@ impl OrchestrationLoop {
             warn!(error = %e, "Failed to index workspace, continuing without index");
         }
         self.runtime = Some(rt);
+        self
+    }
+
+    /// Set a mission memory to restore at the start of the run (for `--resume`).
+    pub fn with_resume_mission(&mut self, mission: oco_shared_types::MissionMemory) -> &mut Self {
+        self.resume_mission = Some(mission);
         self
     }
 
@@ -231,6 +240,15 @@ impl OrchestrationLoop {
             session.external_session_id = Some(ext_id.clone());
         }
         let mut state = OrchestrationState::new(session);
+
+        // Restore mission memory from a previous run if --resume was used.
+        if let Some(ref mission) = self.resume_mission {
+            info!(
+                "Restoring mission memory from previous session {}",
+                mission.session_id.0
+            );
+            state.restore_from_mission(mission);
+        }
 
         // Apply max_steps override from config (e.g. eval scenario overrides).
         if self.config.max_steps > 0 {
@@ -762,6 +780,7 @@ impl OrchestrationLoop {
             has_memory_errors,
             memory_active_count: state.memory.active_count(),
             task_category: state.task_category(),
+            policy_pack: self.config.profile.policy_pack,
         }
     }
 
@@ -904,6 +923,7 @@ impl OrchestrationLoop {
                                 parallel_groups: c.plan.parallel_groups().len(),
                                 score: c.score,
                                 winner: c.winner,
+                                planning_tokens: c.tokens_used,
                             })
                             .collect();
 
@@ -930,11 +950,34 @@ impl OrchestrationLoop {
             plan_id = %plan.id,
             steps = plan.steps.len(),
             strategy = ?plan.strategy,
+            trivial = plan.is_trivial_plan(),
             "plan generated for Medium+ task"
         );
 
+        // P2 3.2: Mesh cost warning — if team uses Mesh topology, warn about overhead.
+        if let Some(ref team) = plan.team
+            && team.communication == oco_shared_types::TeamCommunication::Mesh
+        {
+            let member_count = team.members.len();
+            self.emit_event(OrchestrationEvent::BudgetWarning {
+                resource: format!(
+                    "Mesh topology selected ({member_count} agents, ~2x token cost vs HubSpoke)"
+                ),
+                utilization: 0.0,
+            });
+        }
+
+        // P2 2.4: Fast-exit — if the plan is trivial (≤3 inline steps, no
+        // verify, no parallelism), execute sequentially without GraphRunner.
+        if plan.is_trivial_plan() {
+            debug!("trivial plan detected, using fast sequential execution");
+            return self.execute_trivial_plan(state, plan).await;
+        }
+
         let executor = Arc::new(LoopStepExecutor {
             llm: self.llm.clone(),
+            workspace_root: self.runtime.as_ref().map(|rt| rt.workspace_root.clone()),
+            verifier_timeout: 30,
         });
 
         // Build a planner for replans (GraphRunner needs it)
@@ -951,7 +994,9 @@ impl OrchestrationLoop {
         let event_tx = self.event_tx.clone();
         let budget = state.session.budget.max_total_tokens;
 
-        let mut runner = GraphRunner::new(executor, replan_planner).with_budget(budget);
+        let mut runner = GraphRunner::new(executor, replan_planner)
+            .with_budget(budget)
+            .with_user_request(state.session.user_request.clone());
         if let Some(tx) = event_tx {
             runner = runner.with_event_channel(tx);
         }
@@ -1010,15 +1055,123 @@ impl OrchestrationLoop {
             ));
         }
 
-        // Update working memory planner state after plan execution (#62 wiring)
+        // Update working memory planner state after plan execution (#62 wiring).
+        // Use actual replan_count from GraphRunner, not a hardcoded zero.
+        let actual_replan_count = runner.replan_count();
         state
             .memory
             .update_planner_state(oco_shared_types::PlannerState {
                 current_step: None,
-                replan_count: 0,
+                replan_count: actual_replan_count,
                 phase: Some("completed".into()),
                 lease_id: None,
             });
+
+        // Feed working memory with step-level findings from the completed plan.
+        for step in &completed_plan.steps {
+            match &step.status {
+                oco_shared_types::StepStatus::Completed => {
+                    if let Some(ref output) = step.output {
+                        let entry = MemoryEntry::new(
+                            format!(
+                                "Plan step '{}' completed: {}",
+                                step.name,
+                                truncate(output, 200)
+                            ),
+                            0.8,
+                        )
+                        .with_source("plan_step".into())
+                        .with_severity(MemorySeverity::Info);
+                        state.memory.add_finding(entry);
+                    }
+                }
+                oco_shared_types::StepStatus::Failed { reason } => {
+                    let entry = MemoryEntry::new(
+                        format!("Plan step '{}' failed: {}", step.name, reason),
+                        0.9,
+                    )
+                    .with_source("plan_step".into())
+                    .with_tags(vec!["failure".into()])
+                    .with_severity(MemorySeverity::Error);
+                    state.memory.add_finding(entry);
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Fast-path execution for trivial plans: run steps sequentially via LLM
+    /// without GraphRunner overhead (no DAG scheduler, no parallel dispatch).
+    async fn execute_trivial_plan(
+        &self,
+        state: &mut OrchestrationState,
+        plan: oco_shared_types::ExecutionPlan,
+    ) -> Result<(), OrchestratorError> {
+        let mut outputs: Vec<String> = Vec::new();
+        let mut total_tokens: u64 = 0;
+        let mut context: Vec<String> = Vec::new();
+
+        for step in &plan.steps {
+            let start = std::time::Instant::now();
+            let mut prompt = format!(
+                "You are acting as role: {}.\n\nTask: {}",
+                step.agent_role.name, step.description
+            );
+            if !context.is_empty() {
+                prompt.push_str("\n\nContext from previous steps:\n");
+                for ctx in &context {
+                    prompt.push_str(ctx);
+                    prompt.push('\n');
+                }
+            }
+
+            let request = crate::llm::LlmRequest {
+                messages: vec![crate::llm::LlmMessage {
+                    role: crate::llm::LlmRole::User,
+                    content: prompt,
+                }],
+                max_tokens: step.estimated_tokens.min(4096),
+                temperature: 0.0,
+                system_prompt: Some(format!(
+                    "You are a {} agent. Execute the task precisely and concisely.",
+                    step.agent_role.name
+                )),
+                effort_override: None,
+            };
+
+            let response = self.llm.complete(request).await?;
+            let tokens = (response.input_tokens + response.output_tokens) as u64;
+            total_tokens += tokens;
+            let duration_ms = start.elapsed().as_millis() as u64;
+
+            self.emit_event(OrchestrationEvent::PlanStepCompleted {
+                step_id: step.id,
+                step_name: step.name.clone(),
+                success: true,
+                duration_ms,
+                tokens_used: tokens,
+            });
+
+            context.push(format!("Output from '{}': {}", step.name, response.content));
+            outputs.push(response.content);
+        }
+
+        state.session.budget.tokens_used += total_tokens;
+
+        if !outputs.is_empty() {
+            let combined = outputs.join("\n\n");
+            state.push_observation(Observation::new(
+                ObservationSource::LlmResponse,
+                ObservationKind::Text {
+                    content: combined.clone(),
+                    metadata: None,
+                },
+                total_tokens as u32,
+            ));
+            state.push_action(OrchestratorAction::Respond { content: combined });
+        }
 
         Ok(())
     }
@@ -1256,9 +1409,13 @@ impl OrchestrationLoop {
 /// Step executor that bridges the GraphRunner to the existing LLM + runtime.
 ///
 /// For inline steps, calls the LLM with the step description as prompt.
-/// For verification, returns a stub pass (the full verifier runs in the flat loop).
+/// For verification, delegates to the real `VerificationDispatcher`.
 struct LoopStepExecutor {
     llm: Arc<dyn LlmProvider>,
+    /// Workspace root for running verification commands.
+    workspace_root: Option<PathBuf>,
+    /// Verification timeout in seconds (mirrors the runtime's verifier config).
+    verifier_timeout: u64,
 }
 
 #[async_trait::async_trait]
@@ -1313,16 +1470,59 @@ impl StepExecutor for LoopStepExecutor {
     }
 
     async fn verify_step(&self, step: &PlanStep) -> Result<StepResult, OrchestratorError> {
-        // Stub verification — the real verifier runs when the full loop calls execute_verify.
-        // In plan mode, verify gates signal pass/fail; the GraphRunner handles replan on failure.
-        Ok(StepResult {
-            step_id: step.id,
-            success: true,
-            output: format!("Verification passed for step: {}", step.name),
-            duration_ms: 0,
-            tokens_used: 0,
-        })
+        let start = Instant::now();
+
+        let Some(ref workspace) = self.workspace_root else {
+            // No workspace — cannot run verification, skip gracefully.
+            return Ok(StepResult {
+                step_id: step.id,
+                success: true,
+                output: "Verification skipped: no workspace configured".into(),
+                duration_ms: 0,
+                tokens_used: 0,
+            });
+        };
+
+        let verifier = oco_verifier::VerificationDispatcher::new(self.verifier_timeout);
+        let ws = workspace.to_string_lossy().to_string();
+
+        // Default to RunTests — the most common and meaningful gate.
+        let result = verifier
+            .dispatch(oco_shared_types::VerificationStrategy::RunTests, None, &ws)
+            .await;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(output) => Ok(StepResult {
+                step_id: step.id,
+                success: output.passed,
+                output: if output.passed {
+                    format!("Verification passed for step: {}", step.name)
+                } else {
+                    format!(
+                        "Verification failed for step '{}': {}",
+                        step.name,
+                        output.failures.join("; ")
+                    )
+                },
+                duration_ms,
+                tokens_used: 0,
+            }),
+            Err(e) => Ok(StepResult {
+                step_id: step.id,
+                success: false,
+                output: format!("Verification error for step '{}': {e}", step.name),
+                duration_ms,
+                tokens_used: 0,
+            }),
+        }
     }
+}
+
+/// Truncate a string to `max_len` chars, appending "…" if truncated.
+fn truncate(s: &str, max_len: usize) -> &str {
+    if s.len() <= max_len { s } else { &s[..max_len] }
 }
 
 /// Update working memory based on the latest observation and action.

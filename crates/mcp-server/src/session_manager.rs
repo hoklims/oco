@@ -85,6 +85,10 @@ pub struct SessionState {
     pub dashboard_tx: broadcast::Sender<DashboardEvent>,
     /// Accumulated dashboard events for catch-up on late subscribers.
     pub dashboard_events: Vec<DashboardEvent>,
+    /// Last compact snapshot created by post-compact handler.
+    pub last_compact_snapshot: Option<oco_shared_types::CompactSnapshot>,
+    /// Last mission memory created for handoff/resume.
+    pub last_mission_memory: Option<oco_shared_types::MissionMemory>,
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +167,8 @@ impl SessionManager {
             hook_events: Vec::new(),
             dashboard_tx: dashboard_tx.clone(),
             dashboard_events: Vec::new(),
+            last_compact_snapshot: None,
+            last_mission_memory: None,
         };
 
         let state = Arc::new(Mutex::new(state));
@@ -323,6 +329,90 @@ impl SessionManager {
             _ => true,
         });
         if has_content { Some(snapshot) } else { None }
+    }
+
+    /// Create a typed [`CompactSnapshot`] from the session's working memory
+    /// and store it on the session state for later retrieval.
+    ///
+    /// Returns `None` if the session doesn't exist or has no orchestration state.
+    pub async fn create_and_store_compact_snapshot(
+        &self,
+        id: &str,
+    ) -> Option<oco_shared_types::CompactSnapshot> {
+        let session = self.sessions.get(id).map(|e| e.value().clone())?;
+        let mut guard = session.lock().await;
+        let state = guard.orchestration_state.as_ref()?;
+        let snapshot = state.create_compact_snapshot(oco_shared_types::PolicyPack::Balanced);
+        // Store the snapshot as a JSON value in the session's last_compact_snapshot
+        guard.last_compact_snapshot = Some(snapshot.clone());
+        Some(snapshot)
+    }
+
+    /// Retrieve the most recent typed [`CompactSnapshot`] from the session.
+    ///
+    /// Returns the snapshot stored by the last `create_and_store_compact_snapshot`
+    /// call, or `None` if no snapshot was ever created.
+    pub async fn get_typed_compact_snapshot(
+        &self,
+        id: &str,
+    ) -> Option<oco_shared_types::CompactSnapshot> {
+        let session = self.sessions.get(id).map(|e| e.value().clone())?;
+        let guard = session.lock().await;
+        guard.last_compact_snapshot.clone()
+    }
+
+    /// Create a [`MissionMemory`] from a session's current orchestration state.
+    ///
+    /// Returns `None` if the session doesn't exist, has no orchestration state,
+    /// or if the mission memory has no substantive content. The created mission
+    /// memory is also stored on the session for later retrieval.
+    pub async fn get_mission_memory(&self, id: &str) -> Option<oco_shared_types::MissionMemory> {
+        let session = self.sessions.get(id).map(|e| e.value().clone())?;
+        let mut guard = session.lock().await;
+        let state = guard.orchestration_state.as_ref()?;
+        let mm = state.create_mission_memory(&self.config.profile);
+        if mm.has_content() {
+            guard.last_mission_memory = Some(mm.clone());
+            Some(mm)
+        } else {
+            None
+        }
+    }
+
+    /// Build a [`RunSummary`] from the session's current state.
+    ///
+    /// Returns `None` if the session doesn't exist.
+    pub async fn get_run_summary(&self, id: &str) -> Option<oco_shared_types::RunSummary> {
+        let session = self.sessions.get(id).map(|e| e.value().clone())?;
+        let guard = session.lock().await;
+
+        let session_id = uuid::Uuid::parse_str(id)
+            .map(SessionId)
+            .unwrap_or_else(|_| SessionId::new());
+
+        let mut builder =
+            oco_telemetry::RunSummaryBuilder::new(session_id, guard.user_request.clone());
+
+        builder = builder
+            .policy_pack(self.config.profile.policy_pack)
+            .sensitive_paths(self.config.profile.sensitive_paths.clone());
+
+        if let Some(state) = guard.orchestration_state.as_ref() {
+            let duration_ms = (chrono::Utc::now() - state.started_at)
+                .num_milliseconds()
+                .max(0) as u64;
+            builder = builder
+                .complexity(state.task_complexity)
+                .verification_state(state.verification.clone())
+                .metrics(
+                    state.session.step_count,
+                    state.session.budget.tokens_used,
+                    duration_ms,
+                    0, // replans not tracked at this level yet
+                );
+        }
+
+        Some(builder.build())
     }
 
     /// Resolve a session ID — tries direct OCO key first, then reverse lookup
@@ -498,6 +588,8 @@ impl SessionManager {
             hook_events: Vec::new(),
             dashboard_tx,
             dashboard_events: Vec::new(),
+            last_compact_snapshot: None,
+            last_mission_memory: None,
         };
 
         self.sessions
@@ -603,6 +695,8 @@ impl SessionManager {
             hook_events: Vec::new(),
             dashboard_tx,
             dashboard_events: Vec::new(),
+            last_compact_snapshot: None,
+            last_mission_memory: None,
         };
         self.sessions
             .insert(session_id.clone(), Arc::new(Mutex::new(state)));

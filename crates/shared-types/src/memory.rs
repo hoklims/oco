@@ -65,6 +65,188 @@ impl InspectedArea {
     }
 }
 
+// ── Q3: Compact Snapshot for post-compact survival ───────
+
+/// A minimal snapshot of session state designed to survive context compaction.
+///
+/// After Claude Code compacts the conversation, the orchestrator can reinject
+/// this snapshot to restore its active facts, plan, verification status,
+/// and planner phase — without replaying the entire session.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompactSnapshot {
+    /// Active verified facts (content only, for brevity).
+    pub verified_facts: Vec<String>,
+    /// Active hypotheses with confidence.
+    pub hypotheses: Vec<(String, f64)>,
+    /// Open questions.
+    pub questions: Vec<String>,
+    /// Current plan steps.
+    pub plan: Vec<String>,
+    /// Planner execution state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_state: Option<PlannerState>,
+    /// Verification freshness at snapshot time.
+    pub verification_freshness: crate::VerificationFreshness,
+    /// Files modified but not yet verified.
+    pub unverified_files: Vec<String>,
+    /// Active policy pack.
+    pub policy_pack: crate::PolicyPack,
+    /// Inspected areas (paths only).
+    pub inspected_paths: Vec<String>,
+    /// Timestamp of the snapshot.
+    pub created_at: DateTime<Utc>,
+}
+
+impl CompactSnapshot {
+    /// Build a snapshot from the current working memory and verification state.
+    pub fn from_memory(
+        memory: &WorkingMemory,
+        verification: &crate::VerificationState,
+        policy_pack: crate::PolicyPack,
+    ) -> Self {
+        let freshness = verification.freshness();
+
+        // Files modified after last verification
+        let last_verify_ts = verification
+            .runs
+            .iter()
+            .max_by_key(|r| r.timestamp)
+            .map(|r| r.timestamp);
+
+        let unverified_files: Vec<String> = verification
+            .modified_files
+            .iter()
+            .filter(|(_, mod_time)| last_verify_ts.is_none_or(|vt| **mod_time > vt))
+            .map(|(path, _)| path.clone())
+            .collect();
+
+        Self {
+            verified_facts: memory
+                .verified_facts
+                .iter()
+                .map(|f| f.content.clone())
+                .collect(),
+            hypotheses: memory
+                .hypotheses
+                .iter()
+                .filter(|h| h.status == MemoryStatus::Active)
+                .map(|h| (h.content.clone(), h.effective_confidence()))
+                .collect(),
+            questions: memory.questions.iter().map(|q| q.content.clone()).collect(),
+            plan: memory.plan.clone(),
+            planner_state: memory.planner_state.clone(),
+            verification_freshness: freshness,
+            unverified_files,
+            policy_pack,
+            inspected_paths: memory
+                .inspected_areas
+                .iter()
+                .map(|a| a.path.clone())
+                .collect(),
+            created_at: Utc::now(),
+        }
+    }
+
+    /// True if the snapshot contains any meaningful content worth reinjecting.
+    pub fn has_content(&self) -> bool {
+        !self.verified_facts.is_empty()
+            || !self.hypotheses.is_empty()
+            || !self.questions.is_empty()
+            || !self.plan.is_empty()
+            || self.planner_state.is_some()
+    }
+
+    /// Render as a compact text block suitable for context reinjection.
+    pub fn to_reinjection_text(&self) -> String {
+        let mut parts = Vec::new();
+
+        parts.push(format!(
+            "=== OCO Session State (post-compact) ===\nPolicy: {} | Verification: {:?} | Snapshot: {}",
+            self.policy_pack.label(),
+            self.verification_freshness,
+            self.created_at.format("%H:%M:%S UTC"),
+        ));
+
+        if !self.verified_facts.is_empty() {
+            parts.push(format!(
+                "Facts ({}):\n{}",
+                self.verified_facts.len(),
+                self.verified_facts
+                    .iter()
+                    .map(|f| format!("  - {f}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        if !self.hypotheses.is_empty() {
+            parts.push(format!(
+                "Hypotheses ({}):\n{}",
+                self.hypotheses.len(),
+                self.hypotheses
+                    .iter()
+                    .map(|(h, c)| format!("  - {h} ({c:.0}%)"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        if !self.questions.is_empty() {
+            parts.push(format!(
+                "Questions ({}):\n{}",
+                self.questions.len(),
+                self.questions
+                    .iter()
+                    .map(|q| format!("  ? {q}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        if !self.plan.is_empty() {
+            parts.push(format!(
+                "Plan:\n{}",
+                self.plan
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("  {}. {s}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        if !self.unverified_files.is_empty() {
+            parts.push(format!(
+                "Unverified files ({}):\n{}",
+                self.unverified_files.len(),
+                self.unverified_files
+                    .iter()
+                    .map(|f| format!("  ! {f}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        if let Some(ref ps) = self.planner_state {
+            let mut sp = Vec::new();
+            if let Some(ref step) = ps.current_step {
+                sp.push(format!("step={step}"));
+            }
+            if let Some(ref phase) = ps.phase {
+                sp.push(format!("phase={phase}"));
+            }
+            if ps.replan_count > 0 {
+                sp.push(format!("replans={}", ps.replan_count));
+            }
+            if !sp.is_empty() {
+                parts.push(format!("Planner: {}", sp.join(", ")));
+            }
+        }
+
+        parts.join("\n\n")
+    }
+}
+
 /// Planner execution state — survives context compaction.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlannerState {
@@ -792,6 +974,84 @@ mod tests {
         assert!(summary.contains("Inspected areas"));
         assert!(summary.contains("src/auth.rs"));
         assert!(summary.contains("login, verify"));
+    }
+
+    #[test]
+    fn compact_snapshot_from_memory() {
+        let mut mem = WorkingMemory::default();
+        let fact = MemoryEntry::new("auth uses JWT".into(), 1.0);
+        let fact_id = fact.id;
+        mem.add_finding(fact);
+        mem.promote_to_fact(fact_id);
+        mem.add_hypothesis(MemoryEntry::new("cookie might be stale".into(), 0.6));
+        mem.add_question(MemoryEntry::new("which middleware?".into(), 0.5));
+        mem.update_plan(vec!["fix middleware".into(), "test".into()]);
+        mem.record_inspection(InspectedArea::new("src/auth.rs"));
+
+        let verification = crate::VerificationState::default();
+        let snapshot =
+            CompactSnapshot::from_memory(&mem, &verification, crate::PolicyPack::Balanced);
+
+        assert_eq!(snapshot.verified_facts.len(), 1);
+        assert_eq!(snapshot.hypotheses.len(), 1);
+        assert_eq!(snapshot.questions.len(), 1);
+        assert_eq!(snapshot.plan.len(), 2);
+        assert_eq!(snapshot.inspected_paths.len(), 1);
+        assert_eq!(snapshot.policy_pack, crate::PolicyPack::Balanced);
+        assert_eq!(
+            snapshot.verification_freshness,
+            crate::VerificationFreshness::None
+        );
+    }
+
+    #[test]
+    fn compact_snapshot_reinjection_text() {
+        let snapshot = CompactSnapshot {
+            verified_facts: vec!["auth uses JWT".into()],
+            hypotheses: vec![("stale cookie".into(), 0.6)],
+            questions: vec![],
+            plan: vec!["fix it".into()],
+            planner_state: None,
+            verification_freshness: crate::VerificationFreshness::Fresh,
+            unverified_files: vec![],
+            policy_pack: crate::PolicyPack::Strict,
+            inspected_paths: vec!["src/auth.rs".into()],
+            created_at: chrono::Utc::now(),
+        };
+        let text = snapshot.to_reinjection_text();
+        assert!(text.contains("Policy: strict"));
+        assert!(text.contains("auth uses JWT"));
+        assert!(text.contains("stale cookie"));
+        assert!(text.contains("fix it"));
+    }
+
+    #[test]
+    fn compact_snapshot_serde_round_trip() {
+        let snapshot = CompactSnapshot {
+            verified_facts: vec!["fact1".into()],
+            hypotheses: vec![("hyp1".into(), 0.7)],
+            questions: vec![],
+            plan: vec![],
+            planner_state: Some(PlannerState {
+                current_step: Some("step1".into()),
+                replan_count: 1,
+                phase: Some("verify".into()),
+                lease_id: None,
+            }),
+            verification_freshness: crate::VerificationFreshness::Partial,
+            unverified_files: vec!["src/main.rs".into()],
+            policy_pack: crate::PolicyPack::Fast,
+            inspected_paths: vec![],
+            created_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let parsed: CompactSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.verified_facts, snapshot.verified_facts);
+        assert_eq!(parsed.policy_pack, crate::PolicyPack::Fast);
+        assert_eq!(
+            parsed.verification_freshness,
+            crate::VerificationFreshness::Partial
+        );
     }
 
     #[test]

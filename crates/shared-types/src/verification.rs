@@ -36,7 +36,7 @@ pub struct VerificationRun {
 }
 
 /// Summary of the current verification freshness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationFreshness {
     /// All modified files have been verified after their latest modification.
@@ -46,6 +46,7 @@ pub enum VerificationFreshness {
     /// Modifications happened after the last verification — results are stale.
     Stale,
     /// No verification has been performed yet.
+    #[default]
     None,
 }
 

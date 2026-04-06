@@ -22,6 +22,7 @@ pub fn system_prompt(context: &PlanningContext) -> String {
 5. Use read_only roles for investigation/review steps.
 6. Keep plans shallow: 2-5 steps for Medium, 3-8 for High, 5-12 for Critical.
 7. Each step must use only capabilities available in the registry below.
+8. When the user message includes a "Prior Art Research" section, you MUST include the recommended research steps before any implementation step. Research steps should use subagent execution mode with read_only roles and the search capability specified in that section.
 
 ## Execution Modes
 
@@ -163,6 +164,14 @@ pub fn user_message_with_bias(request: &str, context: &PlanningContext, bias: Pl
         }
     }
 
+    // Inject prior-art research guidance for non-trivial tasks
+    if context.needs_planning() {
+        let advice = crate::prior_art::analyze_prior_art(request, context);
+        if !advice.prompt_section.is_empty() {
+            msg.push_str(&advice.prompt_section);
+        }
+    }
+
     // Append bias hint
     match bias {
         PlanBias::Balanced => {}
@@ -178,11 +187,15 @@ pub fn user_message_with_bias(request: &str, context: &PlanningContext, bias: Pl
 }
 
 /// Build the user message for replanning after a failure.
+///
+/// The prompt includes the full failure context (step output + verification
+/// output) and explicitly asks the planner to change approach, not just retry.
 pub fn replan_message(
     request: &str,
     failed_step_name: &str,
     error_context: &str,
     completed_steps: &[String],
+    failed_step_output: Option<&str>,
 ) -> String {
     let completed = if completed_steps.is_empty() {
         "None".to_string()
@@ -190,18 +203,30 @@ pub fn replan_message(
         completed_steps.join(", ")
     };
 
+    let step_output_section = if let Some(output) = failed_step_output {
+        let truncated = if output.len() > 2000 {
+            &output[..2000]
+        } else {
+            output
+        };
+        format!("\n\nStep output before failure (truncated to 2k):\n{truncated}")
+    } else {
+        String::new()
+    };
+
     format!(
         r#"The original task was: {request}
 
 Step "{failed_step_name}" FAILED with error:
-{error_context}
+{error_context}{step_output_section}
 
 Already completed steps: {completed}
 
 Generate a NEW plan that:
-1. Does NOT repeat completed steps.
-2. Fixes the issue that caused the failure.
-3. Completes the remaining work.
+1. Does NOT repeat completed steps — their outputs are already available.
+2. Takes a DIFFERENT approach to fix the failure — do not retry the exact same strategy.
+3. Explicitly states what changed in the approach compared to the failed step.
+4. Completes the remaining work toward the original goal.
 
 Respond with ONLY a JSON array of NEW steps."#
     )
@@ -227,7 +252,18 @@ fn format_items(items: &[oco_shared_types::SummaryItem]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oco_shared_types::{TaskCategory, TaskComplexity};
+    use oco_shared_types::{SummaryItem, TaskCategory, TaskComplexity};
+
+    /// Helper: create a PlanningContext with search capability.
+    fn ctx_with_search(complexity: TaskComplexity, category: TaskCategory) -> PlanningContext {
+        let mut ctx = PlanningContext::minimal(complexity, category);
+        ctx.capabilities.tools.push(SummaryItem {
+            id: "web_search".into(),
+            name: "Web Search".into(),
+            capabilities: vec!["web_search".into()],
+        });
+        ctx
+    }
 
     #[test]
     fn system_prompt_contains_key_sections() {
@@ -265,9 +301,86 @@ mod tests {
             "implement-middleware",
             "test failed: 401 Unauthorized",
             &["investigate".into()],
+            None,
         );
         assert!(msg.contains("implement-middleware"));
         assert!(msg.contains("401 Unauthorized"));
         assert!(msg.contains("investigate"));
+        assert!(msg.contains("DIFFERENT approach"));
+    }
+
+    #[test]
+    fn replan_message_includes_step_output() {
+        let msg = replan_message(
+            "fix auth",
+            "patch-handler",
+            "typecheck failed: expected String, got i32",
+            &["investigate".into()],
+            Some("Added handler returning session.user_id as i32"),
+        );
+        assert!(msg.contains("Step output before failure"));
+        assert!(msg.contains("session.user_id as i32"));
+    }
+
+    #[test]
+    fn user_message_includes_prior_art_for_new_feature() {
+        let ctx = ctx_with_search(TaskComplexity::Medium, TaskCategory::NewFeature);
+        let msg = user_message("add JWT authentication", &ctx);
+
+        assert!(msg.contains("Prior Art Research"));
+        // Medium: single combined 'research' step
+        assert!(msg.contains("'research'"));
+    }
+
+    #[test]
+    fn user_message_no_prior_art_for_bug() {
+        let ctx = ctx_with_search(TaskComplexity::Medium, TaskCategory::Bug);
+        let msg = user_message("fix null pointer in user handler", &ctx);
+
+        assert!(!msg.contains("Prior Art Research"));
+    }
+
+    #[test]
+    fn user_message_no_prior_art_for_trivial() {
+        let ctx = ctx_with_search(TaskComplexity::Trivial, TaskCategory::NewFeature);
+        let msg = user_message("add logging", &ctx);
+
+        assert!(!msg.contains("Prior Art Research"));
+    }
+
+    #[test]
+    fn user_message_no_prior_art_without_capabilities() {
+        // Empty capabilities → no prior art section (capability gating)
+        let ctx = PlanningContext::minimal(TaskComplexity::Medium, TaskCategory::NewFeature);
+        let msg = user_message("add JWT authentication", &ctx);
+
+        assert!(!msg.contains("Prior Art Research"));
+    }
+
+    #[test]
+    fn user_message_includes_paper_search_for_algorithm() {
+        let ctx = ctx_with_search(TaskComplexity::Medium, TaskCategory::NewFeature);
+        let msg = user_message("implement a compression algorithm", &ctx);
+
+        assert!(msg.contains("Prior Art Research"));
+        // Medium: single combined step that mentions papers
+        assert!(msg.contains("research papers"));
+    }
+
+    #[test]
+    fn user_message_includes_registries_for_rust() {
+        let mut ctx = ctx_with_search(TaskComplexity::Medium, TaskCategory::NewFeature);
+        ctx.repo_profile.stack = "rust".into();
+        let msg = user_message("add HTTP client", &ctx);
+
+        assert!(msg.contains("crates.io"));
+    }
+
+    #[test]
+    fn system_prompt_contains_prior_art_rule() {
+        let ctx = PlanningContext::minimal(TaskComplexity::Medium, TaskCategory::NewFeature);
+        let prompt = system_prompt(&ctx);
+
+        assert!(prompt.contains("Prior Art Research"));
     }
 }

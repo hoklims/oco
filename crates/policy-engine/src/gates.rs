@@ -1,4 +1,6 @@
-use oco_shared_types::{ToolDescriptor, ToolGateDecision};
+use oco_shared_types::{
+    PolicyPack, RepoProfile, ToolDescriptor, ToolGateDecision, VerificationFreshness,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::secret_scanner;
@@ -205,6 +207,68 @@ impl PolicyGate {
     }
 }
 
+/// Decision from a policy-pack gate check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum GateDecision {
+    /// Completion is allowed.
+    Allow,
+    /// Completion is blocked, with an explanation.
+    Block { reason: String },
+}
+
+/// Gate that evaluates whether task completion is allowed under the active
+/// [`PolicyPack`].
+///
+/// Checks performed:
+/// 1. Verification freshness vs pack policy (stale/none blocks unless Fast).
+/// 2. Sensitive-path modifications under Strict pack.
+pub struct PolicyPackGate;
+
+impl PolicyPackGate {
+    /// Evaluate whether completion should be allowed.
+    ///
+    /// - `profile`: the repo profile containing the active `PolicyPack` and
+    ///   sensitive path definitions.
+    /// - `freshness`: current verification freshness.
+    /// - `changed_files`: files modified during this session (used for
+    ///   sensitive-path checks under Strict).
+    pub fn evaluate(
+        profile: &RepoProfile,
+        freshness: VerificationFreshness,
+        changed_files: &[&str],
+    ) -> GateDecision {
+        // 1. Freshness check via profile helper.
+        if profile.should_block_completion(freshness) {
+            return GateDecision::Block {
+                reason: format!(
+                    "verification is {freshness:?} and policy pack {:?} does not allow stale completion",
+                    profile.policy_pack
+                ),
+            };
+        }
+
+        // 2. Under Strict, block if any changed file is sensitive.
+        if profile.policy_pack == PolicyPack::Strict {
+            let sensitive_files: Vec<&str> = changed_files
+                .iter()
+                .filter(|f| profile.is_sensitive(f))
+                .copied()
+                .collect();
+            if !sensitive_files.is_empty() {
+                return GateDecision::Block {
+                    reason: format!(
+                        "strict policy pack blocks completion when sensitive files are modified: {}",
+                        sensitive_files.join(", ")
+                    ),
+                };
+            }
+        }
+
+        GateDecision::Allow
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +424,143 @@ mod tests {
             gate.evaluate_command("git log --oneline -10"),
             ToolGateDecision::Allow
         ));
+    }
+
+    // --- PolicyPackGate tests ---
+
+    fn balanced_profile() -> RepoProfile {
+        RepoProfile {
+            policy_pack: PolicyPack::Balanced,
+            sensitive_paths: vec![".env".into(), "*.pem".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn policy_pack_gate_allows_fresh() {
+        let profile = balanced_profile();
+        assert_eq!(
+            PolicyPackGate::evaluate(&profile, VerificationFreshness::Fresh, &[]),
+            GateDecision::Allow,
+        );
+    }
+
+    #[test]
+    fn policy_pack_gate_blocks_stale_balanced() {
+        let profile = balanced_profile();
+        let decision =
+            PolicyPackGate::evaluate(&profile, VerificationFreshness::Stale, &["src/lib.rs"]);
+        assert!(matches!(decision, GateDecision::Block { .. }));
+    }
+
+    #[test]
+    fn policy_pack_gate_blocks_none_balanced() {
+        let profile = balanced_profile();
+        let decision =
+            PolicyPackGate::evaluate(&profile, VerificationFreshness::None, &["src/lib.rs"]);
+        assert!(matches!(decision, GateDecision::Block { .. }));
+    }
+
+    #[test]
+    fn policy_pack_gate_allows_stale_fast() {
+        let profile = RepoProfile {
+            policy_pack: PolicyPack::Fast,
+            ..Default::default()
+        };
+        assert_eq!(
+            PolicyPackGate::evaluate(&profile, VerificationFreshness::Stale, &[]),
+            GateDecision::Allow,
+        );
+    }
+
+    #[test]
+    fn policy_pack_gate_blocks_none_even_fast() {
+        // Even Fast pack blocks when NO verification has been done at all.
+        let profile = RepoProfile {
+            policy_pack: PolicyPack::Fast,
+            ..Default::default()
+        };
+        assert_eq!(
+            PolicyPackGate::evaluate(&profile, VerificationFreshness::None, &[]),
+            GateDecision::Block {
+                reason: "verification is None and policy pack Fast does not allow stale completion"
+                    .into(),
+            },
+        );
+    }
+
+    #[test]
+    fn policy_pack_gate_strict_blocks_sensitive_files() {
+        let profile = RepoProfile {
+            policy_pack: PolicyPack::Strict,
+            sensitive_paths: vec![".env".into(), "*.pem".into()],
+            ..Default::default()
+        };
+        let decision = PolicyPackGate::evaluate(
+            &profile,
+            VerificationFreshness::Fresh,
+            &["src/main.rs", ".env"],
+        );
+        match decision {
+            GateDecision::Block { reason } => {
+                assert!(reason.contains(".env"));
+                assert!(reason.contains("sensitive"));
+            }
+            GateDecision::Allow => panic!("expected Block for sensitive files under Strict"),
+        }
+    }
+
+    #[test]
+    fn policy_pack_gate_strict_allows_non_sensitive() {
+        let profile = RepoProfile {
+            policy_pack: PolicyPack::Strict,
+            sensitive_paths: vec![".env".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            PolicyPackGate::evaluate(
+                &profile,
+                VerificationFreshness::Fresh,
+                &["src/main.rs", "src/lib.rs"]
+            ),
+            GateDecision::Allow,
+        );
+    }
+
+    #[test]
+    fn policy_pack_gate_balanced_ignores_sensitive_files() {
+        // Balanced pack should not block on sensitive file changes
+        // (only Strict does).
+        let profile = balanced_profile();
+        assert_eq!(
+            PolicyPackGate::evaluate(
+                &profile,
+                VerificationFreshness::Fresh,
+                &[".env", "server.pem"]
+            ),
+            GateDecision::Allow,
+        );
+    }
+
+    #[test]
+    fn policy_pack_gate_partial_freshness_blocked_by_balanced() {
+        // Balanced blocks on Partial — only Fast allows stale/partial.
+        let profile = balanced_profile();
+        assert!(matches!(
+            PolicyPackGate::evaluate(&profile, VerificationFreshness::Partial, &[]),
+            GateDecision::Block { .. },
+        ));
+    }
+
+    #[test]
+    fn policy_pack_gate_partial_freshness_allowed_by_fast() {
+        let profile = RepoProfile {
+            policy_pack: PolicyPack::Fast,
+            ..Default::default()
+        };
+        assert_eq!(
+            PolicyPackGate::evaluate(&profile, VerificationFreshness::Partial, &[]),
+            GateDecision::Allow,
+        );
     }
 }

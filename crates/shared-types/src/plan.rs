@@ -19,6 +19,16 @@ use uuid::Uuid;
 use crate::TaskComplexity;
 use crate::agent::AgentId;
 
+/// Maximum allowed sub-plan nesting depth.
+///
+/// Root plan → sub-plan → sub-sub-plan is depth 2, which is the maximum.
+/// This matches Claude Code's 2-level hierarchy (lead → teammates/subagents)
+/// and prevents token explosion from deeply nested plans.
+///
+/// This limit is intentionally fixed, not configurable via `oco.toml`.
+/// See ADR-008 for rationale.
+pub const MAX_SUB_PLAN_DEPTH: u32 = 2;
+
 // ---------------------------------------------------------------------------
 // PlanStep — a node in the execution DAG
 // ---------------------------------------------------------------------------
@@ -486,6 +496,99 @@ impl ExecutionPlan {
         Ok(())
     }
 
+    /// Returns true if this plan is simple enough to skip GraphRunner overhead:
+    /// all steps Inline, no parallelism, ≤3 steps, no verify gates.
+    pub fn is_trivial_plan(&self) -> bool {
+        self.steps.len() <= 3
+            && self
+                .steps
+                .iter()
+                .all(|s| s.execution == StepExecution::Inline)
+            && self.steps.iter().all(|s| !s.verify_after)
+            && self.parallel_groups().iter().all(|g| g.len() <= 1)
+    }
+
+    /// Collapse consecutive read-only steps that share the same role and
+    /// execution mode into a single step. Returns the number of merges performed.
+    ///
+    /// Merge criteria (all must be true):
+    /// - Both steps are `Inline` execution
+    /// - Both steps have the same `agent_role.name`
+    /// - Both are `read_only`
+    /// - Neither has `verify_after`
+    /// - The second step depends *only* on the first (linear chain)
+    /// - Combined `estimated_tokens` stays under `max_step_tokens`
+    pub fn collapse_consecutive_read_only(&mut self, max_step_tokens: u32) -> usize {
+        let mut merges = 0;
+        // Iterate until no more merges found (simple single-pass for now).
+        loop {
+            let pair = self.find_collapsible_pair(max_step_tokens);
+            let Some((keep_idx, remove_idx)) = pair else {
+                break;
+            };
+
+            let remove_id = self.steps[remove_idx].id;
+            let remove_desc = self.steps[remove_idx].description.clone();
+            let remove_tokens = self.steps[remove_idx].estimated_tokens;
+            // Collect deps that point to the removed step
+            let remove_dependents: Vec<usize> = self
+                .steps
+                .iter()
+                .enumerate()
+                .filter(|(i, s)| *i != remove_idx && s.depends_on.contains(&remove_id))
+                .map(|(i, _)| i)
+                .collect();
+
+            // Merge: extend description, add tokens
+            self.steps[keep_idx].description =
+                format!("{}\n+ {}", self.steps[keep_idx].description, remove_desc);
+            self.steps[keep_idx].estimated_tokens += remove_tokens;
+
+            // Repoint dependents of removed step to the kept step
+            let keep_id = self.steps[keep_idx].id;
+            for idx in remove_dependents {
+                self.steps[idx].depends_on.retain(|d| *d != remove_id);
+                if !self.steps[idx].depends_on.contains(&keep_id) {
+                    self.steps[idx].depends_on.push(keep_id);
+                }
+            }
+
+            self.steps.remove(remove_idx);
+            merges += 1;
+        }
+        merges
+    }
+
+    /// Find a pair of indices (keep, remove) eligible for collapse.
+    fn find_collapsible_pair(&self, max_step_tokens: u32) -> Option<(usize, usize)> {
+        for (i, a) in self.steps.iter().enumerate() {
+            if !a.agent_role.read_only || a.verify_after || a.execution != StepExecution::Inline {
+                continue;
+            }
+            for (j, b) in self.steps.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                // b must depend only on a
+                if b.depends_on.len() != 1 || b.depends_on[0] != a.id {
+                    continue;
+                }
+                if !b.agent_role.read_only || b.verify_after || b.execution != StepExecution::Inline
+                {
+                    continue;
+                }
+                if a.agent_role.name != b.agent_role.name {
+                    continue;
+                }
+                if a.estimated_tokens + b.estimated_tokens > max_step_tokens {
+                    continue;
+                }
+                return Some((i, j));
+            }
+        }
+        None
+    }
+
     /// Validate the DAG structure: cycles, dangling deps, duplicate IDs.
     pub fn validate(&self) -> Result<(), PlanValidationError> {
         // Check for duplicate step IDs first (HashSet dedup would hide them)
@@ -527,12 +630,12 @@ impl ExecutionPlan {
             }
         }
 
-        // Validate sub-plan depth (max 2 levels per ADR-008)
+        // Validate sub-plan depth (fixed at MAX_SUB_PLAN_DEPTH per ADR-008).
         // Safe to recurse now — sub-plans are cycle-free after validate() above.
-        if self.max_depth() > 2 {
+        if self.max_depth() > MAX_SUB_PLAN_DEPTH {
             return Err(PlanValidationError::SubPlanTooDeep {
                 depth: self.max_depth(),
-                max: 2,
+                max: MAX_SUB_PLAN_DEPTH,
             });
         }
 
@@ -1412,5 +1515,76 @@ mod tests {
         let sub = deserialized.steps[0].sub_plan.as_ref().unwrap();
         assert_eq!(sub.steps.len(), 1);
         assert_eq!(sub.steps[0].name, "sub-task");
+    }
+
+    // -- Step collapse --
+
+    #[test]
+    fn collapse_merges_consecutive_read_only_steps() {
+        let a = PlanStep::new("inspect-auth", "Check auth middleware")
+            .with_role(AgentRole::new("explorer").read_only());
+        let b = PlanStep::new("inspect-config", "Check auth config")
+            .with_depends_on(vec![a.id])
+            .with_role(AgentRole::new("explorer").read_only());
+        let c = PlanStep::new("implement", "Write code")
+            .with_depends_on(vec![b.id])
+            .with_role(AgentRole::new("coder"));
+
+        let mut plan = ExecutionPlan::new(vec![a, b, c], PlanStrategy::Direct);
+        let merges = plan.collapse_consecutive_read_only(10_000);
+
+        assert_eq!(merges, 1);
+        assert_eq!(plan.steps.len(), 2);
+        assert!(plan.steps[0].description.contains("auth middleware"));
+        assert!(plan.steps[0].description.contains("auth config"));
+        // implement step should now depend on the merged step
+        assert_eq!(plan.steps[1].depends_on.len(), 1);
+        assert_eq!(plan.steps[1].depends_on[0], plan.steps[0].id);
+    }
+
+    #[test]
+    fn collapse_does_not_merge_when_verify_after() {
+        let a = PlanStep::new("inspect", "Check code")
+            .with_role(AgentRole::new("explorer").read_only())
+            .with_verify();
+        let b = PlanStep::new("inspect-more", "Check more")
+            .with_depends_on(vec![a.id])
+            .with_role(AgentRole::new("explorer").read_only());
+
+        let mut plan = ExecutionPlan::new(vec![a, b], PlanStrategy::Direct);
+        let merges = plan.collapse_consecutive_read_only(10_000);
+
+        assert_eq!(merges, 0, "should not merge when first step has verify");
+        assert_eq!(plan.steps.len(), 2);
+    }
+
+    #[test]
+    fn collapse_does_not_merge_different_roles() {
+        let a = PlanStep::new("explore", "Explore codebase")
+            .with_role(AgentRole::new("explorer").read_only());
+        let b = PlanStep::new("review", "Review findings")
+            .with_depends_on(vec![a.id])
+            .with_role(AgentRole::new("reviewer").read_only());
+
+        let mut plan = ExecutionPlan::new(vec![a, b], PlanStrategy::Direct);
+        let merges = plan.collapse_consecutive_read_only(10_000);
+
+        assert_eq!(merges, 0, "should not merge different roles");
+    }
+
+    #[test]
+    fn collapse_respects_token_budget() {
+        let mut a =
+            PlanStep::new("inspect-a", "Check A").with_role(AgentRole::new("explorer").read_only());
+        a.estimated_tokens = 6_000;
+        let mut b = PlanStep::new("inspect-b", "Check B")
+            .with_depends_on(vec![a.id])
+            .with_role(AgentRole::new("explorer").read_only());
+        b.estimated_tokens = 6_000;
+
+        let mut plan = ExecutionPlan::new(vec![a, b], PlanStrategy::Direct);
+        let merges = plan.collapse_consecutive_read_only(10_000);
+
+        assert_eq!(merges, 0, "combined 12k > 10k limit");
     }
 }

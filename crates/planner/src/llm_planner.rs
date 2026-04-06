@@ -149,6 +149,29 @@ pub struct PlanCandidate {
 }
 
 impl LlmPlanner {
+    /// Soft semantic check: if prior-art advises research, warn if no research
+    /// step is present. Called after plan selection in both `plan()` and
+    /// `plan_competitive()`.
+    fn check_prior_art_coverage(request: &str, plan: &ExecutionPlan, context: &PlanningContext) {
+        let advice = crate::prior_art::analyze_prior_art(request, context);
+        if advice.needs_research {
+            let has_research_step = plan.steps.iter().any(|s| {
+                let name_lower = s.name.to_lowercase();
+                name_lower.contains("research")
+                    || name_lower.contains("investigate")
+                    || name_lower.contains("explore")
+                    || name_lower.contains("search")
+                    || name_lower.contains("analyze")
+                    || name_lower.contains("survey")
+            });
+            if !has_research_step {
+                debug!(
+                    "prior-art advised research but no research step found in plan; proceeding with warning"
+                );
+            }
+        }
+    }
+
     /// Generate 2 competing plan candidates in parallel and return the best.
     ///
     /// Runs two LLM calls concurrently with different strategy biases
@@ -223,6 +246,9 @@ impl LlmPlanner {
             "competitive planning complete"
         );
 
+        // Semantic check on the winning plan (using the original request)
+        Self::check_prior_art_coverage(request, &winning_plan, context);
+
         Ok((winning_plan, candidates))
     }
 
@@ -254,6 +280,14 @@ impl LlmPlanner {
             .map_err(|e| PlannerError::ValidationError(format!("invalid DAG: {e}")))?;
         plan.check_step_limit(context.task_complexity)
             .map_err(|e| PlannerError::ValidationError(format!("step limit: {e}")))?;
+
+        // Post-generation: collapse consecutive read-only steps with same role (P2 2.3).
+        let max_step_tokens = context.budget.max_total_tokens.min(50_000) as u32;
+        let collapsed = plan.collapse_consecutive_read_only(max_step_tokens);
+        if collapsed > 0 {
+            tracing::debug!(collapsed, "collapsed consecutive read-only steps");
+        }
+
         plan.team = Self::generate_team(&plan, context);
 
         Ok((plan, tokens_used))
@@ -358,6 +392,9 @@ impl Planner for LlmPlanner {
         plan.check_step_limit(context.task_complexity)
             .map_err(|e| PlannerError::ValidationError(format!("plan exceeds step limit: {e}")))?;
 
+        // Semantic check on the final plan (using the original request)
+        Self::check_prior_art_coverage(request, &plan, context);
+
         // Generate team config if warranted
         plan.team = Self::generate_team(&plan, context);
 
@@ -384,6 +421,7 @@ impl Planner for LlmPlanner {
             &failed_step.name,
             error_context,
             &completed_names,
+            failed_step.output.as_deref(),
         );
         let max_tokens = context.planning_token_budget();
 

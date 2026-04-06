@@ -69,3 +69,15 @@ The policy engine uses the repo profile to:
 - **Heuristic detection**: Auto-detection is based on manifest file presence and content parsing. Unusual project layouts or custom build systems may produce incorrect profiles, requiring manual `oco.toml` overrides.
 - **Override granularity**: The override-based merge means users must re-specify an entire section if they want to change one command. A future iteration could support per-field overrides if this proves too coarse.
 - **Maintenance burden**: As new stacks and tools emerge, the detection logic must be updated. This is mitigated by the `oco.toml` escape hatch — unsupported stacks can always be configured manually.
+
+## Q3 2026 Extension: Policy Packs
+
+`RepoProfile` now includes a `policy_pack` field (`fast`, `balanced`, `strict`) that governs the trust contract for the repository:
+
+- **fast**: build-only gate, stale completion allowed.
+- **balanced** (default): build + test required, stale completion blocked.
+- **strict**: full verification suite, stale blocked, unverified sensitive paths degrade the trust verdict.
+
+The policy pack is parsed from `oco.toml` via `[profile] policy_pack = "strict"` and defaults to `balanced` when omitted. It feeds into `PolicyPackGate` (completion gating), `effective_tier()` (minimum verification tier), and `TrustVerdict::compute()` (run summary verdict).
+
+See also: ADR-009 (Session Continuity Model) for how the policy pack influences post-compact behavior.

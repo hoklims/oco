@@ -1,0 +1,1766 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OCO — Q1 → Q11 : Reprendre le Lead</title>
+<style>
+  /* ═══════════════════════════════════════════
+     RESET & BASE
+     ═══════════════════════════════════════════ */
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #08080d;
+    --bg-card: #10101a;
+    --bg-card-alt: #141422;
+    --border: #1e1e30;
+    --border-glow: #2a2a4a;
+    --text: #c8c8d8;
+    --text-dim: #6a6a80;
+    --text-bright: #eeeef4;
+    --accent: #4af;
+    --accent-dim: #2a7acc;
+    --before: #f59e0b;
+    --before-dim: #92610d;
+    --after: #22d3ee;
+    --after-dim: #0e7c8c;
+    --green: #34d399;
+    --red: #f87171;
+    --purple: #a78bfa;
+    --pink: #f472b6;
+    --mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  html { scroll-behavior: smooth; font-size: 16px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.65;
+    overflow-x: hidden;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono { font-family: var(--mono); font-size: 0.88em; }
+
+  /* ═══════════════════════════════════════════
+     LAYOUT
+     ═══════════════════════════════════════════ */
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 2rem; }
+  section { padding: 5rem 0; }
+  .section-label {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.6rem;
+    opacity: 0.8;
+  }
+  h2 {
+    font-size: clamp(1.8rem, 4vw, 2.6rem);
+    color: var(--text-bright);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin-bottom: 1.5rem;
+  }
+  h3 {
+    font-size: 1.15rem;
+    color: var(--text-bright);
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+  }
+  .subtitle {
+    font-size: 1.1rem;
+    color: var(--text-dim);
+    max-width: 640px;
+    margin-bottom: 2.5rem;
+  }
+
+  /* ═══════════════════════════════════════════
+     HERO
+     ═══════════════════════════════════════════ */
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: -30%;
+    left: -10%;
+    width: 600px;
+    height: 600px;
+    background: radial-gradient(circle, rgba(74,170,255,0.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero-tag {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--accent);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 1.2rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .hero-tag .dot { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; animation: pulse 2s ease infinite; }
+  .hero h1 {
+    font-size: clamp(2.5rem, 6vw, 4.5rem);
+    font-weight: 800;
+    color: var(--text-bright);
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+    margin-bottom: 1.5rem;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero-desc {
+    font-size: 1.15rem;
+    color: var(--text-dim);
+    max-width: 580px;
+    line-height: 1.7;
+    margin-bottom: 3rem;
+  }
+  .hero-stats {
+    display: flex;
+    gap: 3rem;
+    flex-wrap: wrap;
+  }
+  .hero-stat-value {
+    font-size: 2.4rem;
+    font-weight: 800;
+    color: var(--text-bright);
+    font-family: var(--mono);
+    line-height: 1;
+  }
+  .hero-stat-label {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    margin-top: 0.3rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .scroll-hint {
+    position: absolute;
+    bottom: 2rem;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    text-align: center;
+    animation: float 3s ease-in-out infinite;
+  }
+  .scroll-hint .arrow { font-size: 1.4rem; display: block; margin-top: 0.3rem; }
+
+  /* ═══════════════════════════════════════════
+     BEFORE / AFTER — THE MAIN EVENT
+     ═══════════════════════════════════════════ */
+  .ba-section { padding: 4rem 0 5rem; }
+  .ba-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-top: 2rem;
+  }
+  .ba-col { padding: 0; }
+  .ba-header {
+    padding: 1.5rem 2rem;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .ba-col.before .ba-header {
+    background: rgba(245, 158, 11, 0.06);
+    color: var(--before);
+    border-bottom: 1px solid rgba(245, 158, 11, 0.15);
+  }
+  .ba-col.after .ba-header {
+    background: rgba(34, 211, 238, 0.06);
+    color: var(--after);
+    border-bottom: 1px solid rgba(34, 211, 238, 0.15);
+    border-left: 1px solid var(--border);
+  }
+  .ba-header .tag-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .ba-col.before .tag-dot { background: var(--before); }
+  .ba-col.after .tag-dot { background: var(--after); box-shadow: 0 0 10px rgba(34,211,238,0.4); }
+
+  .ba-row {
+    display: contents;
+  }
+  .ba-cell {
+    padding: 1.1rem 2rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.92rem;
+    transition: background 0.2s;
+  }
+  .ba-cell:hover { background: rgba(255,255,255,0.015); }
+  .ba-col.after .ba-cell { border-left: 1px solid var(--border); }
+  .ba-cell .label {
+    font-size: 0.72rem;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    margin-bottom: 0.35rem;
+  }
+  .ba-cell .value {
+    font-weight: 500;
+    color: var(--text-bright);
+  }
+  .ba-cell .detail {
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin-top: 0.25rem;
+  }
+  .ba-cell .value .num {
+    font-family: var(--mono);
+    font-weight: 700;
+  }
+  .ba-cell .value .num.glow { color: var(--after); }
+  .ba-cell .badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: var(--mono);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .badge.old { background: rgba(245,158,11,0.12); color: var(--before); }
+  .badge.new { background: rgba(34,211,238,0.12); color: var(--after); }
+  .badge.none { background: rgba(255,255,255,0.04); color: var(--text-dim); }
+  .badge.green { background: rgba(52,211,153,0.12); color: var(--green); }
+
+  /* ═══════════════════════════════════════════
+     TIMELINE
+     ═══════════════════════════════════════════ */
+  .timeline { position: relative; padding-left: 3.5rem; margin-top: 2rem; }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 14px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--accent), var(--purple), var(--pink), var(--green));
+    border-radius: 2px;
+  }
+  .tl-item {
+    position: relative;
+    padding-bottom: 2.8rem;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.5s ease, transform 0.5s ease;
+  }
+  .tl-item.visible { opacity: 1; transform: translateY(0); }
+  .tl-dot {
+    position: absolute;
+    left: -3.5rem;
+    top: 0.15rem;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    font-weight: 800;
+    z-index: 2;
+  }
+  .tl-dot.foundation { background: #1a1a2e; border: 2px solid var(--accent); color: var(--accent); }
+  .tl-dot.core { background: #1a1a2e; border: 2px solid var(--purple); color: var(--purple); }
+  .tl-dot.quality { background: #1a1a2e; border: 2px solid var(--green); color: var(--green); }
+  .tl-dot.config { background: #1a1a2e; border: 2px solid var(--pink); color: var(--pink); }
+
+  .tl-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.4rem 1.6rem;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  .tl-card:hover {
+    border-color: var(--border-glow);
+    box-shadow: 0 4px 30px rgba(0,0,0,0.3);
+  }
+  .tl-phase {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 0.4rem;
+  }
+  .tl-title {
+    font-size: 1.12rem;
+    font-weight: 700;
+    color: var(--text-bright);
+    margin-bottom: 0.5rem;
+  }
+  .tl-desc {
+    font-size: 0.88rem;
+    color: var(--text);
+    margin-bottom: 0.8rem;
+    line-height: 1.6;
+  }
+  .tl-tags {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .tl-tag {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.04);
+    color: var(--text-dim);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .tl-metaphor {
+    font-style: italic;
+    color: var(--text-dim);
+    font-size: 0.84rem;
+    border-left: 2px solid var(--border-glow);
+    padding-left: 0.8rem;
+    margin-top: 0.6rem;
+  }
+
+  /* ═══════════════════════════════════════════
+     ARCHITECTURE MAP
+     ═══════════════════════════════════════════ */
+  .arch-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.2rem;
+    margin-top: 2rem;
+  }
+  .arch-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem;
+    transition: border-color 0.3s, transform 0.2s;
+    cursor: default;
+  }
+  .arch-card:hover {
+    border-color: var(--border-glow);
+    transform: translateY(-2px);
+  }
+  .arch-icon {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.1rem;
+    margin-bottom: 1rem;
+  }
+  .arch-card h3 { margin-bottom: 0.5rem; font-size: 1.05rem; }
+  .arch-card .arch-desc { font-size: 0.85rem; color: var(--text); margin-bottom: 0.8rem; }
+  .arch-card .arch-path {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    background: rgba(255,255,255,0.03);
+    padding: 0.3rem 0.6rem;
+    border-radius: 4px;
+    display: inline-block;
+  }
+
+  /* ═══════════════════════════════════════════
+     RUN FLOW
+     ═══════════════════════════════════════════ */
+  .flow-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-top: 2rem;
+    position: relative;
+  }
+  .flow-step {
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    gap: 1.2rem;
+    padding: 1.5rem 0;
+    position: relative;
+    opacity: 0;
+    transform: translateX(-15px);
+    transition: all 0.5s ease;
+  }
+  .flow-step.visible { opacity: 1; transform: translateX(0); }
+  .flow-step + .flow-step { border-top: 1px solid var(--border); }
+  .flow-num {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-weight: 800;
+    font-size: 1rem;
+    flex-shrink: 0;
+    border: 1px solid;
+  }
+  .flow-step h4 {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text-bright);
+    margin-bottom: 0.35rem;
+  }
+  .flow-step p {
+    font-size: 0.88rem;
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .flow-step .flow-artifact {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-top: 0.5rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    padding: 0.2rem 0.6rem;
+    background: rgba(52,211,153,0.08);
+    color: var(--green);
+    border-radius: 4px;
+    border: 1px solid rgba(52,211,153,0.15);
+  }
+
+  /* ═══════════════════════════════════════════
+     CLI REFERENCE
+     ═══════════════════════════════════════════ */
+  .cli-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    margin-top: 2rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .cli-group-header {
+    padding: 0.8rem 1.5rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    background: rgba(74,170,255,0.04);
+    color: var(--accent);
+    border-bottom: 1px solid var(--border);
+  }
+  .cli-row {
+    display: grid;
+    grid-template-columns: minmax(280px, 380px) 1fr;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.2s;
+  }
+  .cli-row:last-child { border-bottom: none; }
+  .cli-row:hover { background: rgba(255,255,255,0.015); }
+  .cli-cmd {
+    padding: 0.7rem 1.5rem;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--green);
+    border-right: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    word-break: break-all;
+  }
+  .cli-desc {
+    padding: 0.7rem 1.5rem;
+    font-size: 0.85rem;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+  }
+
+  /* ═══════════════════════════════════════════
+     ARTIFACTS
+     ═══════════════════════════════════════════ */
+  .art-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 1rem;
+    margin-top: 2rem;
+  }
+  .art-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.3rem;
+    transition: border-color 0.3s;
+    position: relative;
+    overflow: hidden;
+  }
+  .art-card:hover { border-color: var(--border-glow); }
+  .art-card .art-file {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-bottom: 0.6rem;
+    word-break: break-all;
+  }
+  .art-card h4 {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--text-bright);
+    margin-bottom: 0.4rem;
+  }
+  .art-card p { font-size: 0.82rem; color: var(--text); }
+  .art-card .art-when {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-top: 0.6rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono);
+  }
+  .art-card .art-stripe {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+  }
+
+  /* ═══════════════════════════════════════════
+     RESTART PLAN
+     ═══════════════════════════════════════════ */
+  .restart-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 1.2rem;
+    margin-top: 2rem;
+  }
+  .restart-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem;
+    position: relative;
+  }
+  .restart-card .restart-time {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--accent);
+    letter-spacing: 0.08em;
+    margin-bottom: 0.8rem;
+  }
+  .restart-card h4 {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text-bright);
+    margin-bottom: 0.6rem;
+  }
+  .restart-card ol {
+    padding-left: 1.2rem;
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+  .restart-card ol li { margin-bottom: 0.4rem; }
+  .restart-card ol li code {
+    background: rgba(255,255,255,0.04);
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    color: var(--green);
+  }
+
+  /* ═══════════════════════════════════════════
+     WARNINGS
+     ═══════════════════════════════════════════ */
+  .warn-list {
+    margin-top: 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+  }
+  .warn-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--before);
+    border-radius: 0 8px 8px 0;
+    padding: 1rem 1.3rem;
+  }
+  .warn-item h4 {
+    font-size: 0.88rem;
+    color: var(--before);
+    font-weight: 600;
+    margin-bottom: 0.3rem;
+  }
+  .warn-item p { font-size: 0.82rem; color: var(--text); }
+
+  /* ═══════════════════════════════════════════
+     COUNTERS ANIMATION
+     ═══════════════════════════════════════════ */
+  .counter { display: inline-block; }
+
+  /* ═══════════════════════════════════════════
+     NAV
+     ═══════════════════════════════════════════ */
+  nav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: rgba(8,8,13,0.85);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    transform: translateY(-100%);
+    transition: transform 0.3s ease;
+  }
+  nav.visible { transform: translateY(0); }
+  nav .nav-inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 2rem;
+    display: flex;
+    align-items: center;
+    height: 52px;
+    gap: 2rem;
+    overflow-x: auto;
+  }
+  nav .nav-brand {
+    font-family: var(--mono);
+    font-weight: 800;
+    font-size: 0.88rem;
+    color: var(--text-bright);
+    flex-shrink: 0;
+  }
+  nav a {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    transition: color 0.2s;
+    white-space: nowrap;
+  }
+  nav a:hover, nav a.active { color: var(--text-bright); text-decoration: none; }
+
+  /* ═══════════════════════════════════════════
+     FOOTER
+     ═══════════════════════════════════════════ */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 3rem 0;
+    text-align: center;
+  }
+  footer p {
+    font-size: 0.82rem;
+    color: var(--text-dim);
+  }
+  footer .exec-summary {
+    max-width: 680px;
+    margin: 0 auto 2rem;
+    font-size: 1rem;
+    color: var(--text);
+    line-height: 1.7;
+    text-align: left;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 2rem;
+  }
+  footer .exec-summary h3 { color: var(--accent); margin-bottom: 1rem; }
+
+  /* ═══════════════════════════════════════════
+     ANIMATIONS
+     ═══════════════════════════════════════════ */
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateX(-50%) translateY(0); }
+    50% { transform: translateX(-50%) translateY(-6px); }
+  }
+
+  /* ═══════════════════════════════════════════
+     RESPONSIVE
+     ═══════════════════════════════════════════ */
+  @media (max-width: 768px) {
+    .ba-grid { grid-template-columns: 1fr; }
+    .ba-col.after .ba-header,
+    .ba-col.after .ba-cell { border-left: none; }
+    .cli-row { grid-template-columns: 1fr; }
+    .cli-cmd { border-right: none; border-bottom: 1px dashed var(--border); }
+    .hero-stats { gap: 1.5rem; }
+    .flow-step { grid-template-columns: 40px 1fr; gap: 0.8rem; }
+    .flow-num { width: 40px; height: 40px; font-size: 0.85rem; }
+    .container { padding: 0 1.2rem; }
+    .timeline { padding-left: 2.8rem; }
+    .tl-dot { left: -2.8rem; width: 26px; height: 26px; font-size: 0.55rem; }
+  }
+
+  /* ═══════════════════════════════════════════
+     TABS (for filter)
+     ═══════════════════════════════════════════ */
+  .tab-bar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .tab-btn {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    padding: 0.4rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 0.04em;
+  }
+  .tab-btn:hover { border-color: var(--border-glow); color: var(--text); }
+  .tab-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(74,170,255,0.06); }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ NAV ═══════════════ -->
+<nav id="nav">
+  <div class="nav-inner">
+    <span class="nav-brand">OCO</span>
+    <a href="#before-after">Avant/Apres</a>
+    <a href="#timeline">Timeline</a>
+    <a href="#archi">Architecture</a>
+    <a href="#run-flow">Un run</a>
+    <a href="#cli">CLI</a>
+    <a href="#artifacts">Artefacts</a>
+    <a href="#restart">Reprise</a>
+    <a href="#warnings">Vigilance</a>
+  </div>
+</nav>
+
+<!-- ═══════════════ HERO ═══════════════ -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-tag"><span class="dot"></span> Open Context Orchestrator</div>
+    <h1>De Q1 a Q11 :<br>reprendre <span>le lead</span></h1>
+    <p class="hero-desc">
+      OCO est passe d'un orchestrateur de code basique a un systeme de qualite continue
+      avec plans emergents, mission memory, scorecards 7 dimensions, quality gates CI-ready
+      et audit trail de baselines. Voici tout ce qu'il faut savoir.
+    </p>
+    <div class="hero-stats">
+      <div>
+        <div class="hero-stat-value"><span class="counter" data-target="1000">0</span>+</div>
+        <div class="hero-stat-label">Tests</div>
+      </div>
+      <div>
+        <div class="hero-stat-value"><span class="counter" data-target="14">0</span></div>
+        <div class="hero-stat-label">Crates Rust</div>
+      </div>
+      <div>
+        <div class="hero-stat-value"><span class="counter" data-target="16">0</span></div>
+        <div class="hero-stat-label">ADRs</div>
+      </div>
+      <div>
+        <div class="hero-stat-value"><span class="counter" data-target="7">0</span></div>
+        <div class="hero-stat-label">Dimensions scoring</div>
+      </div>
+      <div>
+        <div class="hero-stat-value">Q<span class="counter" data-target="11">0</span></div>
+        <div class="hero-stat-label">Phases livrees</div>
+      </div>
+    </div>
+  </div>
+  <div class="scroll-hint">
+    Descends pour explorer
+    <span class="arrow">&#8595;</span>
+  </div>
+</section>
+
+<!-- ═══════════════ BEFORE / AFTER ═══════════════ -->
+<section class="ba-section" id="before-after">
+  <div class="container">
+    <div class="section-label">Le saut de maturite</div>
+    <h2>Avant / Apres</h2>
+    <p class="subtitle">Ce qui a change entre le debut du projet et maintenant, cote a cote.</p>
+
+    <div class="ba-grid">
+      <!-- BEFORE column -->
+      <div class="ba-col before">
+        <div class="ba-header"><span class="tag-dot"></span> OCO au debut (Q0)</div>
+
+        <div class="ba-cell">
+          <div class="label">Crates</div>
+          <div class="value"><span class="num">11</span> crates</div>
+          <div class="detail">shared-types &rarr; dev-cli</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Tests</div>
+          <div class="value">~<span class="num">110</span> tests</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Planification</div>
+          <div class="value">Boucle plate (loop_runner)</div>
+          <div class="detail">5 actions en sequence, pas de parallelisme</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Verification</div>
+          <div class="value">Booleen <code>has_verified</code></div>
+          <div class="detail">Pas de suivi par fichier, pas de freshness</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Memoire</div>
+          <div class="value">Buffer d'observations plat</div>
+          <div class="detail">Perdu a chaque compression / session</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Evaluation</div>
+          <div class="value"><span class="badge none">Pass / Fail</span></div>
+          <div class="detail">Binaire, sans details</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Quality Gates</div>
+          <div class="value"><span class="badge none">Aucun</span></div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Review</div>
+          <div class="value">Manuelle</div>
+          <div class="detail">5 artefacts separes a assembler</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Baseline</div>
+          <div class="value">Save brut</div>
+          <div class="detail">Ecrasement silencieux, pas de trace</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Multi-agent</div>
+          <div class="value"><span class="badge none">Non supporte</span></div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">LLM Routing</div>
+          <div class="value">Un seul modele par run</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Providers</div>
+          <div class="value">anthropic, ollama, stub</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">CLI</div>
+          <div class="value"><span class="num">6</span> commandes</div>
+          <div class="detail">index, search, run, serve, eval, doctor</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Artefacts par run</div>
+          <div class="value">trace.jsonl</div>
+        </div>
+        <div class="ba-cell" style="border-bottom:none;">
+          <div class="label">ADRs</div>
+          <div class="value"><span class="num">7</span></div>
+        </div>
+      </div>
+
+      <!-- AFTER column -->
+      <div class="ba-col after">
+        <div class="ba-header"><span class="tag-dot"></span> OCO aujourd'hui (Q11)</div>
+
+        <div class="ba-cell">
+          <div class="label">Crates</div>
+          <div class="value"><span class="num glow">14</span> crates <span class="badge new">+3</span></div>
+          <div class="detail">+ planner, claude-adapter, architecture-tests</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Tests</div>
+          <div class="value"><span class="num glow">1000+</span> tests <span class="badge new">&times;9</span></div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Planification</div>
+          <div class="value"><span class="badge new">DAG emergent</span></div>
+          <div class="detail">Plans hierarchiques, sous-plans, parallelisme natif</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Verification</div>
+          <div class="value"><span class="badge new">Par fichier + freshness</span></div>
+          <div class="detail">VerificationState, re-verification forcee si stale</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Memoire</div>
+          <div class="value"><span class="badge new">3 couches</span></div>
+          <div class="detail">WorkingMemory + CompactSnapshot + MissionMemory durable</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Evaluation</div>
+          <div class="value"><span class="badge new">7 dimensions</span></div>
+          <div class="detail">RunScorecard pondere, comparaison, regression</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Quality Gates</div>
+          <div class="value"><span class="badge green">CI-ready</span></div>
+          <div class="detail">Pass(0) / Warn(1) / Fail(2), 3 politiques</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Review</div>
+          <div class="value"><span class="badge new">ReviewPacket unifie</span></div>
+          <div class="detail">MergeReadiness: Ready / Conditional / NotReady</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Baseline</div>
+          <div class="value"><span class="badge new">Promotion + audit trail</span></div>
+          <div class="detail">Recommendation, diff par dim, backup atomique, history</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Multi-agent</div>
+          <div class="value"><span class="badge new">3 topologies</span></div>
+          <div class="detail">Mesh (Agent Teams), HubSpoke (subagents), Pipeline</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">LLM Routing</div>
+          <div class="value"><span class="badge new">Multi-modele par step</span></div>
+          <div class="detail">opus / sonnet / haiku + effort low/medium/high</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Providers</div>
+          <div class="value">+ <span class="badge new">claude-code</span> (defaut)</div>
+          <div class="detail">Delegue au CLI Claude Code, auth existante</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">CLI</div>
+          <div class="value"><span class="num glow">20+</span> commandes</div>
+          <div class="detail">+ eval-compare, eval-gate, baseline-*, review-pack, handoff...</div>
+        </div>
+        <div class="ba-cell">
+          <div class="label">Artefacts par run</div>
+          <div class="value"><span class="badge new">5 types</span></div>
+          <div class="detail">trace + summary + mission + scorecard + review packet</div>
+        </div>
+        <div class="ba-cell" style="border-bottom:none;">
+          <div class="label">ADRs</div>
+          <div class="value"><span class="num glow">16</span> <span class="badge new">+9</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ TIMELINE ═══════════════ -->
+<section id="timeline">
+  <div class="container">
+    <div class="section-label">La progression</div>
+    <h2>Q0 &rarr; Q11 : Phase par phase</h2>
+    <p class="subtitle">Chaque phase a resolu un probleme precis et ajoute une brique durable.</p>
+
+    <div class="tab-bar">
+      <button class="tab-btn active" data-filter="all">Toutes</button>
+      <button class="tab-btn" data-filter="foundation">Fondations</button>
+      <button class="tab-btn" data-filter="core">Coeur</button>
+      <button class="tab-btn" data-filter="quality">Qualite</button>
+      <button class="tab-btn" data-filter="config">Config</button>
+    </div>
+
+    <div class="timeline">
+
+      <div class="tl-item" data-cat="foundation">
+        <div class="tl-dot foundation">Q0</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--accent)">Fondations</div>
+          <div class="tl-title">Stack polyglot + orchestration deterministe</div>
+          <div class="tl-desc">
+            Rust pour le noyau (perf, FTS5, Tree-sitter), Python pour le ML optionnel,
+            TypeScript pour VS Code. Modele a 5 actions avec routage 100% deterministe&nbsp;&mdash;
+            zero appel LLM pour les decisions de politique.
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-001</span>
+            <span class="tl-tag">ADR-002</span>
+            <span class="tl-tag">ADR-003</span>
+            <span class="tl-tag">11 crates</span>
+            <span class="tl-tag">~110 tests</span>
+          </div>
+          <div class="tl-metaphor">Le chassis de la voiture : moteur, direction, freins.</div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="core">
+        <div class="tl-dot core">Q1</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--purple)">Verification & Raisonnement</div>
+          <div class="tl-title">La verification devient serieuse, la memoire s'organise</div>
+          <div class="tl-desc">
+            <strong>Probleme :</strong> Un booleen <code>has_verified</code> ment.
+            Modifier un fichier apres verification ne declenchait rien.
+            Et le buffer perdait les decouvertes apres compression.<br>
+            <strong>Solution :</strong> <code>VerificationState</code> par fichier avec freshness
+            + <code>WorkingMemory</code> structuree (findings, hypotheses, faits verifies).
+            Validation empirique des hooks Claude Code.
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-004</span>
+            <span class="tl-tag">ADR-005</span>
+            <span class="tl-tag">ADR-007</span>
+            <span class="tl-tag">verification.rs</span>
+            <span class="tl-tag">memory.rs</span>
+          </div>
+          <div class="tl-metaphor">Du post-it "verifie" au cahier de labo avec dates et niveau de confiance.</div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="core">
+        <div class="tl-dot core">Q2</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--purple)">Orchestration emergente</div>
+          <div class="tl-title">Les plans deviennent des DAGs dynamiques</div>
+          <div class="tl-desc">
+            <strong>Probleme :</strong> Plans plats, pas de parallelisme, templates rigides.<br>
+            <strong>Solution :</strong> <code>ExecutionPlan</code> comme DAG, deux planners
+            (Direct pour Trivial/Low, LLM pour Medium+), <code>GraphRunner</code> avec execution parallele,
+            <code>LlmRouter</code> multi-modele, <code>CapabilityRegistry</code> unifie,
+            Agent Teams (Mesh/HubSpoke/Pipeline).
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-008</span>
+            <span class="tl-tag">plan.rs</span>
+            <span class="tl-tag">capability.rs</span>
+            <span class="tl-tag">team.rs</span>
+            <span class="tl-tag">planner/</span>
+            <span class="tl-tag">graph_runner.rs</span>
+          </div>
+          <div class="tl-metaphor">D'une to-do list plate a un chef d'orchestre qui compose en temps reel.</div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="core">
+        <div class="tl-dot core">Q3</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--purple)">Trust & Policy Packs</div>
+          <div class="tl-title">La confiance devient un signal gradue</div>
+          <div class="tl-desc">
+            <strong>Probleme :</strong> Pas de profil par repo, verification hardcodee, pas de verdict de confiance.<br>
+            <strong>Solution :</strong> <code>RepoProfile</code> auto-detecte,
+            <code>PolicyPack</code> (Fast/Balanced/Strict),
+            <code>TrustVerdict</code> structure dans <code>RunSummary</code>.
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-006</span>
+            <span class="tl-tag">profile.rs</span>
+            <span class="tl-tag">PolicyPack</span>
+            <span class="tl-tag">TrustVerdict</span>
+          </div>
+          <div class="tl-metaphor">Le systeme s'adapte au terrain au lieu d'appliquer une politique aveugle.</div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="core">
+        <div class="tl-dot core">Q4</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--purple)">Continuite & Mission Memory</div>
+          <div class="tl-title">La memoire traverse les sessions</div>
+          <div class="tl-desc">
+            <strong>Probleme :</strong> La compaction efface l'etat. Chaque <code>oco run</code> repart de zero.<br>
+            <strong>Solution :</strong> <code>CompactSnapshot</code> pour survivre aux compactions intra-session.
+            <code>MissionMemory</code> comme artefact durable inter-session (faits, hypotheses, plan, verification, trust verdict).
+            Persiste dans <code>.oco/runs/&lt;id&gt;/mission.json</code>.
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-009</span>
+            <span class="tl-tag">ADR-010</span>
+            <span class="tl-tag">mission.rs</span>
+            <span class="tl-tag">CompactSnapshot</span>
+          </div>
+          <div class="tl-metaphor">Le carnet de transmission entre deux equipes de nuit.</div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="quality">
+        <div class="tl-dot quality">Q5</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--green)">Scorecard multi-dimensionnelle</div>
+          <div class="tl-title">7 dimensions pour evaluer un run</div>
+          <div class="tl-desc">
+            <strong>Probleme :</strong> Pass/fail binaire, pas de detail, pas de regression detection.<br>
+            <strong>Solution :</strong> <code>RunScorecard</code> avec 7 dimensions ponderees
+            (Success &times;3, TrustVerdict &times;2, VerificationCoverage &times;1.5, MissionContinuity &times;1,
+            CostEfficiency &times;1, ErrorRate &times;1, ReplanStability &times;0.5).
+            <code>ScorecardComparison</code> pairwise + <code>BatchComparison</code>.
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-011</span>
+            <span class="tl-tag">scorecard.rs</span>
+            <span class="tl-tag">ScorecardBuilder</span>
+            <span class="tl-tag">oco eval-compare</span>
+          </div>
+          <div class="tl-metaphor">Du "recu/recale" au bulletin de notes avec commentaires du prof.</div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="quality">
+        <div class="tl-dot quality">Q6</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--green)">Quality Gates</div>
+          <div class="tl-title">Pass / Warn / Fail pour la CI</div>
+          <div class="tl-desc">
+            <strong>Probleme :</strong> Les comparaisons montrent des deltas mais pas de verdict actionnable.<br>
+            <strong>Solution :</strong> <code>GateVerdict</code> (exit 0/1/2), <code>GatePolicy</code>
+            avec 3 presets (Strict/Balanced/Lenient), <code>GateResult::evaluate()</code> pure et deterministe.
+            <code>EvalBaseline</code> pour les snapshots.
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-012</span>
+            <span class="tl-tag">gate.rs</span>
+            <span class="tl-tag">oco eval-gate</span>
+          </div>
+          <div class="tl-metaphor">Le controle technique : la voiture passe ou ne passe pas.</div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="config">
+        <div class="tl-dot config">Q7</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--pink)">Config repo des gates</div>
+          <div class="tl-title">Le contrat de qualite vit dans le repo</div>
+          <div class="tl-desc">
+            Section <code>[gate]</code> dans <code>oco.toml</code> : baseline_path, default_policy, overrides de seuils.
+            <code>oco eval-gate</code> fonctionne sans argument si la config existe.
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-013</span>
+            <span class="tl-tag">GateConfig</span>
+            <span class="tl-tag">oco.toml [gate]</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="quality">
+        <div class="tl-dot quality">Q8</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--green)">Fraicheur des baselines</div>
+          <div class="tl-title">Les baselines perimees sont detectees</div>
+          <div class="tl-desc">
+            <code>BaselineFreshness</code> (Fresh/Aging/Stale/Unknown) avec seuils configurables
+            (defaut : 14j fresh, 30j stale). <code>GateReviewArtifact</code> combinant gate + freshness + recommandations en Markdown et JSON.
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-014</span>
+            <span class="tl-tag">BaselineFreshness</span>
+            <span class="tl-tag">fresh_days / stale_days</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="quality">
+        <div class="tl-dot quality">Q9</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--green)">Review Packet unifie</div>
+          <div class="tl-title">Un seul document pour decider</div>
+          <div class="tl-desc">
+            <code>ReviewPacket</code> = scorecard + gate + mission + freshness.
+            <code>MergeReadiness</code> : Ready / ConditionallyReady / NotReady / Unknown.
+            3 formats de sortie (terminal / markdown / json).
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-015</span>
+            <span class="tl-tag">review_packet.rs</span>
+            <span class="tl-tag">oco runs review-pack</span>
+          </div>
+          <div class="tl-metaphor">Le dossier complet du patient remis au medecin, pas 5 feuilles volantes.</div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="config">
+        <div class="tl-dot config">Q10</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--pink)">Config review</div>
+          <div class="tl-title">Le review packet se configure par repo</div>
+          <div class="tl-desc">
+            Section <code>[review]</code> dans <code>oco.toml</code> : <code>auto_save</code>,
+            <code>default_format</code> (terminal/markdown/json), <code>output_dir</code> optionnel.
+            Pas d'ADR dedie &mdash; extension naturelle de Q9.
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ReviewConfig</span>
+            <span class="tl-tag">oco.toml [review]</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="tl-item" data-cat="quality">
+        <div class="tl-dot quality">Q11</div>
+        <div class="tl-card">
+          <div class="tl-phase" style="color:var(--green)">Baseline Promotion & Audit Trail</div>
+          <div class="tl-title">Chaque changement de baseline est trace et justifie</div>
+          <div class="tl-desc">
+            <code>PromotionRecommendation</code> (Promote/Review/Reject) calcule depuis gate + freshness.
+            <code>BaselineDiffSummary</code> par dimension. <code>PromotionRecord</code> durable.
+            <code>BaselineHistory</code> append-only. Reject bloque par defaut, <code>--force</code> documente dans l'historique.
+          </div>
+          <div class="tl-tags">
+            <span class="tl-tag">ADR-016</span>
+            <span class="tl-tag">PromotionRecord</span>
+            <span class="tl-tag">BaselineHistory</span>
+            <span class="tl-tag">oco baseline-promote</span>
+          </div>
+          <div class="tl-metaphor">Le registre notarie : chaque transfert signe, date, archive.</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ ARCHITECTURE ═══════════════ -->
+<section id="archi">
+  <div class="container">
+    <div class="section-label">Les grandes briques</div>
+    <h2>Architecture actuelle</h2>
+    <p class="subtitle">Les blocs fondamentaux du systeme et ou les trouver.</p>
+
+    <div class="arch-grid">
+
+      <div class="arch-card">
+        <div class="arch-icon" style="background:rgba(167,139,250,0.12);color:var(--purple);">&#9881;</div>
+        <h3>Orchestration</h3>
+        <p class="arch-desc">Machine a etats, DAG emergent, execution parallele, verify gates, replan si echec. Le coeur battant.</p>
+        <div class="arch-path">crates/orchestrator-core/</div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-icon" style="background:rgba(74,170,255,0.12);color:var(--accent);">&#9830;</div>
+        <h3>Planner</h3>
+        <p class="arch-desc">DirectPlanner (trivial, sans LLM) + LlmPlanner (Medium+, DAG structure). Chaque plan est unique.</p>
+        <div class="arch-path">crates/planner/</div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-icon" style="background:rgba(52,211,153,0.12);color:var(--green);">&#9733;</div>
+        <h3>Mission Memory</h3>
+        <p class="arch-desc">Artefact durable inter-session : faits, hypotheses, plan, verification, trust verdict. Le carnet de bord.</p>
+        <div class="arch-path">crates/shared-types/src/mission.rs</div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-icon" style="background:rgba(244,114,182,0.12);color:var(--pink);">&#9878;</div>
+        <h3>Scorecards</h3>
+        <p class="arch-desc">7 dimensions ponderees (0.0&ndash;1.0). Comparaison pairwise. Detection de regressions. Le bulletin de notes.</p>
+        <div class="arch-path">crates/shared-types/src/scorecard.rs</div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-icon" style="background:rgba(248,113,113,0.12);color:var(--red);">&#9888;</div>
+        <h3>Quality Gates</h3>
+        <p class="arch-desc">Pass/Warn/Fail avec exit codes CI. 3 politiques (Strict/Balanced/Lenient). Le portique de securite.</p>
+        <div class="arch-path">crates/shared-types/src/gate.rs</div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-icon" style="background:rgba(34,211,238,0.12);color:var(--after);">&#9998;</div>
+        <h3>Review Packet</h3>
+        <p class="arch-desc">Bundle unifie : scorecard + gate + mission + freshness &rarr; MergeReadiness. Le document de decision.</p>
+        <div class="arch-path">crates/shared-types/src/review_packet.rs</div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-icon" style="background:rgba(245,158,11,0.12);color:var(--before);">&#9881;</div>
+        <h3>Baseline Lifecycle</h3>
+        <p class="arch-desc">Freshness tracking, promotion securisee, diff par dimension, audit trail append-only.</p>
+        <div class="arch-path">.oco/baseline.json + baseline-history.json</div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-icon" style="background:rgba(255,255,255,0.06);color:var(--text-dim);">&#8801;</div>
+        <h3>Config Repo</h3>
+        <p class="arch-desc">Contrat de qualite versionne : [gate], [review], [profile]. CI-ready, reviewable en PR.</p>
+        <div class="arch-path">oco.toml</div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-icon" style="background:rgba(167,139,250,0.12);color:var(--purple);">&#9826;</div>
+        <h3>Claude Adapter</h3>
+        <p class="arch-desc">Couche frontiere : detection de version, 24 hook events, matrice de capabilities, modes d'integration.</p>
+        <div class="arch-path">crates/claude-adapter/</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ RUN FLOW ═══════════════ -->
+<section id="run-flow">
+  <div class="container">
+    <div class="section-label">En pratique</div>
+    <h2>Le parcours d'un run moderne</h2>
+    <p class="subtitle">Ce qui se passe concretement quand tu lances <code>oco run</code> aujourd'hui.</p>
+
+    <div class="flow-steps">
+
+      <div class="flow-step">
+        <div class="flow-num" style="color:var(--accent);border-color:rgba(74,170,255,0.3);background:rgba(74,170,255,0.06);">1</div>
+        <div>
+          <h4>Classification</h4>
+          <p>Le policy engine classifie ta requete (Trivial / Low / Medium / High) par pattern matching deterministe. Zero appel LLM.</p>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-num" style="color:var(--purple);border-color:rgba(167,139,250,0.3);background:rgba(167,139,250,0.06);">2</div>
+        <div>
+          <h4>Profiling du repo</h4>
+          <p>Detection automatique du stack (Cargo.toml &rarr; Rust), sensitive paths, policy pack. OCO s'adapte au terrain.</p>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-num" style="color:var(--purple);border-color:rgba(167,139,250,0.3);background:rgba(167,139,250,0.06);">3</div>
+        <div>
+          <h4>Plan emergent</h4>
+          <p>Le LlmPlanner genere un DAG unique : steps avec dependances, roles, modeles et effort par step. Le plan emerge du contexte, pas d'un template.</p>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-num" style="color:var(--pink);border-color:rgba(244,114,182,0.3);background:rgba(244,114,182,0.06);">4</div>
+        <div>
+          <h4>Execution parallele</h4>
+          <p>Le GraphRunner lance les steps prets en parallele (tokio::spawn). Budget pre-reserve par batch. CancellationToken pour chaque step.</p>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-num" style="color:var(--green);border-color:rgba(52,211,153,0.3);background:rgba(52,211,153,0.06);">5</div>
+        <div>
+          <h4>Verification automatique</h4>
+          <p>Apres chaque step d'implementation (verify_after: true), le verifier lance build + clippy + tests. En cas d'echec, replan (max 3 tentatives).</p>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-num" style="color:var(--after);border-color:rgba(34,211,238,0.3);background:rgba(34,211,238,0.06);">6</div>
+        <div>
+          <h4>Memoire & Mission</h4>
+          <p>WorkingMemory accumule findings, hypotheses, faits. En fin de run, MissionMemory construite et persistee.</p>
+          <div class="flow-artifact">&#8594; mission.json</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-num" style="color:var(--green);border-color:rgba(52,211,153,0.3);background:rgba(52,211,153,0.06);">7</div>
+        <div>
+          <h4>Scoring 7 dimensions</h4>
+          <p>ScorecardBuilder calcule Success, TrustVerdict, VerificationCoverage, MissionContinuity, CostEfficiency, ErrorRate, ReplanStability &rarr; score composite.</p>
+          <div class="flow-artifact">&#8594; scorecard.json</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-num" style="color:var(--red);border-color:rgba(248,113,113,0.3);background:rgba(248,113,113,0.06);">8</div>
+        <div>
+          <h4>Gate (optionnel)</h4>
+          <p>Compare scorecard vs baseline avec la politique du repo. Verdict : Pass (exit 0) / Warn (exit 1) / Fail (exit 2).</p>
+          <div class="flow-artifact">&#8594; gate-report.md/json</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-num" style="color:var(--after);border-color:rgba(34,211,238,0.3);background:rgba(34,211,238,0.06);">9</div>
+        <div>
+          <h4>Review Packet</h4>
+          <p>Bundle unique : scorecard + gate + mission + freshness &rarr; MergeReadiness. Un seul document pour decider.</p>
+          <div class="flow-artifact">&#8594; review-packet.md/json</div>
+        </div>
+      </div>
+
+      <div class="flow-step">
+        <div class="flow-num" style="color:var(--before);border-color:rgba(245,158,11,0.3);background:rgba(245,158,11,0.06);">10</div>
+        <div>
+          <h4>Promotion (optionnel)</h4>
+          <p>Si satisfait : promouvoir la scorecard en nouvelle baseline. Backup atomique, diff par dimension, record dans l'audit trail.</p>
+          <div class="flow-artifact">&#8594; baseline.json + baseline-history.json</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ CLI ═══════════════ -->
+<section id="cli">
+  <div class="container">
+    <div class="section-label">Reference rapide</div>
+    <h2>Les commandes CLI essentielles</h2>
+    <p class="subtitle">Les commandes a connaitre pour etre operationnel immediatement.</p>
+
+    <div class="cli-grid">
+      <div class="cli-group-header">Utilisation quotidienne</div>
+      <div class="cli-row"><div class="cli-cmd">oco run "requete" --workspace .</div><div class="cli-desc">Lancer un run orchestre de bout en bout</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco runs list</div><div class="cli-desc">Lister les runs passes</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco runs show last</div><div class="cli-desc">Detail du dernier run</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco runs show last --mission</div><div class="cli-desc">Voir la mission memory (faits, hypotheses, plan)</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco runs handoff last</div><div class="cli-desc">Document de handoff humain</div></div>
+
+      <div class="cli-group-header">Evaluation</div>
+      <div class="cli-row"><div class="cli-cmd">oco eval scenarios.jsonl</div><div class="cli-desc">Lancer une suite de scenarios d'evaluation</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco eval-compare base.json cand.json</div><div class="cli-desc">Comparer deux scorecards dimension par dimension</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco eval-gate</div><div class="cli-desc">Gate de qualite (config oco.toml ou flags)</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco eval-gate --policy strict</div><div class="cli-desc">Gate stricte (tout bloque)</div></div>
+
+      <div class="cli-group-header">Baseline</div>
+      <div class="cli-row"><div class="cli-cmd">oco baseline-save last --name v1</div><div class="cli-desc">Sauvegarder la scorecard comme baseline</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco baseline-promote last --name v2</div><div class="cli-desc">Promouvoir avec garde-fous et audit trail</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco baseline-promote last --force</div><div class="cli-desc">Forcer (override Reject, documente)</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco baseline-history</div><div class="cli-desc">Audit trail des promotions</div></div>
+
+      <div class="cli-group-header">Review</div>
+      <div class="cli-row"><div class="cli-cmd">oco runs review-pack last</div><div class="cli-desc">Review packet (format terminal)</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco runs review-pack last --markdown</div><div class="cli-desc">Review packet en Markdown (pour PR)</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco runs review-pack last --json</div><div class="cli-desc">Review packet en JSON (pour CI)</div></div>
+
+      <div class="cli-group-header">Diagnostic</div>
+      <div class="cli-row"><div class="cli-cmd">oco doctor --workspace .</div><div class="cli-desc">Verifier la sante du systeme</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco index ./path</div><div class="cli-desc">(Re)indexer un workspace</div></div>
+      <div class="cli-row"><div class="cli-cmd">oco search "query" --workspace .</div><div class="cli-desc">Recherche full-text dans le code indexe</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ ARTIFACTS ═══════════════ -->
+<section id="artifacts">
+  <div class="container">
+    <div class="section-label">Les sorties</div>
+    <h2>Les artefacts a connaitre</h2>
+    <p class="subtitle">Ce que produit OCO et ou le trouver.</p>
+
+    <div class="art-grid">
+
+      <div class="art-card">
+        <div class="art-stripe" style="background:var(--accent);"></div>
+        <div class="art-file">.oco/runs/&lt;id&gt;/trace.jsonl</div>
+        <h4>Trace</h4>
+        <p>Journal evenementiel complet : chaque action, observation, decision. Pour le debug et le replay.</p>
+        <div class="art-when">&#8594; Chaque run</div>
+      </div>
+
+      <div class="art-card">
+        <div class="art-stripe" style="background:var(--purple);"></div>
+        <div class="art-file">.oco/runs/&lt;id&gt;/summary.json</div>
+        <h4>Summary</h4>
+        <p>Resume structure : resultat, metriques, duree, steps, trust verdict. Base du scoring.</p>
+        <div class="art-when">&#8594; Chaque run</div>
+      </div>
+
+      <div class="art-card">
+        <div class="art-stripe" style="background:var(--green);"></div>
+        <div class="art-file">.oco/runs/&lt;id&gt;/mission.json</div>
+        <h4>Mission Memory</h4>
+        <p>Carnet de bord durable : faits, hypotheses, questions, plan, verification, trust verdict, narrative.</p>
+        <div class="art-when">&#8594; Runs avec contenu</div>
+      </div>
+
+      <div class="art-card">
+        <div class="art-stripe" style="background:var(--pink);"></div>
+        <div class="art-file">Calcule a la demande</div>
+        <h4>Scorecard</h4>
+        <p>7 dimensions ponderees, score composite 0.0&ndash;1.0. Comparaison, trending, regression detection.</p>
+        <div class="art-when">&#8594; eval-compare / eval-gate</div>
+      </div>
+
+      <div class="art-card">
+        <div class="art-stripe" style="background:var(--red);"></div>
+        <div class="art-file">Terminal ou --report &lt;dir&gt;</div>
+        <h4>Gate Report</h4>
+        <p>Verdict Pass/Warn/Fail avec detail par dimension, freshness baseline, raisons. Markdown ou JSON.</p>
+        <div class="art-when">&#8594; eval-gate</div>
+      </div>
+
+      <div class="art-card">
+        <div class="art-stripe" style="background:var(--after);"></div>
+        <div class="art-file">--save ou [review].auto_save</div>
+        <h4>Review Packet</h4>
+        <p>Bundle unifie : scorecard + gate + mission + freshness &rarr; MergeReadiness verdict. Le doc de decision.</p>
+        <div class="art-when">&#8594; runs review-pack</div>
+      </div>
+
+      <div class="art-card">
+        <div class="art-stripe" style="background:var(--before);"></div>
+        <div class="art-file">.oco/baseline.json</div>
+        <h4>Baseline</h4>
+        <p>Snapshot nomme et date de scorecard. La reference de qualite du repo pour les comparaisons futures.</p>
+        <div class="art-when">&#8594; baseline-save / baseline-promote</div>
+      </div>
+
+      <div class="art-card">
+        <div class="art-stripe" style="background:var(--before);"></div>
+        <div class="art-file">.oco/baseline-history.json</div>
+        <h4>Baseline History</h4>
+        <p>Audit trail append-only : chaque promotion avec timestamp, raison, gate verdict, diff, force flag.</p>
+        <div class="art-when">&#8594; baseline-promote</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ RESTART ═══════════════ -->
+<section id="restart">
+  <div class="container">
+    <div class="section-label">Action plan</div>
+    <h2>Reprise en main rapide</h2>
+    <p class="subtitle">Si tu reviens demain, voici dans quel ordre lire et executer.</p>
+
+    <div class="restart-grid">
+
+      <div class="restart-card">
+        <div class="restart-time">0 &mdash; 10 min</div>
+        <h4>Orientation</h4>
+        <ol>
+          <li>Lire cette page (deja fait)</li>
+          <li><code>cargo build</code> &mdash; tout compile ?</li>
+          <li><code>cargo test</code> &mdash; 1000+ tests passent ?</li>
+        </ol>
+      </div>
+
+      <div class="restart-card">
+        <div class="restart-time">10 &mdash; 20 min</div>
+        <h4>Comprendre le produit</h4>
+        <ol>
+          <li>Lire <code>examples/oco.toml</code> (sections gate, review)</li>
+          <li><code>oco --help</code> puis <code>oco run --help</code></li>
+          <li>Lire ADR-002 (orchestration) + ADR-008 (plans)</li>
+        </ol>
+      </div>
+
+      <div class="restart-card">
+        <div class="restart-time">20 &mdash; 30 min</div>
+        <h4>Flow complet</h4>
+        <ol>
+          <li><code>oco index ./examples/sample-repo</code></li>
+          <li><code>oco run "describe main" --provider stub</code></li>
+          <li><code>oco runs show last</code></li>
+          <li><code>oco runs show last --mission</code></li>
+        </ol>
+      </div>
+
+      <div class="restart-card">
+        <div class="restart-time">30 &mdash; 45 min</div>
+        <h4>Pipeline qualite</h4>
+        <ol>
+          <li>Lire ADR-011 (scorecard) + ADR-012 (gate)</li>
+          <li>Explorer un scorecard existant</li>
+          <li>Tester <code>oco eval-compare</code> si deux resultats dispo</li>
+          <li>Tester <code>oco eval-gate</code></li>
+        </ol>
+      </div>
+
+      <div class="restart-card">
+        <div class="restart-time">45 &mdash; 60 min</div>
+        <h4>Deep dive architecture</h4>
+        <ol>
+          <li>Lire <code>shared-types/src/plan.rs</code></li>
+          <li>Lire <code>shared-types/src/mission.rs</code></li>
+          <li>Parcourir <code>orchestrator-core/src/graph_runner.rs</code></li>
+          <li>Parcourir <code>scorecard.rs</code> et <code>gate.rs</code></li>
+        </ol>
+      </div>
+
+      <div class="restart-card">
+        <div class="restart-time">ADRs prioritaires</div>
+        <h4>Ordre de lecture</h4>
+        <ol>
+          <li><strong>ADR-002</strong> &mdash; Orchestration (philosophie)</li>
+          <li><strong>ADR-008</strong> &mdash; Plans hierarchiques (coeur v2)</li>
+          <li><strong>ADR-010</strong> &mdash; Mission Memory (handoff)</li>
+          <li><strong>ADR-011</strong> &mdash; Scorecard (evaluation)</li>
+          <li><strong>ADR-012</strong> &mdash; Gates (CI)</li>
+          <li><strong>ADR-016</strong> &mdash; Promotion (audit)</li>
+        </ol>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ WARNINGS ═══════════════ -->
+<section id="warnings">
+  <div class="container">
+    <div class="section-label">A surveiller</div>
+    <h2>Zones encore fragiles</h2>
+    <p class="subtitle">Risques residuels observes depuis le repo. Pas dramatique, mais a garder en tete.</p>
+
+    <div class="warn-list">
+
+      <div class="warn-item" style="border-left-color: var(--green);">
+        <h4><span style="color: var(--green);">FERME</span> — AGENTS.md desynchronise</h4>
+        <p>Reecrit pour refleter les 14 crates, 1000+ tests, 4 providers, Q2-Q11, <code>.claude/</code> skills.</p>
+      </div>
+
+      <div class="warn-item" style="border-left-color: var(--green);">
+        <h4><span style="color: var(--green);">FERME</span> — Poids de scorecard non configurables</h4>
+        <p><code>ScorecardWeights</code> dans <code>[scorecard]</code> de <code>oco.toml</code>. Branche dans tous les chemins runtime : <code>oco run</code>, <code>review-pack</code>, <code>eval-gate</code>, <code>baseline-save</code>, <code>baseline-promote</code>, <code>runs compare</code>. Fallback strict sur les poids par defaut. 12 tests.</p>
+      </div>
+
+      <div class="warn-item" style="border-left-color: var(--green);">
+        <h4><span style="color: var(--green);">FERME</span> — Hooks non valides en conditions adverses</h4>
+        <p>Tests adversaires + compaction + concurrence: payloads malformes, auth edge cases, corps surdimensionnes, <code>PreCompact</code>/<code>PostCompact</code> sur session chargee, et trafic hooks concurrent sur une session correlee. Le reliquat restant est ailleurs: re-index incremental encore stub, pas la robustesse hooks.</p>
+      </div>
+
+      <div class="warn-item" style="border-left-color: var(--green);">
+        <h4><span style="color: var(--green);">FERME</span> — BaselineHistory non bornee</h4>
+        <p><code>BaselineHistory::prune(keep)</code> + CLI <code>oco baseline-history-prune --keep N --dry-run</code>. 6 tests.</p>
+      </div>
+
+      <div class="warn-item" style="border-left-color: var(--green);">
+        <h4><span style="color: var(--green);">FERME</span> — MergeReadiness non configurable</h4>
+        <p><code>MergeReadinessConfig</code> dans <code>[review.merge_readiness]</code> : 3 toggles booleens. Branche dans <code>ReviewPacket::build_with_config()</code> et <code>review-pack</code> CLI. Blocages durs non configurables. 8 tests.</p>
+      </div>
+
+      <div class="warn-item" style="border-left-color: var(--green);">
+        <h4><span style="color: var(--green);">FERME</span> — Dedup MissionMemory par hash textuel</h4>
+        <p><code>normalize_for_dedup()</code> : trim, collapse whitespace, lowercase. Dedup deterministe sans semantique floue. Tests de non-regression.</p>
+      </div>
+
+      <div class="warn-item" style="border-left-color: var(--green);">
+        <h4><span style="color: var(--green);">FERME</span> — Sub-plan max depth hardcode (2)</h4>
+        <p>Constante nommee <code>MAX_SUB_PLAN_DEPTH = 2</code>, explicitement fixe. ADR-008, code, et tests alignes.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ FOOTER / CONCLUSION ═══════════════ -->
+<footer>
+  <div class="container">
+    <div class="exec-summary">
+      <h3>Conclusion executive</h3>
+      <p>
+        Au depart, OCO etait un orchestrateur fonctionnel mais amnesique : boucle plate,
+        verification booleenne, zero memoire inter-session, pas de scoring, pas de gates.
+      </p>
+      <p style="margin-top:0.8rem;">
+        Aujourd'hui, c'est un <strong>systeme de qualite continue</strong> pour l'orchestration IA.
+        Chaque run produit un plan emergent (DAG), accumule des connaissances (mission memory),
+        est evalue sur 7 dimensions (scorecard), passe des gates CI-ready, genere un review packet
+        unifie, et peut promouvoir sa baseline avec audit trail complet.
+      </p>
+      <p style="margin-top:0.8rem;">
+        Le saut : de <strong>110 a 1000+ tests</strong>, de <strong>11 a 14 crates</strong>,
+        de <strong>7 a 16 ADRs</strong>, de <strong>6 a 20+ commandes CLI</strong>.
+        Mais le vrai changement est architectural : OCO est passe d'un executeur de taches
+        a un systeme qui <strong>mesure, juge, trace et audite</strong> la qualite de son propre travail.
+      </p>
+    </div>
+    <p>OCO &mdash; Open Context Orchestrator &mdash; Q1 &rarr; Q11</p>
+  </div>
+</footer>
+
+<!-- ═══════════════ SCRIPTS ═══════════════ -->
+<script>
+(function() {
+  'use strict';
+
+  // ── Nav show on scroll ──
+  const nav = document.getElementById('nav');
+  let lastScroll = 0;
+  window.addEventListener('scroll', () => {
+    if (window.scrollY > 400) {
+      nav.classList.add('visible');
+    } else {
+      nav.classList.remove('visible');
+    }
+    lastScroll = window.scrollY;
+  }, { passive: true });
+
+  // ── Active nav link ──
+  const sections = document.querySelectorAll('section[id]');
+  const navLinks = document.querySelectorAll('nav a');
+  const observerNav = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        navLinks.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`nav a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-30% 0px -60% 0px' });
+  sections.forEach(s => observerNav.observe(s));
+
+  // ── Counter animation ──
+  const counters = document.querySelectorAll('.counter');
+  const counterDone = new Set();
+  const observerCounter = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting && !counterDone.has(entry.target)) {
+        counterDone.add(entry.target);
+        const el = entry.target;
+        const target = parseInt(el.dataset.target);
+        const duration = 1200;
+        const start = performance.now();
+        const step = (now) => {
+          const progress = Math.min((now - start) / duration, 1);
+          const eased = 1 - Math.pow(1 - progress, 3);
+          el.textContent = Math.round(eased * target);
+          if (progress < 1) requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      }
+    });
+  }, { threshold: 0.5 });
+  counters.forEach(c => observerCounter.observe(c));
+
+  // ── Timeline reveal ──
+  const tlItems = document.querySelectorAll('.tl-item');
+  const observerTl = new IntersectionObserver((entries) => {
+    entries.forEach((entry, i) => {
+      if (entry.isIntersecting) {
+        setTimeout(() => entry.target.classList.add('visible'), 80);
+      }
+    });
+  }, { threshold: 0.15 });
+  tlItems.forEach(item => observerTl.observe(item));
+
+  // ── Flow step reveal ──
+  const flowSteps = document.querySelectorAll('.flow-step');
+  const observerFlow = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+      }
+    });
+  }, { threshold: 0.15 });
+  flowSteps.forEach(s => observerFlow.observe(s));
+
+  // ── Tab filter ──
+  const tabBtns = document.querySelectorAll('.tab-btn');
+  tabBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      tabBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const filter = btn.dataset.filter;
+      tlItems.forEach(item => {
+        if (filter === 'all' || item.dataset.cat === filter) {
+          item.style.display = '';
+          setTimeout(() => item.classList.add('visible'), 50);
+        } else {
+          item.style.display = 'none';
+        }
+      });
+    });
+  });
+
+})();
+</script>
+</body>
+</html>

@@ -5,20 +5,24 @@
   import { connectSSE, type SSEClient, type SSEStatus } from './lib/sse'
   import { createEventPlayer, type EventPlayer } from './lib/event-player'
   import { playDemo, type Thought } from './lib/demo'
+  import type { ReviewPacket } from './lib/types'
   import Timeline from './lib/Timeline.svelte'
   import PlanMap from './lib/PlanMap.svelte'
   import PlanExplorer from './lib/PlanExplorer.svelte'
   import DetailPanel from './lib/DetailPanel.svelte'
   import ClassifyingScene from './lib/ClassifyingScene.svelte'
+  import PostRunPanel from './lib/PostRunPanel.svelte'
+  import SeedLauncher from './lib/SeedLauncher.svelte'
   import Playground from './lib/Playground.svelte'
 
   // ── Playground routing ─────────────────────────────────────
   const isPlayground = new URLSearchParams(window.location.search).has('playground')
 
   // ── Lifecycle phases ────────────────────────────────────────
-  type Phase = 'connecting' | 'waiting' | 'classifying' | 'planning' | 'executing' | 'verifying' | 'complete' | 'failed' | 'demo'
+  type Phase = 'launcher' | 'connecting' | 'waiting' | 'classifying' | 'planning' | 'executing' | 'verifying' | 'complete' | 'failed' | 'demo'
 
   const PHASE_META: Record<Phase, { label: string; color: string; icon: string }> = {
+    launcher:    { label: 'Ready',                 color: 'text-text-3', icon: '◎' },
     connecting:  { label: 'Connecting',            color: 'text-amber',  icon: '◌' },
     waiting:     { label: 'Waiting for mission',   color: 'text-text-3', icon: '◎' },
     classifying: { label: 'Classifying task',      color: 'text-cyan',   icon: '◈' },
@@ -48,16 +52,17 @@
   let teammateMessages = $state<Array<{ fromStepId: string; toStepId: string; fromName: string; toName: string; summary: string }>>([])
   let subPlanState = $state<Map<string, { subSteps: Array<{ id: string; name: string; status: 'pending' | 'running' | 'passed' | 'failed' }>; completed: boolean }>>(new Map())
   let msgTimers: ReturnType<typeof setTimeout>[] = []
+  let reviewPacket = $state<ReviewPacket | null>(null)
   let liveSessionId = $state<string | null>(null)
   let sseStatus = $state<SSEStatus>('connecting')
-  let phase = $state<Phase>('connecting')
+  let phase = $state<Phase>('launcher')
 
   // ── Derived ─────────────────────────────────────────────────
   let completedSteps = $derived(steps.filter(s => s.status === 'passed' || s.status === 'failed').length)
   let totalSteps = $derived(steps.length)
   let progressPct = $derived(totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0)
   let isFinished = $derived(phase === 'complete' || phase === 'failed')
-  let isRunning = $derived(!isFinished && phase !== 'connecting' && phase !== 'waiting' && phase !== 'demo')
+  let isRunning = $derived(!isFinished && phase !== 'launcher' && phase !== 'connecting' && phase !== 'waiting' && phase !== 'demo')
   let selectedEvent = $derived(selectedSeq != null ? events.find(e => e.seq === selectedSeq) ?? null : null)
   let selectedStep = $derived(selectedStepId != null ? steps.find(s => s.id === selectedStepId) ?? null : null)
   let phaseMeta = $derived(PHASE_META[phase])
@@ -73,7 +78,7 @@
 
   function resetState() {
     events = []; steps = []; budget = null; thoughts = []; explorationPhase = 'idle'; stepSummaries = []; teamInfo = null; teammateMessages = []; subPlanState = new Map(); msgTimers.forEach(clearTimeout); msgTimers = []
-    selectedSeq = null; selectedStepId = null; missionRequest = ''; complexity = ''; provider = ''
+    selectedSeq = null; selectedStepId = null; missionRequest = ''; complexity = ''; provider = ''; reviewPacket = null
   }
 
   function startDemo() {
@@ -85,6 +90,7 @@
       handleEvent,
       (t) => { thoughts = [...thoughts, t] },
       (p) => { explorationPhase = p },
+      (r) => { reviewPacket = r },
     )
   }
 
@@ -140,14 +146,47 @@
     })
   }
 
+  async function launchMission(seed: string, workspace: string, _provider: string, _model: string) {
+    phase = 'connecting'
+    try {
+      const res = await fetch('/api/v1/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_request: seed,
+          workspace_root: workspace || undefined,
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Server error' }))
+        throw new Error(err.error || `HTTP ${res.status}`)
+      }
+      const data = await res.json()
+      startLive(data.id)
+    } catch (e) {
+      // Server not reachable — fall back to demo with the seed as mission
+      missionRequest = seed
+      phase = 'launcher'
+      throw e
+    }
+  }
+
+  function backToLauncher() {
+    cancelDemo?.(); cancelDemo = null
+    sseClient?.close(); sseClient = null
+    eventPlayer?.stop(); eventPlayer = null
+    resetState()
+    liveSessionId = null
+    phase = 'launcher'
+  }
+
   onMount(() => {
     const params = new URLSearchParams(window.location.search)
     const live = params.get('live')
     if (live) {
       startLive(live)
-    } else {
-      startDemo()
     }
+    // Default: stay on launcher (no auto-demo)
     return () => { sseClient?.close(); cancelDemo?.(); eventPlayer?.stop(); msgTimers.forEach(clearTimeout) }
   })
 
@@ -315,7 +354,7 @@
 {:else}
 <div class="h-screen flex flex-col bg-bg">
   <!-- Phase stepper bar -->
-  {#if liveSessionId}
+  {#if liveSessionId && phase !== 'launcher'}
     <div class="flex items-center gap-0 px-5 py-2 border-b border-border bg-surface-2 shrink-0 overflow-x-auto">
       {#each PHASE_ORDER as p, i}
         {@const isActive = p === phase}
@@ -344,7 +383,8 @@
     </div>
   {/if}
 
-  <!-- Header -->
+  <!-- Header (hidden in launcher) -->
+  {#if phase !== 'launcher'}
   <header class="flex items-center gap-4 px-5 py-3 border-b border-border bg-surface shrink-0">
     <div class="pip {isFinished ? (phase === 'failed' ? 'pip-fail' : 'pip-done') : isRunning ? 'pip-active' : 'pip-idle'}"></div>
     <div class="flex-1 min-w-0">
@@ -383,13 +423,19 @@
     {#if liveSessionId}
       <span class="text-xs font-mono {sseStatus === 'connected' ? 'text-green' : 'text-amber'}">{sseStatus}</span>
     {/if}
-    <button onclick={startDemo} class="px-3 py-1.5 text-xs text-text-3 hover:text-text-1 bg-surface-2 hover:bg-surface-3 rounded transition-colors">
-      Demo
+    <button onclick={backToLauncher} class="px-3 py-1.5 text-xs text-text-3 hover:text-text-1 bg-surface-2 hover:bg-surface-3 rounded transition-colors">
+      New
     </button>
   </header>
+  {/if}
 
   <!-- Main content -->
-  {#if phase === 'connecting' || phase === 'waiting'}
+  {#if phase === 'launcher'}
+    <!-- Seed launcher — default view -->
+    <div class="flex-1 overflow-y-auto">
+      <SeedLauncher onLaunch={launchMission} onDemo={startDemo} />
+    </div>
+  {:else if phase === 'connecting' || phase === 'waiting'}
     <!-- Pre-mission: full-screen waiting state -->
     <div class="flex-1 flex items-center justify-center">
       <div class="text-center space-y-6">
@@ -425,50 +471,70 @@
     </div>
   {:else}
     <!-- Active mission: normal layout -->
-    <!-- Plan — top zone -->
-    <div class="h-[55%] border-b border-border shrink-0 relative">
-      <PlanExplorer phase={explorationPhase} />
-      {#if explorationPhase === 'done' || steps.length > 0}
-        <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
-      {:else if phase === 'classifying'}
-        <ClassifyingScene mission={missionRequest} {complexity} />
-      {:else if phase === 'planning' && explorationPhase === 'idle'}
-        <!-- Planning without exploration — simple planning indicator -->
-        <div class="h-full flex items-center justify-center">
-          <div class="text-center space-y-4">
-            <div class="w-16 h-16 mx-auto rounded-xl bg-surface-2 border border-purple/20 flex items-center justify-center">
-              <div class="grid grid-cols-2 gap-1">
-                <div class="w-3 h-3 bg-purple/30 rounded-sm animate-pulse"></div>
-                <div class="w-3 h-3 bg-purple/50 rounded-sm animate-pulse" style="animation-delay: 0.15s"></div>
-                <div class="w-3 h-3 bg-purple/40 rounded-sm animate-pulse" style="animation-delay: 0.3s"></div>
-                <div class="w-3 h-3 bg-purple/20 rounded-sm animate-pulse" style="animation-delay: 0.45s"></div>
-              </div>
-            </div>
-            <div>
-              <p class="text-sm text-purple font-mono">Generating execution plan...</p>
-              {#if complexity}
-                <p class="text-xs text-text-3 mt-1">{complexity}</p>
-              {/if}
-            </div>
+    {#if isFinished && reviewPacket}
+      <!-- Post-run intelligence view -->
+      <div class="flex-1 flex overflow-hidden min-h-0">
+        <!-- Left: Post-run panel -->
+        <div class="w-1/2 border-r border-border flex flex-col min-w-0">
+          <PostRunPanel review={reviewPacket} />
+        </div>
+        <!-- Right: Timeline + Detail -->
+        <div class="w-1/2 flex flex-col min-w-0">
+          <div class="h-1/2 border-b border-border">
+            <Timeline {events} {selectedSeq} onSelect={selectTimeline} />
+          </div>
+          <div class="h-1/2">
+            <DetailPanel event={selectedEvent} {budget} {selectedStep} {thoughts} />
           </div>
         </div>
-      {:else if explorationPhase !== 'idle'}
-        <div class="h-full"></div>
-      {/if}
-    </div>
+      </div>
+    {:else}
+      <!-- Plan — top zone -->
+      <div class="h-[55%] border-b border-border shrink-0 relative">
+        <PlanExplorer phase={explorationPhase} />
+        {#if explorationPhase === 'done' || steps.length > 0}
+          <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
+        {:else if phase === 'classifying'}
+          <ClassifyingScene mission={missionRequest} {complexity} />
+        {:else if phase === 'planning' && explorationPhase === 'idle'}
+          <!-- Planning without exploration — simple planning indicator -->
+          <div class="h-full flex items-center justify-center">
+            <div class="text-center space-y-4">
+              <div class="w-16 h-16 mx-auto rounded-xl bg-surface-2 border border-purple/20 flex items-center justify-center">
+                <div class="grid grid-cols-2 gap-1">
+                  <div class="w-3 h-3 bg-purple/30 rounded-sm animate-pulse"></div>
+                  <div class="w-3 h-3 bg-purple/50 rounded-sm animate-pulse" style="animation-delay: 0.15s"></div>
+                  <div class="w-3 h-3 bg-purple/40 rounded-sm animate-pulse" style="animation-delay: 0.3s"></div>
+                  <div class="w-3 h-3 bg-purple/20 rounded-sm animate-pulse" style="animation-delay: 0.45s"></div>
+                </div>
+              </div>
+              <div>
+                <p class="text-sm text-purple font-mono">Generating execution plan...</p>
+                {#if complexity}
+                  <p class="text-xs text-text-3 mt-1">{complexity}</p>
+                {/if}
+              </div>
+            </div>
+          </div>
+        {:else if explorationPhase !== 'idle'}
+          <div class="h-full"></div>
+        {/if}
+      </div>
 
-    <!-- Bottom: Activity + Detail -->
-    <div class="flex-1 flex overflow-hidden min-h-0">
-      <div class="w-1/2 border-r border-border flex flex-col min-w-0">
-        <Timeline {events} {selectedSeq} onSelect={selectTimeline} />
+      <!-- Bottom: Activity + Detail -->
+      <div class="flex-1 flex overflow-hidden min-h-0">
+        <div class="w-1/2 border-r border-border flex flex-col min-w-0">
+          <Timeline {events} {selectedSeq} onSelect={selectTimeline} />
+        </div>
+        <div class="w-1/2 flex flex-col min-w-0">
+          <DetailPanel event={selectedEvent} {budget} {selectedStep} {thoughts} />
+        </div>
       </div>
-      <div class="w-1/2 flex flex-col min-w-0">
-        <DetailPanel event={selectedEvent} {budget} {selectedStep} {thoughts} />
-      </div>
-    </div>
+    {/if}
   {/if}
 
-  <!-- Footer -->
+  <!-- Footer (hidden in launcher) -->
+  {#if phase !== 'launcher'}
   <footer class="flex items-center gap-3 px-5 py-1.5 border-t border-border bg-surface text-xs font-mono shrink-0">
     <span class="{phaseMeta.color} uppercase tracking-wider flex items-center gap-1.5">
       <span>{phaseMeta.icon}</span>
@@ -480,5 +546,6 @@
     {/if}
     <span class="ml-auto text-text-3">{events.length} events</span>
   </footer>
+  {/if}
 </div>
 {/if}

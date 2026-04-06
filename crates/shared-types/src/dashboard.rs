@@ -330,6 +330,8 @@ impl DashboardEventKind {
                 total,
                 active_steps,
                 budget_used_pct: _,
+                tokens_used,
+                tokens_budget,
             } => DashboardEventKind::Progress {
                 completed: *completed,
                 total: *total,
@@ -341,8 +343,8 @@ impl DashboardEventKind {
                     })
                     .collect(),
                 budget: BudgetSnapshot {
-                    tokens_used: 0,
-                    tokens_remaining: 0,
+                    tokens_used: *tokens_used,
+                    tokens_remaining: tokens_budget.saturating_sub(*tokens_used),
                     tool_calls_used: 0,
                     tool_calls_remaining: 0,
                     retrievals_used: 0,
@@ -721,6 +723,8 @@ mod tests {
                 total: 0,
                 active_steps: vec![],
                 budget_used_pct: 0.0,
+                tokens_used: 0,
+                tokens_budget: 100_000,
             },
             OrchestrationEvent::VerifyGateResult {
                 step_id: Uuid::nil(),

@@ -3,7 +3,7 @@ pub mod jsonl;
 pub mod quiet;
 pub mod terminal;
 
-pub use event::{CheckStatus, UiEvent};
+pub use event::{CheckStatus, UiEvent, UiStepSummary};
 
 /// Output format for the CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

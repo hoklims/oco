@@ -33,3 +33,72 @@ timeout_secs = 60
 
 # ML worker (optional — system degrades gracefully without it)
 ml_worker_url = "http://127.0.0.1:50052"
+
+# Per-repository trust profile.
+# Auto-detected from manifests; override here for finer control.
+[profile]
+# Policy pack: "fast" (build only, stale allowed), "balanced" (default),
+# or "strict" (full suite, stale blocked, sensitive paths enforced).
+policy_pack = "balanced"
+# Risk level: "low", "standard", "high", "critical".
+risk_level = "standard"
+# Paths considered sensitive — modification triggers thorough verification
+# and affects the trust verdict.
+sensitive_paths = [".env", "*.pem", "*.key", "credentials.json"]
+
+# Scorecard dimension weight overrides.
+# Omit a field to use the default weight. All values must be > 0.
+# Defaults: success=3.0, trust_verdict=2.0, verification_coverage=1.5,
+#           mission_continuity=1.0, cost_efficiency=1.0, replan_stability=0.5,
+#           error_rate=1.0
+[scorecard]
+# success = 3.0
+# trust_verdict = 2.0
+# verification_coverage = 1.5
+# mission_continuity = 1.0
+# cost_efficiency = 1.0
+# replan_stability = 0.5
+# error_rate = 1.0
+
+# Quality gate configuration (Q7).
+# Declares the repo's evaluation contract so `oco eval-gate` works with
+# minimal or no CLI arguments.
+[gate]
+baseline_path = ".oco/baseline.json"
+default_policy = "balanced"          # "strict", "balanced", or "lenient"
+# Uncomment to override preset thresholds:
+# min_overall_score = 0.5
+# max_overall_regression = -0.12
+# Q8: Baseline freshness thresholds (days). Defaults: fresh=14, stale=30.
+# fresh_days = 14
+# stale_days = 30
+
+# Review packet configuration (Q10).
+# Configures `oco runs review-pack` defaults so the command works
+# with minimal or no CLI arguments.
+[review]
+auto_save = false                        # Save review packets automatically (JSON + Markdown)
+default_format = "terminal"              # Default output: "terminal", "markdown", or "json"
+# Uncomment to save review packets to a fixed directory:
+# output_dir = ".oco/reviews"
+
+# Merge readiness heuristic: which signals downgrade Ready → ConditionallyReady.
+# All default to true. Set to false to relax.
+[review.merge_readiness]
+# open_risks_block_ready = true          # Open risks block Ready
+# aging_baseline_blocks_ready = true     # Aging/stale baseline blocks Ready
+# gate_warn_blocks_ready = true          # Gate warnings block Ready
+
+# Baseline promotion (Q11).
+# Promotion uses the [gate] section above for baseline_path and policy.
+# The audit trail is stored at .oco/baseline-history.json (automatic).
+#
+# Promote a new baseline (aborts on Reject unless --force):
+#   oco baseline-promote last --name v2-stable --reason "CI passed"
+#   oco baseline-promote results.json --name v2 --json
+#   oco baseline-promote last --name v2 --force   # override Reject
+#
+# View audit trail:
+#   oco baseline-history
+#   oco baseline-history --json
+#   oco baseline-history --markdown --limit 5

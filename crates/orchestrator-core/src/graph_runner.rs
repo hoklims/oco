@@ -192,6 +192,10 @@ pub struct GraphRunner {
     cancel: Option<CancellationToken>,
     /// Claude Code capabilities detected at runtime (#100).
     capabilities: Option<Arc<ClaudeCapabilities>>,
+    /// User request forwarded for step context building.
+    user_request: String,
+    /// Actual replan count during execution (exposed to caller).
+    replan_count: u32,
 }
 
 impl GraphRunner {
@@ -205,6 +209,8 @@ impl GraphRunner {
             agent_teams: None,
             cancel: None,
             capabilities: None,
+            user_request: String::new(),
+            replan_count: 0,
         }
     }
 
@@ -236,9 +242,47 @@ impl GraphRunner {
         self
     }
 
+    /// Set the user request for step context building.
+    pub fn with_user_request(mut self, request: String) -> Self {
+        self.user_request = request;
+        self
+    }
+
     /// Total tokens consumed during execution.
     pub fn tokens_used(&self) -> u64 {
         self.tokens_used
+    }
+
+    /// Actual replan count after execution completes.
+    pub fn replan_count(&self) -> u32 {
+        self.replan_count
+    }
+
+    /// Build context strings for a step from dependency outputs and error signals.
+    fn build_step_context(&self, step: &PlanStep, plan: &ExecutionPlan) -> Vec<String> {
+        let mut context = Vec::new();
+
+        // Dependency outputs — let the step see what its predecessors produced.
+        for dep_id in &step.depends_on {
+            if let Some(dep) = plan.get_step(*dep_id)
+                && matches!(dep.status, StepStatus::Completed)
+                && let Some(ref output) = dep.output
+            {
+                context.push(format!("Output from '{}': {}", dep.name, output));
+            }
+        }
+
+        // Error context from failed steps (Manus pattern: keep errors visible).
+        for s in &plan.steps {
+            if let StepStatus::Failed { ref reason } = s.status {
+                context.push(format!(
+                    "FAILED step '{}': {} — do NOT repeat the same approach.",
+                    s.name, reason
+                ));
+            }
+        }
+
+        context
     }
 
     /// Execute the full plan, returning the completed (or failed) plan.
@@ -387,6 +431,9 @@ impl GraphRunner {
             let results = self.execute_parallel(&plan, &ready_ids).await;
             self.process_results(&mut plan, results, replan_count).await;
         }
+
+        // Persist actual replan count for the caller.
+        self.replan_count = replan_count;
 
         Ok(plan)
     }
@@ -537,8 +584,13 @@ impl GraphRunner {
                 return vec![self.execute_sub_plan(step).await];
             }
 
+            let context = self.build_step_context(step, plan);
             let constraints = StepConstraints::new(step.estimated_tokens);
-            match self.executor.execute_step(step, &[], &constraints).await {
+            match self
+                .executor
+                .execute_step(step, &context, &constraints)
+                .await
+            {
                 Ok(r) => vec![r],
                 Err(e) => vec![StepResult {
                     step_id: step_ids[0],
@@ -565,12 +617,14 @@ impl GraphRunner {
                     continue;
                 }
 
+                // Build step context BEFORE spawning (needs plan reference).
+                let context = self.build_step_context(&step, plan);
                 let executor = self.executor.clone();
                 let constraints = StepConstraints::new(step.estimated_tokens);
                 handles.push((
                     id,
                     tokio::spawn(async move {
-                        match executor.execute_step(&step, &[], &constraints).await {
+                        match executor.execute_step(&step, &context, &constraints).await {
                             Ok(r) => r,
                             Err(e) => StepResult {
                                 step_id: id,
@@ -725,9 +779,9 @@ impl GraphRunner {
             _ => "unknown failure".into(),
         };
 
-        // Budget pre-check: ensure we have at least 15% remaining for replan + new steps
+        // Budget pre-check: ensure we have at least 15% remaining for replan + new steps.
         let remaining = self.token_budget.saturating_sub(self.tokens_used);
-        let min_required = self.token_budget / 7; // ~15%
+        let min_required = self.token_budget * 15 / 100;
         if remaining < min_required {
             warn!(
                 remaining,
@@ -919,6 +973,8 @@ impl GraphRunner {
                 total,
                 active_steps: active,
                 budget_used_pct,
+                tokens_used: self.tokens_used,
+                tokens_budget: self.token_budget,
             });
         }
     }
@@ -1618,5 +1674,169 @@ mod tests {
         let result = runner.execute(plan, &ctx()).await.unwrap();
         // Parent step should be marked as failed because sub-plan failed
         assert!(result.has_failures());
+    }
+
+    // -- Step context wiring --
+
+    /// Executor that captures the context passed to execute_step for assertions.
+    struct ContextCapturingExecutor {
+        captured: std::sync::Mutex<Vec<(String, Vec<String>)>>,
+    }
+
+    impl ContextCapturingExecutor {
+        fn new() -> Self {
+            Self {
+                captured: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn captured_contexts(&self) -> Vec<(String, Vec<String>)> {
+            self.captured.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StepExecutor for ContextCapturingExecutor {
+        async fn execute_step(
+            &self,
+            step: &PlanStep,
+            context: &[String],
+            _constraints: &StepConstraints,
+        ) -> Result<StepResult, OrchestratorError> {
+            self.captured
+                .lock()
+                .unwrap()
+                .push((step.name.clone(), context.to_vec()));
+            Ok(StepResult {
+                step_id: step.id,
+                success: true,
+                output: format!("Output from {}", step.name),
+                duration_ms: 10,
+                tokens_used: 100,
+            })
+        }
+
+        async fn verify_step(&self, step: &PlanStep) -> Result<StepResult, OrchestratorError> {
+            Ok(StepResult {
+                step_id: step.id,
+                success: true,
+                output: "pass".into(),
+                duration_ms: 0,
+                tokens_used: 0,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn step_receives_dependency_output_as_context() {
+        let a = PlanStep::new("investigate", "Search codebase");
+        let b = PlanStep::new("implement", "Write code").with_depends_on(vec![a.id]);
+        let plan = make_plan(vec![a, b]);
+
+        let executor = Arc::new(ContextCapturingExecutor::new());
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor.clone(), planner).with_budget(50_000);
+
+        let result = runner.execute(plan, &ctx()).await.unwrap();
+        assert!(result.is_complete());
+
+        let contexts = executor.captured_contexts();
+        // First step (investigate) should have empty context (no deps)
+        let (name0, ctx0) = &contexts[0];
+        assert_eq!(name0, "investigate");
+        assert!(ctx0.is_empty());
+
+        // Second step (implement) should have context from first step's output
+        let (name1, ctx1) = &contexts[1];
+        assert_eq!(name1, "implement");
+        assert_eq!(ctx1.len(), 1);
+        assert!(ctx1[0].contains("Output from investigate"));
+    }
+
+    #[tokio::test]
+    async fn step_receives_error_context_from_failed_steps() {
+        let executor = Arc::new(ContextCapturingExecutor::new());
+        // Check the context building method directly with a pre-failed plan.
+        let runner = GraphRunner::new(executor, Arc::new(DirectPlanner)).with_budget(50_000);
+
+        // Test build_step_context directly with a plan that has a failed step
+        let mut test_plan = make_plan(vec![
+            PlanStep::new("failed-step", "Something that failed"),
+            PlanStep::new("next-step", "Should see error"),
+        ]);
+        test_plan.steps[0].status = StepStatus::Failed {
+            reason: "TypeError: undefined".into(),
+        };
+
+        let next_step = &test_plan.steps[1];
+        let ctx = runner.build_step_context(next_step, &test_plan);
+
+        assert_eq!(ctx.len(), 1);
+        assert!(ctx[0].contains("FAILED step"));
+        assert!(ctx[0].contains("TypeError: undefined"));
+        assert!(ctx[0].contains("do NOT repeat"));
+    }
+
+    #[tokio::test]
+    async fn replan_count_is_exposed_after_execution() {
+        // Simple plan that completes without replans
+        let step = PlanStep::new("task", "Do it");
+        let plan = make_plan(vec![step]);
+
+        let executor = Arc::new(StubStepExecutor::all_pass());
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner).with_budget(50_000);
+
+        let _result = runner.execute(plan, &ctx()).await.unwrap();
+        assert_eq!(runner.replan_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn progress_events_include_budget_data() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let step = PlanStep::new("task", "Do work");
+        let plan = make_plan(vec![step]);
+
+        let executor = Arc::new(StubStepExecutor::all_pass());
+        let planner = Arc::new(DirectPlanner);
+        let mut runner = GraphRunner::new(executor, planner)
+            .with_budget(50_000)
+            .with_event_channel(tx);
+
+        let _result = runner.execute(plan, &ctx()).await.unwrap();
+
+        // Find a PlanProgress event
+        let mut found_progress = false;
+        while let Ok(event) = rx.try_recv() {
+            if let OrchestrationEvent::PlanProgress { tokens_budget, .. } = event {
+                assert_eq!(tokens_budget, 50_000);
+                found_progress = true;
+            }
+        }
+        assert!(found_progress, "should emit PlanProgress with budget data");
+    }
+
+    #[tokio::test]
+    async fn replan_skipped_when_budget_below_15_percent() {
+        // Step that fails → trigger replan consideration
+        let mut step = PlanStep::new("task", "Do work").with_verify();
+        step.status = StepStatus::Pending;
+        let plan = make_plan(vec![step]);
+
+        let executor =
+            Arc::new(StubStepExecutor::all_pass().with_failure("verify:task", "test failed"));
+        let planner = Arc::new(DirectPlanner);
+
+        // Budget: 1000, consume 900 → 10% remaining < 15% threshold
+        let mut runner = GraphRunner::new(executor, planner).with_budget(1000);
+        runner.tokens_used = 900;
+
+        let _result = runner.execute(plan, &ctx()).await.unwrap();
+        // Verify gate fails → replan should be attempted but skipped due to budget
+        assert_eq!(
+            runner.replan_count(),
+            0,
+            "replan should not have been attempted"
+        );
     }
 }

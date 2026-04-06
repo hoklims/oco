@@ -106,6 +106,67 @@
         }
       },
       "additionalProperties": false
+    },
+    "gate": {
+      "description": "Quality gate configuration for CI and PR review (Q7).",
+      "type": "object",
+      "properties": {
+        "baseline_path": {
+          "description": "Path to the baseline file, relative to workspace root.",
+          "type": "string",
+          "default": ".oco/baseline.json"
+        },
+        "default_policy": {
+          "description": "Default gate policy preset.",
+          "type": "string",
+          "enum": ["strict", "balanced", "lenient"],
+          "default": "balanced"
+        },
+        "min_overall_score": {
+          "description": "Override the preset's minimum overall composite score (0.0–1.0).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "max_overall_regression": {
+          "description": "Override the preset's maximum allowed overall regression delta (must be <= 0).",
+          "type": "number",
+          "maximum": 0
+        },
+        "fresh_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Days before a baseline is considered 'aging'. Default: 14."
+        },
+        "stale_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Days before a baseline is considered 'stale'. Default: 30."
+        }
+      },
+      "additionalProperties": false
+    },
+    "review": {
+      "description": "Review packet configuration for merge-readiness artifacts (Q10).",
+      "type": "object",
+      "properties": {
+        "auto_save": {
+          "description": "Automatically save review packets (JSON + Markdown) after each run.",
+          "type": "boolean",
+          "default": false
+        },
+        "default_format": {
+          "description": "Default output format for `oco runs review-pack`.",
+          "type": "string",
+          "enum": ["terminal", "markdown", "json"],
+          "default": "terminal"
+        },
+        "output_dir": {
+          "description": "Directory to save review packets. If omitted, packets are saved to the run directory.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,

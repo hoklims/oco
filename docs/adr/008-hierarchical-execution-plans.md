@@ -79,7 +79,7 @@ GraphRunner.execute(plan):
 
 ### Constraints
 
-1. **Max depth: 2 levels** (configurable in `oco.toml`). Root plan → sub-plan. No sub-sub-plans. This prevents token explosion and matches Claude Code's current 2-level hierarchy (lead → teammates/subagents).
+1. **Max depth: 2 levels** (fixed, enforced via `MAX_SUB_PLAN_DEPTH` constant). Root plan → sub-plan. No sub-sub-plans. This prevents token explosion and matches Claude Code's current 2-level hierarchy (lead → teammates/subagents). This limit is intentionally not configurable — depth 2 covers 99% of real-world cases, and deeper nesting would dramatically increase token cost and complexity.
 
 2. **Budget pre-reservation**: Before executing a sub-plan, the parent GraphRunner reserves estimated tokens from its budget. If insufficient, the step fails without starting the sub-plan.
 
