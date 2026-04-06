@@ -132,9 +132,9 @@ if [[ -f package.json ]]; then
   echo "  ✓ package.json → $NEW_VERSION"
 fi
 
-# VS Code extension
+# VS Code extension (may be out of sync — force to new version)
 if [[ -f apps/vscode-extension/package.json ]]; then
-  sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" apps/vscode-extension/package.json
+  sed -i "s/\"version\": \"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\"/\"version\": \"$NEW_VERSION\"/" apps/vscode-extension/package.json
   echo "  ✓ vscode-extension/package.json → $NEW_VERSION"
 fi
 
