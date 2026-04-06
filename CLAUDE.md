@@ -180,7 +180,7 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (980+)
+cargo test                               # All tests (1097+)
 cargo test -p oco-shared-types           # 417+ tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate, gate config, baseline freshness, review artifacts, review packet, review config, promotion, diff, history
 cargo test -p oco-policy-engine          #  79 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
