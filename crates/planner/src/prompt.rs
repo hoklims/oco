@@ -22,6 +22,7 @@ pub fn system_prompt(context: &PlanningContext) -> String {
 5. Use read_only roles for investigation/review steps.
 6. Keep plans shallow: 2-5 steps for Medium, 3-8 for High, 5-12 for Critical.
 7. Each step must use only capabilities available in the registry below.
+8. When the user message includes a "Prior Art Research" section, you MUST include the recommended research steps before any implementation step. Research steps should use subagent execution mode with read_only roles and web_search capability.
 
 ## Execution Modes
 
@@ -163,6 +164,38 @@ pub fn user_message_with_bias(request: &str, context: &PlanningContext, bias: Pl
         }
     }
 
+    // Inject prior-art research recommendation for non-trivial tasks
+    if context.needs_planning() {
+        let prior_art = crate::prior_art::analyze_prior_art(request, context);
+        if prior_art.any() {
+            msg.push_str("\n\n## Prior Art Research\n\n");
+            msg.push_str(&prior_art.rationale);
+            msg.push_str(
+                "\n\nIMPORTANT: Add research steps BEFORE implementation steps in the plan:\n",
+            );
+            if prior_art.should_search_oss {
+                msg.push_str(&format!(
+                    "- Add a 'research-oss' step (subagent, read_only, web_search) to find existing open-source solutions. Search hints: {}\n",
+                    prior_art.oss_search_hints.join(", ")
+                ));
+                if !prior_art.registries.is_empty() {
+                    msg.push_str(&format!(
+                        "  Check registries: {}\n",
+                        prior_art.registries.join(", ")
+                    ));
+                }
+            }
+            if prior_art.should_search_papers {
+                msg.push_str(&format!(
+                    "- Add a 'research-papers' step (subagent, read_only, web_search) to find recent research papers. Search hints: {}\n",
+                    prior_art.paper_search_hints.join(", ")
+                ));
+            }
+            msg.push_str("- Add a 'synthesize-research' step that depends on the research steps, summarizing findings and recommending whether to use an existing solution or build from scratch.\n");
+            msg.push_str("- Implementation steps must depend on 'synthesize-research'.\n");
+        }
+    }
+
     // Append bias hint
     match bias {
         PlanBias::Balanced => {}
@@ -300,5 +333,58 @@ mod tests {
         );
         assert!(msg.contains("Step output before failure"));
         assert!(msg.contains("session.user_id as i32"));
+    }
+
+    #[test]
+    fn user_message_includes_prior_art_for_new_feature() {
+        let ctx = PlanningContext::minimal(TaskComplexity::Medium, TaskCategory::NewFeature);
+        let msg = user_message("add JWT authentication", &ctx);
+
+        assert!(msg.contains("Prior Art Research"));
+        assert!(msg.contains("research-oss"));
+        assert!(msg.contains("synthesize-research"));
+    }
+
+    #[test]
+    fn user_message_no_prior_art_for_bug() {
+        let ctx = PlanningContext::minimal(TaskComplexity::Medium, TaskCategory::Bug);
+        let msg = user_message("fix null pointer in user handler", &ctx);
+
+        assert!(!msg.contains("Prior Art Research"));
+    }
+
+    #[test]
+    fn user_message_no_prior_art_for_trivial() {
+        let ctx = PlanningContext::minimal(TaskComplexity::Trivial, TaskCategory::NewFeature);
+        let msg = user_message("add logging", &ctx);
+
+        assert!(!msg.contains("Prior Art Research"));
+    }
+
+    #[test]
+    fn user_message_includes_paper_search_for_algorithm() {
+        let ctx = PlanningContext::minimal(TaskComplexity::Medium, TaskCategory::NewFeature);
+        let msg = user_message("implement a compression algorithm", &ctx);
+
+        assert!(msg.contains("Prior Art Research"));
+        assert!(msg.contains("research-papers"));
+        assert!(msg.contains("research-oss"));
+    }
+
+    #[test]
+    fn user_message_includes_registries_for_rust() {
+        let mut ctx = PlanningContext::minimal(TaskComplexity::Medium, TaskCategory::NewFeature);
+        ctx.repo_profile.stack = "rust".into();
+        let msg = user_message("add HTTP client", &ctx);
+
+        assert!(msg.contains("crates.io"));
+    }
+
+    #[test]
+    fn system_prompt_contains_prior_art_rule() {
+        let ctx = PlanningContext::minimal(TaskComplexity::Medium, TaskCategory::NewFeature);
+        let prompt = system_prompt(&ctx);
+
+        assert!(prompt.contains("Prior Art Research"));
     }
 }

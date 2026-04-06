@@ -64,7 +64,7 @@ Polyglot monorepo: **Rust core** + **Python ML worker** + **TypeScript VS Code e
 | 7 | `verifier` | Test/build/lint/typecheck runners with auto-detection |
 | 8 | `telemetry` | Tracing init, decision trace collector, event recording |
 | 9 | `context-engine` | Context assembly, dedup, compression, staleness decay, category budgets, **step-scoped filtering** |
-| 10 | **`planner`** | **Task decomposition: DirectPlanner (Trivial/Low) + LlmPlanner (Medium+) → ExecutionPlan DAG** |
+| 10 | **`planner`** | **Task decomposition: DirectPlanner (Trivial/Low) + LlmPlanner (Medium+) → ExecutionPlan DAG, prior art analysis (OSS + research papers)** |
 | 11 | `orchestrator-core` | State machine, action loop, **GraphRunner (DAG execution)**, **LlmRouter (multi-model + effort)**, **AgentTeamsExecutor**, LLM providers, runtime, eval runner, repo profiles |
 | 12 | `mcp-server` | Axum HTTP + MCP server, session management, **HTTP hook endpoints** (Claude Code v2.1.63+), **oco_routes/oco_impact tools** |
 | 13 | **`claude-adapter`** | **Boundary layer: ClaudeVersion detection, ClaudeHookEvent (24 events), HookDecision, ClaudeCapabilities, IntegrationMode, DoctorCheck** |
@@ -119,7 +119,7 @@ User Request → Classifier → Trivial/Low: flat loop (unchanged)
 - `BaselineHistory` — Q11 append-only audit trail, schema_version=1. `append()`, `recent()`, `save_to()`/`load_from()`, `to_report()`, `to_markdown()`, `to_json()`
 
 **Key modules**:
-- `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan)
+- `planner/` — `DirectPlanner` (no LLM) + `LlmPlanner` (structured JSON output, dep name→UUID, team generation, replan) + `prior_art` (deterministic OSS/paper research recommendation)
 - `orchestrator-core/graph_runner.rs` — `GraphRunner` with parallel execution (tokio::spawn), verify gates, budget pre-reservation, no-progress guard, JoinError→Failed
 - `orchestrator-core/llm_router.rs` — `LlmRouter` per-step model + effort selection (`RoutingDecision`), role heuristic + budget downgrade
 - `orchestrator-core/agent_teams.rs` — `AgentTeamsExecutor` maps PlanSteps to Claude Code Agent Teams (worktree isolation, async lifecycle, typed errors)
@@ -188,7 +188,7 @@ cargo test -p oco-code-intel             #  37 tests — parser, indexer, langua
 cargo test -p oco-retrieval              #  26 tests — FTS5, vector, hybrid ranking, call graph storage & BFS traversal
 cargo test -p oco-telemetry              #  22 tests — event recording, JSONL export, hook telemetry
 cargo test -p oco-claude-adapter         #  70 tests — version detection, 24 hook events, capability matrix, integration modes, doctor checks
-cargo test -p oco-planner               #  52 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, sub-plan parsing
+cargo test -p oco-planner               #  85 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, prior art analysis, sub-plan parsing
 cargo test -p oco-orchestrator-core      # 159 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution, mission memory, scorecard builder, gate config, gate config strict, review packet builder, review config, baseline promotion
 cargo test -p oco-mcp-server             #  37 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools
 cargo test -p oco-verifier               #  48 tests — test/build/lint/typecheck runners, auto-detection, tiered e2e
