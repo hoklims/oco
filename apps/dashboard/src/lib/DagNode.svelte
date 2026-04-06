@@ -12,6 +12,29 @@
   let tokensUsed = $derived(data.tokens_used as number | null)
   let teammateColor = $derived((data.teammateColor as string | null) ?? null)
   let subSteps = $derived((data.subSteps as Array<{ id: string; name: string; status: string }> | null) ?? null)
+  /**
+   * Phase offset (ms) injected by PlanMap from a shared clock. Tied to
+   * `animation-delay` of the glow so all running nodes pulse in phase,
+   * making parallel execution visually obvious.
+   */
+  let animPhase = $derived((data.animPhaseMs as number | null) ?? 0)
+
+  // ── One-shot transition animations ─────────────────────────
+  // Each status transition fires a dedicated animation key so CSS
+  // `:key()` can retrigger the keyframes cleanly without restarting
+  // the continuous glow on the wrapper.
+  let launchKey = $state(0)
+  let completeKey = $state(0)
+  let prevStatus: string | undefined
+
+  $effect(() => {
+    const s = status
+    if (prevStatus === undefined) { prevStatus = s; return }
+    if (s === prevStatus) return
+    if (s === 'running') launchKey += 1
+    if (s === 'passed' || s === 'failed') completeKey += 1
+    prevStatus = s
+  })
 
   // ── Role colors ────────────────────────────────────────────
   const roleColor: Record<string, { bg: string; border: string; text: string; glow: string }> = {
@@ -22,6 +45,8 @@
     verifier:    { bg: 'rgba(52,211,153,0.06)',  border: '#34d39930', text: '#34d399', glow: 'rgba(52,211,153,0.2)' },
     planner:     { bg: 'rgba(167,139,250,0.06)', border: '#a78bfa30', text: '#a78bfa', glow: 'rgba(167,139,250,0.2)' },
     reviewer:    { bg: 'rgba(52,211,153,0.06)',  border: '#34d39930', text: '#34d399', glow: 'rgba(52,211,153,0.2)' },
+    researcher:  { bg: 'rgba(249,115,22,0.06)',  border: '#f9731630', text: '#f97316', glow: 'rgba(249,115,22,0.2)' },
+    analyst:     { bg: 'rgba(20,184,166,0.06)',  border: '#14b8a630', text: '#14b8a6', glow: 'rgba(20,184,166,0.2)' },
   }
 
   let rc = $derived(roleColor[role] ?? { bg: 'rgba(92,99,120,0.06)', border: '#5c637830', text: '#5c6378', glow: 'rgba(92,99,120,0.2)' })
@@ -30,6 +55,7 @@
     scout: 'SCOUT', explorer: 'EXPLORER', architect: 'ARCH',
     implementer: 'IMPL', verifier: 'VERIFY', reviewer: 'REVIEW',
     planner: 'PLAN', tester: 'TEST',
+    researcher: 'RESEARCH', analyst: 'SYNTH',
   }
 
   const MODE_COLORS = {
@@ -71,10 +97,23 @@
     box-shadow: {statusGlow};
     {stripeStyle}
     transition: background 0.6s ease, border-color 0.6s ease, box-shadow 0.6s ease, opacity 0.5s ease, filter 0.8s ease;
+    --anim-phase: -{animPhase}ms;
   "
 >
   <Handle type="target" position={Position.Left} />
   <Handle type="source" position={Position.Right} />
+
+  <!-- One-shot transition overlays (re-keyed per transition) -->
+  {#key launchKey}
+    {#if launchKey > 0}
+      <span class="launch-ring" aria-hidden="true"></span>
+    {/if}
+  {/key}
+  {#key completeKey}
+    {#if completeKey > 0}
+      <span class="complete-burst {status === 'passed' ? 'burst-ok' : 'burst-fail'}" aria-hidden="true"></span>
+    {/if}
+  {/key}
 
   <!-- Row 1: role label + status icon -->
   <div class="dag-header">
@@ -148,12 +187,65 @@
 
   .dag-node-pending { opacity: 0.4; }
 
-  .dag-node-running {
-    animation: dag-glow 2.5s ease-in-out infinite;
+  /*
+   * Running glow — isolated in a pseudo-element so it isn't retriggered
+   * when children (sub-strip, stats) re-render on event updates.
+   *
+   * Parallel nodes pulse in phase: each node receives `--anim-phase` from
+   * the PlanMap common clock, making the pulsation synchronized across
+   * simultaneously-running steps (confirms parallelism to the user).
+   */
+  .dag-node { position: relative; }
+  .dag-node-running::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: 11px;
+    pointer-events: none;
+    animation: dag-glow-ring 2.5s ease-in-out infinite;
+    animation-delay: var(--anim-phase, 0ms);
   }
-  @keyframes dag-glow {
-    0%, 100% { filter: brightness(1); }
-    50% { filter: brightness(1.15); }
+  @keyframes dag-glow-ring {
+    0%, 100% { box-shadow: 0 0 6px 0 rgba(34, 211, 238, 0.18); }
+    50%      { box-shadow: 0 0 14px 2px rgba(34, 211, 238, 0.42); }
+  }
+
+  /*
+   * Launch ring — expanding halo that fires ONCE on pending→running.
+   * Signals "this step just started" with a single outward wave.
+   */
+  .launch-ring {
+    position: absolute;
+    inset: -2px;
+    border-radius: 12px;
+    border: 1.5px solid rgba(34, 211, 238, 0.6);
+    pointer-events: none;
+    animation: launch-expand 700ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+  }
+  @keyframes launch-expand {
+    0%   { transform: scale(1);    opacity: 1;   }
+    60%  { transform: scale(1.12); opacity: 0.5; }
+    100% { transform: scale(1.25); opacity: 0;   }
+  }
+
+  /*
+   * Completion burst — bright flash that fires ONCE on
+   * running→passed (green) or running→failed (red). Confirms the
+   * transition with a clear visual pulse.
+   */
+  .complete-burst {
+    position: absolute;
+    inset: -1px;
+    border-radius: 11px;
+    pointer-events: none;
+    animation: burst-fade 900ms ease-out forwards;
+  }
+  .burst-ok   { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);  background: radial-gradient(ellipse at center, rgba(52, 211, 153, 0.35), transparent 70%); }
+  .burst-fail { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0); background: radial-gradient(ellipse at center, rgba(248, 113, 113, 0.35), transparent 70%); }
+  @keyframes burst-fade {
+    0%   { opacity: 0;    transform: scale(0.95); }
+    25%  { opacity: 0.9;  transform: scale(1.04); }
+    100% { opacity: 0;    transform: scale(1.08); }
   }
 
   /*
@@ -212,6 +304,25 @@
   .sub-item.sub-running { color: #fbbf24; }
   .sub-item.sub-done { color: #34d399; }
   .sub-item.sub-fail { color: #f87171; }
+
+  /*
+   * Running sub-step gets a shimmering label to signal "live work in
+   * progress". Wave of brightness scans through the label text.
+   */
+  .sub-item.sub-running .sub-label {
+    background: linear-gradient(90deg,
+      #fbbf24 0%, #fef3c7 40%, #fbbf24 60%, #fbbf24 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: sub-shimmer 1.6s ease-in-out infinite;
+  }
+  @keyframes sub-shimmer {
+    0%   { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+  }
+
   .sub-dot {
     width: 5px;
     height: 5px;
@@ -219,13 +330,36 @@
     flex-shrink: 0;
     transition: all 0.3s;
   }
+  /*
+   * Running sub-dot gets a pulsing halo to catch the eye without
+   * disrupting the parent node's glow (isolated via ::after).
+   */
+  .sub-item.sub-running .sub-dot {
+    position: relative;
+    animation: sub-dot-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes sub-dot-pulse {
+    0%, 100% { transform: scale(1);   box-shadow: 0 0 3px rgba(251, 191, 36, 0.5); }
+    50%      { transform: scale(1.3); box-shadow: 0 0 6px rgba(251, 191, 36, 0.9); }
+  }
   .sub-label {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 140px;
   }
-  .sub-check { font-size: 9px; color: #34d399; margin-left: auto; font-weight: 700; }
+  .sub-check {
+    font-size: 9px;
+    color: #34d399;
+    margin-left: auto;
+    font-weight: 700;
+    animation: check-pop 400ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+  @keyframes check-pop {
+    0%   { transform: scale(0);   opacity: 0; }
+    70%  { transform: scale(1.3); opacity: 1; }
+    100% { transform: scale(1);   opacity: 1; }
+  }
   .sub-fail-icon { font-size: 9px; color: #f87171; margin-left: auto; font-weight: 700; }
   .sub-counter {
     font-family: ui-monospace, monospace;

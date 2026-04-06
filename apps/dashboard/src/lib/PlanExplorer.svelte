@@ -10,17 +10,31 @@
   } from '@xyflow/svelte'
   import '@xyflow/svelte/dist/style.css'
   import dagre from 'dagre'
-  import { DEMO_PLAN_SPEED, DEMO_PLAN_SAFETY } from './demo'
+  import { DEMO_PLAN_SPEED, DEMO_PLAN_SAFETY, type CompetitivePlan } from './demo'
 
-  let { phase }: {
+  let { phase, plans }: {
     phase: 'idle' | 'generating' | 'comparing' | 'scoring' | 'selecting' | 'done'
+    /**
+     * Optional scenario-specific candidate plans. When omitted, falls
+     * back to the generic demo plans (DEMO_PLAN_SPEED / DEMO_PLAN_SAFETY).
+     */
+    plans?: { loser: CompetitivePlan; winner: CompetitivePlan }
   } = $props()
 
-  const speed = DEMO_PLAN_SPEED
-  const safety = DEMO_PLAN_SAFETY
+  // Component remounts when entering 'explorer' mode, so reading `plans`
+  // once at init is safe. We capture via a local helper to silence the
+  // Svelte "state_referenced_locally" warning.
+  function initialPlans(): { loser: CompetitivePlan; winner: CompetitivePlan } {
+    return {
+      loser: plans?.loser ?? DEMO_PLAN_SPEED,
+      winner: plans?.winner ?? DEMO_PLAN_SAFETY,
+    }
+  }
+  const { loser: speed, winner: safety } = initialPlans()
   const rc: Record<string, string> = {
     scout: '#4b8df8', architect: '#a78bfa',
     implementer: '#22d3ee', tester: '#fbbf24', verifier: '#34d399',
+    researcher: '#f97316', analyst: '#14b8a6',
   }
 
   // --- Animation states ---
@@ -274,10 +288,12 @@
       else if (phase === 'scoring') showScoring()
       else if (phase === 'selecting') selectWinner()
       else if (phase === 'done') {
-        // Smooth exit — hold overlay visible during CSS fade-out
+        // Stay visible in "done" state until the parent unmounts us by
+        // changing execMode. In manual mode, the user controls pacing —
+        // auto-hiding would create a blank screen and look like a crash.
+        // The winner highlight from selectWinner() stays on screen.
         exitHold = true
-        startExit()
-        timers.push(setTimeout(() => { exitHold = false; cleanup() }, 1200))
+        cleanup()
       }
       else if (phase === 'idle') cleanup()
     }, 80)
@@ -312,7 +328,7 @@
       elementsSelectable={false}
       proOptions={{ hideAttribution: true }}
     >
-      <Background variant={BackgroundVariant.Dots} gap={24} size={0.4} bgColor="#08090c" color="#1c203030" />
+      <Background variant={BackgroundVariant.Dots} gap={24} size={0.4} bgColor="#08090c" patternColor="#1c203030" />
     </SvelteFlow>
   </div>
 {/if}
