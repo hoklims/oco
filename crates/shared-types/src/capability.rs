@@ -727,6 +727,69 @@ impl RegistrySummary {
     pub fn total(&self) -> usize {
         self.tools.len() + self.mcp.len() + self.agents.len() + self.skills.len() + self.llms.len()
     }
+
+    /// Check if any item across all categories has a matching capability string.
+    ///
+    /// Performs case-insensitive substring matching against item IDs, names,
+    /// and declared capabilities. Broad search — use `has_tool_capability()`
+    /// for precise gating on executable tools only.
+    pub fn has_capability(&self, cap: &str) -> bool {
+        let cap_lower = cap.to_lowercase();
+        self.all_items().any(|item| {
+            item.id.to_lowercase().contains(&cap_lower)
+                || item.name.to_lowercase().contains(&cap_lower)
+                || item
+                    .capabilities
+                    .iter()
+                    .any(|c| c.to_lowercase().contains(&cap_lower))
+        })
+    }
+
+    /// Check if any executable tool (local tool or MCP tool) declares a
+    /// capability matching the given string exactly (case-insensitive).
+    ///
+    /// Unlike `has_capability()`, this:
+    /// - Only checks `tools` and `mcp` categories (not agents/skills/llms).
+    /// - Only matches the declared `capabilities` field (not id/name).
+    /// - Uses exact equality, not substring matching.
+    ///
+    /// Use this for hard gating decisions (e.g., "can we actually run a search?").
+    pub fn has_tool_capability(&self, cap: &str) -> bool {
+        let cap_lower = cap.to_lowercase();
+        self.tools.iter().chain(&self.mcp).any(|item| {
+            item.capabilities
+                .iter()
+                .any(|c| c.to_lowercase() == cap_lower)
+        })
+    }
+
+    /// Return the first matching capability string found in tools/MCP.
+    /// Useful to discover the actual capability name for prompt injection.
+    pub fn find_tool_capability(&self, candidates: &[&str]) -> Option<String> {
+        for cap in candidates {
+            let cap_lower = cap.to_lowercase();
+            for item in self.tools.iter().chain(&self.mcp) {
+                if let Some(found) = item
+                    .capabilities
+                    .iter()
+                    .find(|c| c.to_lowercase() == cap_lower)
+                {
+                    return Some(found.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Iterate over all summary items across every category.
+    fn all_items(&self) -> impl Iterator<Item = &SummaryItem> {
+        self.tools
+            .iter()
+            .chain(&self.mcp)
+            .chain(&self.agents)
+            .chain(&self.skills)
+            .chain(&self.llms)
+    }
 }
 
 /// A single entry in the registry summary.
@@ -1539,6 +1602,238 @@ mod tests {
             ExecutionPhase::Verify
                 .relevant_capabilities()
                 .contains(&"test_run")
+        );
+    }
+
+    // -- RegistrySummary::has_capability --
+
+    #[test]
+    fn has_capability_matches_item_id() {
+        let summary = RegistrySummary {
+            tools: vec![SummaryItem {
+                id: "web_search".into(),
+                name: "Search".into(),
+                capabilities: vec![],
+            }],
+            mcp: vec![],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        assert!(summary.has_capability("web_search"));
+        assert!(summary.has_capability("Web_Search")); // case-insensitive
+    }
+
+    #[test]
+    fn has_capability_matches_item_name() {
+        let summary = RegistrySummary {
+            tools: vec![SummaryItem {
+                id: "tool:1".into(),
+                name: "Web Search Tool".into(),
+                capabilities: vec![],
+            }],
+            mcp: vec![],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        assert!(summary.has_capability("search")); // substring match: "Web Search Tool" contains "search"
+        assert!(summary.has_capability("Web Search")); // case-insensitive substring
+    }
+
+    #[test]
+    fn has_capability_matches_declared_capabilities() {
+        let summary = RegistrySummary {
+            tools: vec![],
+            mcp: vec![SummaryItem {
+                id: "mcp:perplexity".into(),
+                name: "Perplexity".into(),
+                capabilities: vec!["web_search".into(), "research".into()],
+            }],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        assert!(summary.has_capability("web_search"));
+        assert!(summary.has_capability("research"));
+    }
+
+    #[test]
+    fn has_capability_returns_false_when_absent() {
+        let summary = RegistrySummary {
+            tools: vec![SummaryItem {
+                id: "file_read".into(),
+                name: "File Read".into(),
+                capabilities: vec!["read".into()],
+            }],
+            mcp: vec![],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        assert!(!summary.has_capability("web_search"));
+    }
+
+    #[test]
+    fn has_capability_empty_registry() {
+        let summary = RegistrySummary {
+            tools: vec![],
+            mcp: vec![],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        assert!(!summary.has_capability("anything"));
+    }
+
+    #[test]
+    fn has_capability_searches_all_categories() {
+        let summary = RegistrySummary {
+            tools: vec![],
+            mcp: vec![],
+            agents: vec![],
+            skills: vec![SummaryItem {
+                id: "research-deep".into(),
+                name: "Deep Research".into(),
+                capabilities: vec!["search".into()],
+            }],
+            llms: vec![],
+        };
+        assert!(summary.has_capability("search"));
+    }
+
+    // -- RegistrySummary::has_tool_capability --
+
+    #[test]
+    fn has_tool_capability_exact_match_on_tools() {
+        let summary = RegistrySummary {
+            tools: vec![SummaryItem {
+                id: "perplexity".into(),
+                name: "Perplexity Search".into(),
+                capabilities: vec!["web_search".into()],
+            }],
+            mcp: vec![],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        assert!(summary.has_tool_capability("web_search"));
+        assert!(summary.has_tool_capability("Web_Search")); // case-insensitive
+        assert!(!summary.has_tool_capability("search")); // no substring: "web_search" != "search"
+    }
+
+    #[test]
+    fn has_tool_capability_checks_mcp() {
+        let summary = RegistrySummary {
+            tools: vec![],
+            mcp: vec![SummaryItem {
+                id: "mcp:perplexity".into(),
+                name: "Perplexity".into(),
+                capabilities: vec!["web_search".into(), "search".into()],
+            }],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        assert!(summary.has_tool_capability("web_search"));
+        assert!(summary.has_tool_capability("search"));
+    }
+
+    #[test]
+    fn has_tool_capability_ignores_agents_skills_llms() {
+        let summary = RegistrySummary {
+            tools: vec![],
+            mcp: vec![],
+            agents: vec![SummaryItem {
+                id: "researcher".into(),
+                name: "Deep Research Agent".into(),
+                capabilities: vec!["search".into()],
+            }],
+            skills: vec![SummaryItem {
+                id: "research-deep".into(),
+                name: "Research".into(),
+                capabilities: vec!["search".into()],
+            }],
+            llms: vec![],
+        };
+        // has_capability (broad) finds it
+        assert!(summary.has_capability("search"));
+        // has_tool_capability (strict) does NOT
+        assert!(!summary.has_tool_capability("search"));
+    }
+
+    #[test]
+    fn has_tool_capability_no_name_substring_match() {
+        let summary = RegistrySummary {
+            tools: vec![SummaryItem {
+                id: "tool:1".into(),
+                name: "Web Search Tool".into(),
+                capabilities: vec!["file_read".into()],
+            }],
+            mcp: vec![],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        // has_capability (broad) matches on name
+        assert!(summary.has_capability("search"));
+        // has_tool_capability (strict) does NOT — only checks capabilities field
+        assert!(!summary.has_tool_capability("search"));
+    }
+
+    // -- RegistrySummary::find_tool_capability --
+
+    #[test]
+    fn find_tool_capability_returns_first_match() {
+        let summary = RegistrySummary {
+            tools: vec![],
+            mcp: vec![SummaryItem {
+                id: "mcp:perplexity".into(),
+                name: "Perplexity".into(),
+                capabilities: vec!["web_search".into()],
+            }],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        assert_eq!(
+            summary.find_tool_capability(&["web_search", "search"]),
+            Some("web_search".into())
+        );
+    }
+
+    #[test]
+    fn find_tool_capability_falls_through_to_second() {
+        let summary = RegistrySummary {
+            tools: vec![SummaryItem {
+                id: "tool:search".into(),
+                name: "Search".into(),
+                capabilities: vec!["search".into()],
+            }],
+            mcp: vec![],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        // "web_search" not found, falls through to "search"
+        assert_eq!(
+            summary.find_tool_capability(&["web_search", "search"]),
+            Some("search".into())
+        );
+    }
+
+    #[test]
+    fn find_tool_capability_returns_none_when_absent() {
+        let summary = RegistrySummary {
+            tools: vec![],
+            mcp: vec![],
+            agents: vec![],
+            skills: vec![],
+            llms: vec![],
+        };
+        assert_eq!(
+            summary.find_tool_capability(&["web_search", "search"]),
+            None
         );
     }
 }
