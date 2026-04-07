@@ -32,13 +32,21 @@ const serverManager = {
 
     this._ready = new Promise((resolve, reject) => {
       const args = ["serve", "--port", "0"];
-      // Resolve dashboard dist path relative to this bridge file.
-      const dashboardDir = process.env.OCO_DASHBOARD_DIR ||
-        path.resolve(__dirname, "../../apps/dashboard/dist");
+      // Resolve dashboard dist path: env var > relative to bridge > skip if not found.
+      const candidates = [
+        process.env.OCO_DASHBOARD_DIR,
+        path.resolve(__dirname, "../../apps/dashboard/dist"),
+      ].filter(Boolean);
+      const dashboardDir = candidates.find(d => {
+        try { return fs.statSync(d).isDirectory(); } catch { return false; }
+      });
+      const env = { ...process.env };
+      if (dashboardDir) env.OCO_DASHBOARD_DIR = dashboardDir;
+      this._dashboardAvailable = !!dashboardDir;
       const proc = spawn(OCO_BIN, args, {
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
-        env: { ...process.env, OCO_DASHBOARD_DIR: dashboardDir },
+        env,
       });
 
       this._proc = proc;
@@ -202,6 +210,7 @@ const TOOLS = [
       },
       required: ["query"],
     },
+    annotations: { "anthropic/maxResultSizeChars": 200000 },
   },
   {
     name: "oco.trace_error",
@@ -221,6 +230,7 @@ const TOOLS = [
       },
       required: ["stacktrace"],
     },
+    annotations: { "anthropic/maxResultSizeChars": 200000 },
   },
   {
     name: "oco.verify_patch",
@@ -255,6 +265,7 @@ const TOOLS = [
         },
       },
     },
+    annotations: { "anthropic/maxResultSizeChars": 200000 },
   },
   {
     name: "oco.working_memory",
@@ -327,6 +338,7 @@ const TOOLS = [
       },
       required: ["task"],
     },
+    annotations: { "anthropic/maxResultSizeChars": 200000 },
   },
   {
     name: "oco.open_dashboard",
@@ -734,18 +746,23 @@ async function openDashboard(id, args) {
     });
   }
 
-  // Open dashboard in browser
+  // Open dashboard in browser (only if dashboard dist is available)
   const dashboardUrl = `http://127.0.0.1:${port}/dashboard?live=${sessionId}`;
-  openBrowser(dashboardUrl);
+  const hasDashboardUI = !!serverManager._dashboardAvailable;
+  if (hasDashboardUI) {
+    openBrowser(dashboardUrl);
+  }
 
   return respondStructured(id, {
-    summary: `Dashboard opened at ${dashboardUrl}`,
+    summary: hasDashboardUI
+      ? `Dashboard opened at ${dashboardUrl}`
+      : `Session created (API tracking active, dashboard UI not available — set OCO_DASHBOARD_DIR)`,
     evidence: [{
       session_id: sessionId,
       port,
-      dashboard_url: dashboardUrl,
+      dashboard_url: hasDashboardUI ? dashboardUrl : null,
     }],
-    risks: [],
+    risks: hasDashboardUI ? [] : ["Dashboard UI not available — events are tracked via API only"],
     next_step: "Use oco.emit_phase to push lifecycle updates to the dashboard",
     confidence: 1.0,
   });

@@ -26,12 +26,23 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit",
+        "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",
             "command": "node .claude/hooks/post-tool-use.mjs",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/post-tool-use.mjs",
+            "timeout": 10,
+            "async": true
           }
         ]
       }
@@ -52,13 +63,17 @@
   "mcpServers": {
     "oco": {
       "command": "node",
-      "args": [".claude/mcp/bridge.cjs"],
+      "args": [
+        ".claude/mcp/bridge.cjs"
+      ],
       "env": {
         "OCO_BIN": "oco"
       }
     }
   },
   "permissions": {
-    "allow": ["Bash(oco *)"]
+    "allow": [
+      "Bash(oco *)"
+    ]
   }
 }

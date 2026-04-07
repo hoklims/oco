@@ -222,6 +222,19 @@ async function install() {
     if (mcpEntry.oco?.args?.[0]) {
       mcpEntry.oco.args[0] = join(targetDir, 'mcp/bridge.cjs');
     }
+    // Auto-detect dashboard dist path from known locations
+    if (mcpEntry.oco?.env && !mcpEntry.oco.env.OCO_DASHBOARD_DIR) {
+      const dashboardCandidates = [
+        // Sibling to the oco binary's source repo (common dev layout)
+        ...findAllOcoBinaries().map(b => join(dirname(dirname(b.path)), 'apps', 'dashboard', 'dist')),
+        // Adjacent to cli.mjs (when installed from the source repo)
+        join(dirname(fileURLToPath(import.meta.url)), 'apps', 'dashboard', 'dist'),
+      ];
+      const found = dashboardCandidates.find(d => { try { return statSync(d).isDirectory(); } catch { return false; } });
+      if (found) {
+        mcpEntry.oco.env.OCO_DASHBOARD_DIR = found;
+      }
+    }
 
     if (existsSync(mcpJsonPath)) {
       // Merge: add oco key without overwriting other servers
