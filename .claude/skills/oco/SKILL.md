@@ -15,7 +15,17 @@ triggers:
 
 # OCO: Orchestrated Coding Workflow
 
-Structured workflow with **live dashboard tracking**. Each phase emits rich events to the dashboard after completion. The dashboard plays them back with choreographed animations — always one step behind for the user to admire.
+Structured workflow with **live dashboard tracking**. Each phase emits rich events to the dashboard after completion.
+
+## Critical Rule: Plan ↔ Execution Consistency
+
+The dashboard renders a DAG of nodes from `plan_generated`. Each node tracks status via `step_started` / `step_completed` events. **If step IDs or names don't match between plan and execution, the nodes won't animate.** Therefore:
+
+1. **First, analyze the task and decide your real steps** (what you will actually do)
+2. **Then emit `plan_generated` with those exact steps** (names, IDs, count)
+3. **Then execute each step using the same IDs and names**
+
+Never emit a template/example plan. The plan must reflect your actual execution strategy.
 
 ## Step 1: Open Dashboard (MANDATORY)
 
@@ -31,58 +41,69 @@ oco.emit_events({ session_id: "<id>", events: [
 ] })
 ```
 
-## Step 2: Classify & Route
+## Step 2: Classify
 
-Do your analysis, then emit the classification result:
+Analyze the task complexity and category. Then emit:
 
 ```
 oco.emit_events({ session_id: "<id>", events: [
-  { "type": "flat_step_completed", "step": 0, "action_type": "classifying", "reason": "<complexity + reason>", "duration_ms": <actual_ms>, "budget_snapshot": {"tokens_used":0,"tokens_remaining":0,"tool_calls_used":0,"tool_calls_remaining":0,"retrievals_used":0,"verify_cycles_used":0,"elapsed_secs":0} }
+  { "type": "flat_step_completed", "step": 0, "action_type": "classifying", "reason": "<complexity — brief rationale>", "duration_ms": <actual_ms>, "budget_snapshot": {"tokens_used":0,"tokens_remaining":0,"tool_calls_used":0,"tool_calls_remaining":0,"retrievals_used":0,"verify_cycles_used":0,"elapsed_secs":0} }
 ] })
 ```
 
 ## Step 3: Plan — emit plan_exploration THEN plan_generated
 
-**CRITICAL SEQUENCE**: For Medium+ tasks, emit these events **in this exact order** in a **single** `emit_events` call. The dashboard plays the PlanExplorer animation (~13s) from `plan_exploration`, then reveals the PlanMap from `plan_generated`.
+**CRITICAL**: Emit both events in a **single** `emit_events` call. The dashboard plays the PlanExplorer animation from `plan_exploration`, then reveals the PlanMap from `plan_generated`.
+
+**Before emitting**: decide your real execution steps. Give each a stable UUID. These are the steps you WILL execute in Step 4.
 
 ```
 oco.emit_events({ session_id: "<id>", events: [
   {
     "type": "plan_exploration",
     "candidates": [
-      { "strategy": "speed", "step_count": 3, "estimated_tokens": 20000, "verify_count": 1, "parallel_groups": 1, "score": 0.55, "winner": false },
-      { "strategy": "safety", "step_count": 7, "estimated_tokens": 50000, "verify_count": 3, "parallel_groups": 2, "score": 0.82, "winner": true }
+      { "strategy": "speed", "step_count": <N>, "estimated_tokens": <T>, "verify_count": <V>, "parallel_groups": <P>, "score": <0.0-1.0>, "winner": false },
+      { "strategy": "safety", "step_count": <N>, "estimated_tokens": <T>, "verify_count": <V>, "parallel_groups": <P>, "score": <0.0-1.0>, "winner": true }
     ],
     "winner_strategy": "safety",
-    "winner_score": 0.82
+    "winner_score": <score>
   },
   {
     "type": "plan_generated",
-    "plan_id": "00000000-0000-0000-0000-000000000001",
-    "step_count": 7,
-    "parallel_group_count": 2,
-    "critical_path_length": 5,
-    "estimated_total_tokens": 50000,
+    "plan_id": "<uuid>",
+    "step_count": <N>,
+    "parallel_group_count": <P>,
+    "critical_path_length": <C>,
+    "estimated_total_tokens": <T>,
     "strategy": "Orchestrated",
     "team": null,
     "steps": [
-      { "id": "00000000-0000-0000-0000-000000000010", "name": "Root config", "description": "...", "role": "implementer", "execution_mode": "inline", "depends_on": [], "verify_after": false, "estimated_tokens": 5000, "preferred_model": null },
-      ...more steps...
+      {
+        "id": "<step-uuid-1>",
+        "name": "<REAL step name — what you will actually do>",
+        "description": "<what this step accomplishes>",
+        "role": "implementer|verifier|investigator",
+        "execution_mode": "inline",
+        "depends_on": [],
+        "verify_after": false,
+        "estimated_tokens": <T>,
+        "preferred_model": null
+      }
     ]
   }
 ] })
 ```
 
-**Build your candidates realistically**: the "speed" candidate should have fewer steps/verification, the "safety" candidate should have more steps with verification gates. Adjust step_count and scores based on actual task analysis.
+**Build candidates realistically**: "speed" should have fewer steps/verification, "safety" should have more. The winner's steps become your `plan_generated.steps`.
 
 ## Step 4: Execute — emit step_started BEFORE, step_completed AFTER each step
 
-For **each step** in the plan:
+For **each step** in the plan, using the **exact same ID and name** from `plan_generated`:
 
 **Before starting work:**
 ```
 oco.emit_events({ session_id: "<id>", events: [
-  { "type": "step_started", "step_id": "00000000-0000-0000-0000-000000000010", "step_name": "Root config", "role": "implementer", "execution_mode": "inline" }
+  { "type": "step_started", "step_id": "<step-uuid-1>", "step_name": "<SAME name as plan>", "role": "implementer", "execution_mode": "inline" }
 ] })
 ```
 
@@ -91,18 +112,18 @@ oco.emit_events({ session_id: "<id>", events: [
 **After completing the step:**
 ```
 oco.emit_events({ session_id: "<id>", events: [
-  { "type": "step_completed", "step_id": "00000000-0000-0000-0000-000000000010", "step_name": "Root config", "success": true, "duration_ms": 4500, "tokens_used": 3200, "detail_ref": null },
-  { "type": "progress", "completed": 1, "total": 7, "active_steps": [], "budget": {"tokens_used":3200,"tokens_remaining":46800,"tool_calls_used":8,"tool_calls_remaining":42,"retrievals_used":0,"verify_cycles_used":0,"elapsed_secs":12} }
+  { "type": "step_completed", "step_id": "<step-uuid-1>", "step_name": "<SAME name as plan>", "success": true, "duration_ms": <actual_ms>, "tokens_used": <estimated>, "detail_ref": null },
+  { "type": "progress", "completed": <N>, "total": <total_steps>, "active_steps": [], "budget": {"tokens_used":<N>,"tokens_remaining":<N>,"tool_calls_used":<N>,"tool_calls_remaining":<N>,"retrievals_used":0,"verify_cycles_used":<N>,"elapsed_secs":<N>} }
 ] })
 ```
 
-**Measure real durations** — track the time between step_started and step_completed calls.
-
 ## Step 5: Verify — emit verify_gate_result
+
+After running verification (build, test, lint):
 
 ```
 oco.emit_events({ session_id: "<id>", events: [
-  { "type": "verify_gate_result", "step_id": "00000000-0000-0000-0000-000000000070", "step_name": "Verify", "checks": [{"check_type":"build","passed":true,"summary":"Build succeeded"},{"check_type":"lint","passed":true,"summary":"No lint errors"}], "overall_passed": true, "replan_triggered": false }
+  { "type": "verify_gate_result", "step_id": "<verify-step-uuid>", "step_name": "<verify step name>", "checks": [{"check_type":"build","passed":true,"summary":"..."},{"check_type":"test","passed":true,"summary":"..."}], "overall_passed": true, "replan_triggered": false }
 ] })
 ```
 
@@ -110,17 +131,16 @@ oco.emit_events({ session_id: "<id>", events: [
 
 ```
 oco.emit_events({ session_id: "<id>", events: [
-  { "type": "run_stopped", "reason": "task_complete", "total_steps": 7, "total_tokens": 50000 }
+  { "type": "run_stopped", "reason": "task_complete", "total_steps": <N>, "total_tokens": <N> }
 ] })
 ```
 
 ## Rules
 
 - **Always open dashboard first** — Step 1 is non-negotiable
-- **Emit events AFTER each phase completes** — deferred, with real timing data
-- **plan_exploration MUST come before plan_generated** — this triggers the PlanExplorer animation
-- **Every step needs step_started + step_completed** — this populates the PlanMap
-- **Use consistent step IDs** — UUIDs from plan_generated must match step_started/step_completed
+- **Plan = execution contract** — `plan_generated.steps` must list the steps you will actually execute, with the exact IDs and names you will use in `step_started`/`step_completed`. If they don't match, the DAG nodes won't animate.
+- **Emit events AFTER each phase completes** — with real timing data
+- **plan_exploration + plan_generated in one call** — triggers the PlanExplorer → PlanMap animation sequence
 - **Measure real durations** — `duration_ms` should reflect actual work time
 - **Route to sub-skills** when intent matches — don't reinvent them
 - **Verify after code changes** — non-negotiable
