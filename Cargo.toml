@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.14.4"
+version = "0.14.5"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/open-context-orchestrator/oco"
