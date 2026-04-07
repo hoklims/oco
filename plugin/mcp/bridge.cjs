@@ -32,9 +32,10 @@ const serverManager = {
 
     this._ready = new Promise((resolve, reject) => {
       const args = ["serve", "--port", "0"];
-      // Resolve dashboard dist path: env var > relative to bridge > skip if not found.
+      // Resolve dashboard dist path: env var > bundled in plugin > dev repo layout > skip.
       const candidates = [
         process.env.OCO_DASHBOARD_DIR,
+        path.resolve(__dirname, "../dashboard"),
         path.resolve(__dirname, "../../apps/dashboard/dist"),
       ].filter(Boolean);
       const dashboardDir = candidates.find(d => {
