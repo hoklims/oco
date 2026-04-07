@@ -34,21 +34,12 @@ Clearly state:
 Before making any changes:
 
 1. **Run impact analysis** on the target symbol:
-   - **If `oco_impact` MCP tool is available** (preferred):
+   - **If `oco.search_codebase` MCP tool is available** (preferred):
      ```
-     oco_impact({ symbol: "<target>", max_depth: 5 })
+     oco.search_codebase({ query: "<target>", workspace: "." })
      ```
-     This returns all transitive callers (what breaks) and callees (what this depends on).
-   - **If `oco_routes` MCP tool is available** (alternative):
-     ```
-     oco_routes({ symbol: "<target>", direction: "both", max_depth: 5 })
-     ```
-   - **If yoyo MCP is available**:
-     ```
-     yoyo.impact({ symbol: "<target>" })
-     yoyo.judge_change({ description: "<refactoring description>" })
-     ```
-   - **Otherwise**: Use `oco.search_codebase` or Grep for symbol references manually.
+     This returns ranked, symbol-aware results showing where the target is defined and referenced.
+   - **Otherwise**: Use Grep for symbol references manually (`grep -rn "<target>" --include='*.rs'` etc.).
 
 2. **Map the dependency graph** from the impact results:
    - What depends on the thing being refactored? (callers — break risk)

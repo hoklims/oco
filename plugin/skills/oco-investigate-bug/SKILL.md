@@ -35,17 +35,15 @@ Clarify with the user if needed:
 Identify the subsystem and trace the code path:
 
 1. **Trace the call chain** of suspect functions:
-   - **If `oco_routes` MCP tool is available** (preferred):
+   - **If `oco.search_codebase` MCP tool is available** (preferred):
      ```
-     oco_routes({ symbol: "<suspect_function>", direction: "both", max_depth: 3 })
+     oco.search_codebase({ query: "<suspect_function>", workspace: "." })
      ```
-     This shows who calls the suspect function (entry points) and what it calls (downstream dependencies).
-   - **If yoyo MCP is available**:
+     Then use `oco.trace_error` if you have a stack trace:
      ```
-     yoyo.routes({ symbol: "<suspect_function>" })
-     yoyo.impact({ symbol: "<suspect_function>" })
+     oco.trace_error({ stacktrace: "<error output>", workspace: "." })
      ```
-   - **Otherwise**: Use `oco.search_codebase` or Grep to trace manually.
+   - **Otherwise**: Use Grep to find callers and callees manually.
 
 2. **Identify the code path** from user action to observed behavior using the call chain
 3. **List candidate files** (max 5 initial candidates) — prioritize by call chain proximity to the symptom

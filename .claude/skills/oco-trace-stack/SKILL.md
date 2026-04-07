@@ -36,16 +36,12 @@ Use `oco.trace_error` if available (parses frames, maps to codebase, identifies 
 oco.trace_error({ stacktrace: "<paste stacktrace>", workspace: "." })
 ```
 
-**Enrich with call graph** — trace the call chain around the error site:
-- **If `oco_routes` MCP tool is available**:
+**Enrich with codebase search** — find related symbols around the error site:
+- **If `oco.search_codebase` MCP tool is available**:
   ```
-  oco_routes({ symbol: "<failing_function>", direction: "both", max_depth: 3 })
+  oco.search_codebase({ query: "<failing_function>", workspace: "." })
   ```
-  This reveals the full call path to the error (callers = how we got here, callees = what failed downstream).
-- **If yoyo MCP is available**:
-  ```
-  yoyo.routes({ symbol: "<failing_function>" })
-  ```
+  This returns ranked results showing the function's definition and references across the codebase.
 
 Otherwise, manually inspect the files referenced in the stack trace using Read, starting from the deepest application frame (skip library/framework frames).
 

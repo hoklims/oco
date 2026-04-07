@@ -60,25 +60,17 @@ For each step, report:
 
 ## Step 4: Assess Results and Impact Coverage
 
-### 4a. Check impact coverage (if call graph is available)
+### 4a. Check impact coverage (if codebase search is available)
 
 For each modified function/method, check whether its callers are covered by tests:
 
-- **If `oco_impact` MCP tool is available**:
+- **If `oco.search_codebase` MCP tool is available**:
   ```
-  oco_impact({ symbol: "<modified_function>", max_depth: 2 })
+  oco.search_codebase({ query: "<modified_function>", workspace: "." })
   ```
-  Check: are the transitive callers exercised by the test suite?
+  Check: are the callers found in the results exercised by the test suite?
 
-- **If `oco_routes` MCP tool is available**:
-  ```
-  oco_routes({ symbol: "<modified_function>", direction: "callers", max_depth: 2 })
-  ```
-
-- **If yoyo MCP is available**:
-  ```
-  yoyo.impact({ symbol: "<modified_function>" })
-  ```
+- **Otherwise**: Use Grep to find callers of the modified function.
 
 Flag any caller that is NOT covered by existing tests as a potential regression blind spot.
 
