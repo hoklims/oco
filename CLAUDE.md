@@ -4,7 +4,7 @@
 
 ```bash
 cargo build                              # Build all crates
-cargo test                               # Run full test suite (980+ tests)
+cargo test                               # Run full test suite (1100+ tests)
 cargo run -p oco-dev-cli -- --help       # CLI help
 
 oco index ./path                         # Index a workspace
@@ -180,8 +180,8 @@ cargo test                               # Full suite
 ```
 
 ```bash
-cargo test                               # All tests (1097+)
-cargo test -p oco-shared-types           # 417+ tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate, gate config, baseline freshness, review artifacts, review packet, review config, promotion, diff, history
+cargo test                               # All tests (1100+)
+cargo test -p oco-shared-types           # 457+ tests — domain types, verification, memory, profiles, plan DAG, capabilities, team, topology, elicitation, effort level, lease, affordance, counterfactual, protocol, sub-plans, mission memory, scorecard, gate, gate config, baseline freshness, review artifacts, review packet, review config, promotion, diff, history
 cargo test -p oco-policy-engine          #  79 tests — classifier, selector, budget, gates, zero-limit budgets
 cargo test -p oco-context-engine         #  24 tests — assembler, dedup, compression, staleness, step-scoped context
 cargo test -p oco-code-intel             #  37 tests — parser, indexer, language detection, call graph extraction
@@ -190,10 +190,38 @@ cargo test -p oco-telemetry              #  22 tests — event recording, JSONL 
 cargo test -p oco-claude-adapter         #  70 tests — version detection, 24 hook events, capability matrix, integration modes, doctor checks
 cargo test -p oco-planner               #  85 tests — direct planner, LLM planner, prompt gen, team generation, retry, risk analysis, prior art analysis, sub-plan parsing
 cargo test -p oco-orchestrator-core      # 159 tests — eval, integration, loop runner, graph runner, LLM router, effort routing, agent teams, cancellation, sub-plan execution, mission memory, scorecard builder, gate config, gate config strict, review packet builder, review config, baseline promotion
-cargo test -p oco-mcp-server             #  37 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools
+cargo test -p oco-mcp-server             #  60 tests — MCP protocol, HTTP hooks (auth, validation, lifecycle), session management, routes/impact tools, dashboard event injection
 cargo test -p oco-verifier               #  48 tests — test/build/lint/typecheck runners, auto-detection, tiered e2e
 cargo test -p oco-architecture-tests     #   4 tests — dependency DAG, layer violations, foundation isolation, coverage
 ```
+
+### Dashboard (Svelte + Vitest)
+
+```bash
+cd apps/dashboard && npx vitest run      # 21 tests — SSE (event types, reconnect, backoff, lagged/finished), EventPlayer (coalescing, buffer cap, stop, playback)
+cd apps/dashboard && npx vite build      # Production build → dist/
+```
+
+### Dashboard live testing
+
+```bash
+oco serve --port 3030                    # Start server (serves dashboard at /dashboard)
+# In another terminal:
+SID=$(curl -s -X POST http://127.0.0.1:3030/api/v1/dashboard/sessions \
+  -H "Content-Type: application/json" -d '{"task":"Test"}' | sed 's/.*"id":"\([^"]*\)".*/\1/')
+bash scripts/inject-demo.sh $SID 3030   # Inject 22 demo events
+# Open http://127.0.0.1:3030/dashboard?live=$SID
+```
+
+### Dashboard architecture notes
+
+- **No DEMO fallbacks in components** — PlanExplorer requires `plans` prop; mounts only when `explorationPlans` is set
+- **Event pipeline**: SSE → EventPlayer (buffer + choreograph) → handleEvent() → Svelte state
+- **explorationPlans** built in `plan_generated` handler (real winner step names), not `plan_exploration`
+- **Budget merge**: `progress` events merge tokens only; `flat_step_completed` provides full budget snapshot
+- **`DashboardEventKind::RunStarted`** includes optional `complexity` field
+- **`PlanCandidateSummary`** TS type synced with Rust: `verify_count`, `parallel_groups`, `winner`
+- **Bridge `emitEvents`** validates HTTP status per event; reports failures with event type
 
 ## LLM Providers
 
