@@ -4,7 +4,7 @@
   import type { DashboardEvent, BudgetSnapshot, StepRow } from './lib/types'
   import { connectSSE, type SSEClient, type SSEStatus } from './lib/sse'
   import { createEventPlayer, type EventPlayer } from './lib/event-player'
-  import { playDemo, type Thought } from './lib/demo'
+  import { playDemo, type Thought, type CompetitivePlan } from './lib/demo'
   import type { ReviewPacket } from './lib/types'
   import Timeline from './lib/Timeline.svelte'
   import PlanMap from './lib/PlanMap.svelte'
@@ -45,6 +45,8 @@
   let selectedStepId = $state<string | null>(null)
   let thoughts = $state<Thought[]>([])
   let explorationPhase = $state<'idle' | 'generating' | 'comparing' | 'scoring' | 'selecting' | 'done'>('idle')
+  let explorationPlans = $state<{ loser: CompetitivePlan; winner: CompetitivePlan } | undefined>(undefined)
+  let pendingCandidates = $state<Array<Record<string, unknown>>>([])  // temp storage from plan_exploration until plan_generated arrives
   let stepSummaries = $state<Array<{
     id: string; name: string; depends_on: string[]; verify_after: boolean; execution_mode: string
   }>>([])
@@ -205,6 +207,8 @@
 
       case 'plan_exploration':
         if (phase !== 'demo') phase = 'planning'
+        // Store candidates for building CompetitivePlan when plan_generated arrives
+        pendingCandidates = (kind.candidates as Array<Record<string, unknown>>) ?? []
         // In demo mode, handleEvent drives exploration phases.
         // In live mode, the EventPlayer drives them via onExploration callback.
         if (phase === 'demo' || !liveSessionId) {
@@ -243,7 +247,8 @@
       case 'plan_generated': {
         if (phase !== 'demo') phase = 'executing'
         if (explorationPhase === 'idle') explorationPhase = 'done'
-        stepSummaries = ((kind.steps as Array<Record<string, unknown>>) ?? []).map(s => ({
+        const rawSteps = (kind.steps as Array<Record<string, unknown>>) ?? []
+        stepSummaries = rawSteps.map(s => ({
           id: s.id as string, name: s.name as string,
           depends_on: (s.depends_on as string[]) ?? [],
           verify_after: (s.verify_after as boolean) ?? false,
@@ -251,11 +256,47 @@
         }))
         const t = kind.team as Record<string, unknown> | null
         teamInfo = t ? { name: t.name as string, topology: t.topology as string, member_count: t.member_count as number } : null
-        steps = ((kind.steps as Array<Record<string, unknown>>) ?? []).map(s => ({
+        steps = rawSteps.map(s => ({
           id: s.id as string, name: s.name as string, role: s.role as string,
           status: 'pending' as const, duration_ms: null, tokens_used: null,
           execution_mode: s.execution_mode as string, verify_passed: null,
         }))
+
+        // Build CompetitivePlan for PlanExplorer from plan_exploration candidates + these steps
+        if (pendingCandidates.length >= 2) {
+          const winnerCandidate = pendingCandidates.find(c => c.winner) ?? pendingCandidates[pendingCandidates.length - 1]
+          const loserCandidate = pendingCandidates.find(c => !c.winner) ?? pendingCandidates[0]
+          const winnerSteps = rawSteps.map(s => ({
+            name: s.name as string, role: (s.role as string) ?? 'implementer',
+            verify: (s.verify_after as boolean) ?? false,
+            tokens: (s.estimated_tokens as number) ?? 2000,
+            depends_on: (s.depends_on as string[]) ?? [],
+          }))
+          // Loser: build a synthetic simpler plan from the candidate metadata
+          const loserStepCount = (loserCandidate.step_count as number) ?? 3
+          const loserSteps = Array.from({ length: loserStepCount }, (_, i) => ({
+            name: `Step ${i + 1}`, role: 'implementer', verify: i === loserStepCount - 1,
+            tokens: Math.round(((loserCandidate.estimated_tokens as number) ?? 15000) / loserStepCount),
+            depends_on: i === 0 ? [] : [`Step ${i}`],
+          }))
+          explorationPlans = {
+            loser: {
+              strategy: (loserCandidate.strategy as string) ?? 'speed',
+              steps: loserSteps,
+              score: (loserCandidate.score as number) ?? 0.5,
+              winner: false,
+              scores: { verify: 0.4, cost: 0.6, parallel: 0.1, depth: 0.2 },
+            },
+            winner: {
+              strategy: (winnerCandidate.strategy as string) ?? 'safety',
+              steps: winnerSteps,
+              score: (winnerCandidate.score as number) ?? 0.8,
+              winner: true,
+              scores: { verify: 0.7, cost: 0.35, parallel: 0.5, depth: 0.4 },
+            },
+          }
+        }
+        pendingCandidates = []
         break
       }
 
@@ -491,7 +532,7 @@
     {:else}
       <!-- Plan — top zone -->
       <div class="h-[55%] border-b border-border shrink-0 relative">
-        <PlanExplorer phase={explorationPhase} />
+        <PlanExplorer phase={explorationPhase} plans={explorationPlans} />
         {#if explorationPhase === 'done' || steps.length > 0}
           <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
         {:else if phase === 'classifying'}
