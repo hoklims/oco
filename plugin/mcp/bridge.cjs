@@ -792,21 +792,27 @@ async function emitEvents(id, args) {
   // Simple batch POST: send each event in order to the injection endpoint.
   const url = `/api/v1/dashboard/sessions/${session_id}/events`;
   let sent = 0;
+  const errors = [];
   for (const event of events) {
     try {
-      await httpRequest("POST", port, url, event);
-      sent++;
-    } catch {
-      // Best-effort — skip failed events
+      const res = await httpRequest("POST", port, url, event);
+      if (res.status >= 200 && res.status < 300) {
+        sent++;
+      } else {
+        const detail = typeof res.body === 'object' ? JSON.stringify(res.body) : String(res.body);
+        errors.push(`Event type="${event.type || '?'}": HTTP ${res.status} — ${detail}`);
+      }
+    } catch (e) {
+      errors.push(`Event type="${event.type || '?'}": ${e.message}`);
     }
   }
 
   return respondStructured(id, {
-    summary: `${sent}/${events.length} events sent to dashboard`,
-    evidence: [{ sent, total: events.length }],
-    risks: sent < events.length ? [`${events.length - sent} events failed to send`] : [],
+    summary: `${sent}/${events.length} events sent to dashboard${errors.length ? ` (${errors.length} failed)` : ''}`,
+    evidence: [{ sent, total: events.length, errors }],
+    risks: errors.length ? errors : [],
     next_step: "Continue",
-    confidence: 1.0,
+    confidence: sent === events.length ? 1.0 : 0.7,
   });
 }
 

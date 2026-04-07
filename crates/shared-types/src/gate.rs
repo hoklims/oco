@@ -388,15 +388,16 @@ impl GateResult {
         lines.push(String::new());
 
         // Dimension table
+        lines.push(format!(
+            "  {:<24} {:>8}  {:>9}  {:>6}  {:>5}  {}",
+            "Dimension", "Baseline", "Candidate", "Delta", "Min", "Verdict"
+        ));
         lines.push(
-            "  Dimension                Baseline  Candidate  Delta   Min    Verdict".to_string(),
-        );
-        lines.push(
-            "  -----------------------------------------------------------------------".to_string(),
+            "  --------------------------------------------------------------------".to_string(),
         );
         for check in &self.dimension_checks {
             lines.push(format!(
-                "  {:<24} {:>7.2}   {:>8.2}  {:>+6.2}  {:>5.2}  {}",
+                "  {:<24} {:>8.2}  {:>9.2}  {:>+6.2}  {:>5.2}  {}",
                 check.dimension.label(),
                 check.baseline_score,
                 check.candidate_score,
@@ -1091,8 +1092,11 @@ impl BaselineDiffSummary {
         let mut lines = Vec::new();
         lines.push(format!("Baseline Diff: {}", self.summary));
         lines.push(String::new());
-        lines.push("  Dimension                Old       New      Delta".to_string());
-        lines.push("  ---------------------------------------------------".to_string());
+        lines.push(format!(
+            "  {:<24} {:>7}  {:>7}  {:>6}  {}",
+            "Dimension", "Old", "New", "Delta", ""
+        ));
+        lines.push("  -------------------------------------------------------".to_string());
         for d in &self.dimension_deltas {
             let marker = if d.delta > 0.01 {
                 "+"
@@ -1102,7 +1106,7 @@ impl BaselineDiffSummary {
                 " "
             };
             lines.push(format!(
-                "  {:<24} {:>7.2}   {:>7.2}  {:>+6.2} {}",
+                "  {:<24} {:>7.2}  {:>7.2}  {:>+6.2}  {}",
                 d.dimension.label(),
                 d.old_score,
                 d.new_score,

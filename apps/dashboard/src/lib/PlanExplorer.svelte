@@ -10,27 +10,18 @@
   } from '@xyflow/svelte'
   import '@xyflow/svelte/dist/style.css'
   import dagre from 'dagre'
-  import { DEMO_PLAN_SPEED, DEMO_PLAN_SAFETY, type CompetitivePlan } from './demo'
+  import type { CompetitivePlan } from './demo'
 
   let { phase, plans }: {
     phase: 'idle' | 'generating' | 'comparing' | 'scoring' | 'selecting' | 'done'
-    /**
-     * Optional scenario-specific candidate plans. When omitted, falls
-     * back to the generic demo plans (DEMO_PLAN_SPEED / DEMO_PLAN_SAFETY).
-     */
+    /** Candidate plans — required. Component renders nothing until provided. */
     plans?: { loser: CompetitivePlan; winner: CompetitivePlan }
   } = $props()
 
-  // Component remounts when entering 'explorer' mode, so reading `plans`
-  // once at init is safe. We capture via a local helper to silence the
-  // Svelte "state_referenced_locally" warning.
-  function initialPlans(): { loser: CompetitivePlan; winner: CompetitivePlan } {
-    return {
-      loser: plans?.loser ?? DEMO_PLAN_SPEED,
-      winner: plans?.winner ?? DEMO_PLAN_SAFETY,
-    }
-  }
-  const { loser: speed, winner: safety } = initialPlans()
+  // Capture plans at mount. No DEMO fallback — the parent must provide data.
+  // plans is guaranteed to be set before phase leaves 'idle' (see App.svelte plan_exploration handler).
+  const speed = plans!.loser
+  const safety = plans!.winner
   const rc: Record<string, string> = {
     scout: '#4b8df8', architect: '#a78bfa',
     implementer: '#22d3ee', tester: '#fbbf24', verifier: '#34d399',
@@ -288,23 +279,25 @@
       else if (phase === 'scoring') showScoring()
       else if (phase === 'selecting') selectWinner()
       else if (phase === 'done') {
-        // Stay visible in "done" state until the parent unmounts us by
-        // changing execMode. In manual mode, the user controls pacing —
-        // auto-hiding would create a blank screen and look like a crash.
-        // The winner highlight from selectWinner() stays on screen.
         exitHold = true
-        cleanup()
+        // Show winner highlight for 2s, then fade out over 1s, then hide.
+        timers.push(setTimeout(() => {
+          startExit()
+          timers.push(setTimeout(() => { exitHold = false }, 1200))
+        }, 2000))
       }
       else if (phase === 'idle') cleanup()
     }, 80)
     return () => { clearInterval(iv); cleanup() }
   })
 
-  // Visible when any active phase, plus stays visible during exit animation
+  // Visible only when plans are provided AND in an active exploration phase.
   let exitHold = $state(false)
   let showOverlay = $derived(
-    phase === 'generating' || phase === 'comparing' ||
-    phase === 'scoring' || phase === 'selecting' || exitHold
+    plans != null && (
+      phase === 'generating' || phase === 'comparing' ||
+      phase === 'scoring' || phase === 'selecting' || exitHold
+    )
   )
 </script>
 

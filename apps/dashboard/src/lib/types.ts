@@ -10,7 +10,7 @@ export interface DashboardEvent {
 }
 
 export type DashboardEventKind =
-  | { type: 'run_started'; provider: string; model: string; request_summary: string }
+  | { type: 'run_started'; provider: string; model: string; request_summary: string; complexity?: string }
   | { type: 'run_stopped'; reason: StopReason; total_steps: number; total_tokens: number }
   | { type: 'plan_exploration'; candidates: PlanCandidateSummary[]; winner_strategy: string; winner_score: number }
   | { type: 'plan_generated'; plan_id: string; step_count: number; parallel_group_count: number; critical_path_length: number; estimated_total_tokens: number; strategy: string; team: TeamSummary | null; steps: StepSummary[] }
@@ -37,8 +37,9 @@ export interface PlanCandidateSummary {
   step_count: number
   estimated_tokens: number
   score: number
-  strengths: string[]
-  weaknesses: string[]
+  verify_count: number
+  parallel_groups: number
+  winner: boolean
   planning_tokens?: number
 }
 

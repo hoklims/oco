@@ -92,3 +92,13 @@ body { margin: 0; overflow: hidden; }
 ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
 
 .selected { background: var(--color-blue-dim); border-color: var(--color-blue) !important; }
+
+/* PlanMap crossfade — appears behind PlanExplorer and fades in as PlanExplorer fades out */
+.plan-map-enter {
+  animation: planMapIn 1.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+@keyframes planMapIn {
+  0%   { opacity: 0; }
+  50%  { opacity: 0; }
+  100% { opacity: 1; }
+}

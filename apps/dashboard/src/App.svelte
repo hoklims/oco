@@ -202,22 +202,15 @@
       case 'run_started':
         missionRequest = kind.request_summary as string
         provider = `${kind.provider}/${kind.model}`
+        if (kind.complexity) complexity = kind.complexity as string
         if (phase !== 'demo') phase = 'classifying'
         break
 
       case 'plan_exploration':
         if (phase !== 'demo') phase = 'planning'
-        // Store candidates for building CompetitivePlan when plan_generated arrives
+        // Store candidates — explorationPlans will be built when plan_generated
+        // arrives with real step names. No synthetic data needed.
         pendingCandidates = (kind.candidates as Array<Record<string, unknown>>) ?? []
-        // In demo mode, handleEvent drives exploration phases.
-        // In live mode, the EventPlayer drives them via onExploration callback.
-        if (phase === 'demo' || !liveSessionId) {
-          explorationPhase = 'generating'
-          setTimeout(() => { explorationPhase = 'comparing' }, 500)
-          setTimeout(() => { explorationPhase = 'scoring' }, 2000)
-          setTimeout(() => { explorationPhase = 'selecting' }, 3500)
-          setTimeout(() => { explorationPhase = 'done' }, 5000)
-        }
         break
 
       case 'flat_step_completed': {
@@ -245,8 +238,6 @@
       }
 
       case 'plan_generated': {
-        if (phase !== 'demo') phase = 'executing'
-        if (explorationPhase === 'idle') explorationPhase = 'done'
         const rawSteps = (kind.steps as Array<Record<string, unknown>>) ?? []
         stepSummaries = rawSteps.map(s => ({
           id: s.id as string, name: s.name as string,
@@ -262,41 +253,86 @@
           execution_mode: s.execution_mode as string, verify_passed: null,
         }))
 
-        // Build CompetitivePlan for PlanExplorer from plan_exploration candidates + these steps
+        // Build explorationPlans with REAL winner steps from plan_generated.
+        // Loser gets synthetic names (we never receive loser step details).
         if (pendingCandidates.length >= 2) {
           const winnerCandidate = pendingCandidates.find(c => c.winner) ?? pendingCandidates[pendingCandidates.length - 1]
           const loserCandidate = pendingCandidates.find(c => !c.winner) ?? pendingCandidates[0]
+
+          // Winner: real step names from plan_generated.
+          // Map UUID depends_on → step names (PlanExplorer matches edges by name).
+          const idToName = new Map(rawSteps.map(s => [s.id as string, s.name as string]))
           const winnerSteps = rawSteps.map(s => ({
             name: s.name as string, role: (s.role as string) ?? 'implementer',
             verify: (s.verify_after as boolean) ?? false,
             tokens: (s.estimated_tokens as number) ?? 2000,
-            depends_on: (s.depends_on as string[]) ?? [],
+            depends_on: ((s.depends_on as string[]) ?? []).map(id => idToName.get(id) ?? id),
           }))
-          // Loser: build a synthetic simpler plan from the candidate metadata
+
+          // Loser: synthetic linear chain (we only have metadata)
           const loserStepCount = (loserCandidate.step_count as number) ?? 3
+          const loserTokens = (loserCandidate.estimated_tokens as number) ?? 15000
           const loserSteps = Array.from({ length: loserStepCount }, (_, i) => ({
-            name: `Step ${i + 1}`, role: 'implementer', verify: i === loserStepCount - 1,
-            tokens: Math.round(((loserCandidate.estimated_tokens as number) ?? 15000) / loserStepCount),
-            depends_on: i === 0 ? [] : [`Step ${i}`],
+            name: i === 0 ? 'Analyze & plan' : i === loserStepCount - 1 ? 'Quick verify' : `Implement (${i})`,
+            role: i === 0 ? 'architect' : i === loserStepCount - 1 ? 'tester' : 'implementer',
+            verify: i === loserStepCount - 1,
+            tokens: Math.round(loserTokens / loserStepCount),
+            depends_on: i === 0 ? [] : [i === 1 ? 'Analyze & plan' : `Implement (${i - 1})`],
           }))
+
+          // Derive scoring breakdown from event metadata.
+          function deriveScores(cand: Record<string, unknown>) {
+            const sc = (cand.score as number) ?? 0.5
+            const vc = (cand.verify_count as number) ?? 0
+            const pg = (cand.parallel_groups as number) ?? 1
+            const steps = (cand.step_count as number) ?? 3
+            const tokens = (cand.estimated_tokens as number) ?? 20000
+            return {
+              verify: Math.min(vc / Math.max(steps, 1), 1),
+              cost: Math.max(0, 1 - tokens / 60000),
+              parallel: Math.min((pg - 1) / 4, 1),
+              depth: sc > 0.7 ? sc - 0.3 : sc * 0.5,
+            }
+          }
+
           explorationPlans = {
             loser: {
-              strategy: (loserCandidate.strategy as string) ?? 'speed',
+              strategy: (loserCandidate.strategy as string) ?? 'unknown',
               steps: loserSteps,
-              score: (loserCandidate.score as number) ?? 0.5,
+              score: (loserCandidate.score as number) ?? 0,
               winner: false,
-              scores: { verify: 0.4, cost: 0.6, parallel: 0.1, depth: 0.2 },
+              scores: deriveScores(loserCandidate),
             },
             winner: {
-              strategy: (winnerCandidate.strategy as string) ?? 'safety',
+              strategy: (winnerCandidate.strategy as string) ?? 'unknown',
               steps: winnerSteps,
-              score: (winnerCandidate.score as number) ?? 0.8,
+              score: (winnerCandidate.score as number) ?? 0,
               winner: true,
-              scores: { verify: 0.7, cost: 0.35, parallel: 0.5, depth: 0.4 },
+              scores: deriveScores(winnerCandidate),
             },
+          }
+
+          // Start exploration animation NOW (after explorationPlans is set).
+          // In demo mode or non-live: drive phases from here.
+          // In live mode: EventPlayer drives them via onExploration callback.
+          if (phase === 'demo' || !liveSessionId) {
+            explorationPhase = 'generating'
+            setTimeout(() => { explorationPhase = 'comparing' }, 500)
+            setTimeout(() => { explorationPhase = 'scoring' }, 2000)
+            setTimeout(() => { explorationPhase = 'selecting' }, 3500)
+            setTimeout(() => { explorationPhase = 'done' }, 5000)
           }
         }
         pendingCandidates = []
+
+        // Transition to executing after exploration (or immediately if no exploration)
+        if (!explorationPlans) {
+          if (phase !== 'demo') phase = 'executing'
+          if (explorationPhase === 'idle') explorationPhase = 'done'
+        } else if (phase !== 'demo') {
+          // Delay executing phase until exploration animation finishes
+          setTimeout(() => { if (phase === 'planning') phase = 'executing' }, 5500)
+        }
         break
       }
 
@@ -321,7 +357,19 @@
 
       case 'progress': {
         const snap = kind.budget as BudgetSnapshot | undefined
-        if (snap?.tokens_used !== undefined) budget = snap
+        if (snap) {
+          // Merge: progress events only carry reliable token data.
+          // Keep richer fields (tool_calls, retrievals, etc.) from prior flat_step_completed events.
+          budget = {
+            tokens_used: snap.tokens_used,
+            tokens_remaining: snap.tokens_remaining,
+            tool_calls_used: snap.tool_calls_used || budget?.tool_calls_used || 0,
+            tool_calls_remaining: snap.tool_calls_remaining || budget?.tool_calls_remaining || 0,
+            retrievals_used: snap.retrievals_used || budget?.retrievals_used || 0,
+            verify_cycles_used: snap.verify_cycles_used || budget?.verify_cycles_used || 0,
+            elapsed_secs: snap.elapsed_secs || budget?.elapsed_secs || 0,
+          }
+        }
         break
       }
 
@@ -532,9 +580,13 @@
     {:else}
       <!-- Plan — top zone -->
       <div class="h-[55%] border-b border-border shrink-0 relative">
-        <PlanExplorer phase={explorationPhase} plans={explorationPlans} />
+        {#if explorationPlans}
+          <PlanExplorer phase={explorationPhase} plans={explorationPlans} />
+        {/if}
         {#if explorationPhase === 'done' || steps.length > 0}
-          <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
+          <div class="absolute inset-0 z-10 plan-map-enter">
+            <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
+          </div>
         {:else if phase === 'classifying'}
           <ClassifyingScene mission={missionRequest} {complexity} />
         {:else if phase === 'planning' && explorationPhase === 'idle'}

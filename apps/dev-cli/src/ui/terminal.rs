@@ -691,7 +691,7 @@ impl Renderer for TerminalRenderer {
                     "Dimension", "Baseline", "Candidate", "Delta", "Min", "Verdict"
                 ));
                 let _ = self.term.write_line(
-                    "  -----------------------------------------------------------------------",
+                    "  --------------------------------------------------------------------",
                 );
             }
 
@@ -709,7 +709,7 @@ impl Renderer for TerminalRenderer {
                     _ => style("[FAIL]").red().bold(),
                 };
                 let _ = self.term.write_line(&format!(
-                    "  {:<24} {:>7.2}   {:>8.2}  {:>+6.2}  {:>5.2}  {}",
+                    "  {:<24} {:>8.2}  {:>9.2}  {:>6.2}  {:>5.2}  {}",
                     dimension, baseline_score, candidate_score, delta, min_score, verdict_styled,
                 ));
             }

@@ -85,6 +85,12 @@ function explorationDuration(kind: Record<string, unknown>): {
   return { total, comparingAt, scoringAt, selectingAt, doneAt }
 }
 
+/** Maximum buffer size before dropping events. */
+const MAX_BUFFER_SIZE = 500
+
+/** Event types that coalesce — a newer value replaces the older one. */
+const COALESCABLE = new Set(['progress', 'budget_snapshot'])
+
 /** Default duration for unknown event types. */
 const DEFAULT_DURATION = 500
 
@@ -180,16 +186,15 @@ export function createEventPlayer(callbacks: EventPlayerCallbacks): EventPlayer 
     timeoutId = setTimeout(() => {
       if (stopped) return
 
-      // Handle plan_exploration specially — trigger the PlanExplorer animation sequence
-      // Timing is DYNAMIC based on plan complexity (more steps = longer animation)
-      if (eventType === 'plan_exploration' && callbacks.onExploration) {
+      // Trigger PlanExplorer animation on plan_generated (not plan_exploration),
+      // because explorationPlans is built in plan_generated where real step names are available.
+      if (eventType === 'plan_generated' && callbacks.onExploration) {
         const timing = explorationDuration(kind)
         callbacks.onExploration('generating')
         setTimeout(() => { if (!stopped) callbacks.onExploration?.('comparing') }, timing.comparingAt)
         setTimeout(() => { if (!stopped) callbacks.onExploration?.('scoring') }, timing.scoringAt)
         setTimeout(() => { if (!stopped) callbacks.onExploration?.('selecting') }, timing.selectingAt)
         setTimeout(() => { if (!stopped) callbacks.onExploration?.('done') }, timing.doneAt)
-        // Override the fixed choreography duration with the dynamic one
         dynamicDuration = timing.total
       }
 
@@ -286,16 +291,47 @@ export function createEventPlayer(callbacks: EventPlayerCallbacks): EventPlayer 
     }, prePause)
   }
 
+  function coalesceAndPush(event: DashboardEvent) {
+    const kind = event.kind as Record<string, unknown>
+    const eventType = kind.type as string
+
+    // Coalesce: replace the last buffer entry if same coalescable type
+    if (COALESCABLE.has(eventType) && buffer.length > 0) {
+      const lastKind = buffer[buffer.length - 1].kind as Record<string, unknown>
+      if ((lastKind.type as string) === eventType) {
+        buffer[buffer.length - 1] = event
+        return
+      }
+    }
+
+    buffer.push(event)
+
+    // Enforce buffer cap
+    if (buffer.length > MAX_BUFFER_SIZE) {
+      // First pass: drop non-phase events
+      const nonPhaseIdx = buffer.findIndex(e => {
+        const t = (e.kind as Record<string, unknown>).type as string
+        return !PHASE_EVENTS.has(t)
+      })
+      if (nonPhaseIdx >= 0) {
+        buffer.splice(nonPhaseIdx, 1)
+      } else {
+        // Fallback: drop oldest phase event
+        buffer.shift()
+      }
+    }
+  }
+
   return {
     push(event: DashboardEvent) {
       if (stopped) return
-      buffer.push(event)
+      coalesceAndPush(event)
       scheduleNext()
     },
 
     pushBatch(events: DashboardEvent[]) {
       if (stopped) return
-      buffer.push(...events)
+      for (const event of events) coalesceAndPush(event)
       scheduleNext()
     },
 

@@ -77,6 +77,9 @@ pub enum DashboardEventKind {
         provider: String,
         model: String,
         request_summary: String,
+        /// Task complexity label (e.g. "medium − research + architecture").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        complexity: Option<String>,
     },
 
     /// Run stopped.
@@ -261,11 +264,12 @@ impl DashboardEventKind {
                 provider,
                 model,
                 request_summary,
-                ..
+                complexity,
             } => DashboardEventKind::RunStarted {
                 provider: provider.clone(),
                 model: model.clone(),
                 request_summary: request_summary.clone(),
+                complexity: Some(complexity.clone()),
             },
             OrchestrationEvent::StepCompleted {
                 step,
