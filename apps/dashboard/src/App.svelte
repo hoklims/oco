@@ -342,24 +342,62 @@
         break
       }
 
-      case 'step_started':
+      case 'step_started': {
         if (phase !== 'demo') phase = 'executing'
-        steps = steps.map(s => s.id === (kind.step_id as string) ? { ...s, status: 'running' as const } : s)
-        break
-
-      case 'step_completed': {
-        const id = kind.step_id as string
-        steps = steps.map(s => s.id === id ? { ...s,
-          status: (kind.success ? 'passed' : 'failed') as StepRow['status'],
-          duration_ms: kind.duration_ms as number, tokens_used: kind.tokens_used as number,
-        } : s)
+        const startId = kind.step_id as string
+        const startName = kind.step_name as string
+        const startRole = (kind.role as string) ?? 'implementer'
+        const startMode = (kind.execution_mode as string) ?? 'inline'
+        // Match by ID first, fallback to name, fallback to sequential (first pending step)
+        const idMatch = steps.some(s => s.id === startId)
+        const nameMatch = !idMatch && steps.some(s => s.name === startName)
+        if (idMatch || nameMatch) {
+          steps = steps.map(s => {
+            if (idMatch ? s.id === startId : s.name === startName)
+              return { ...s, id: startId, name: startName, status: 'running' as const }
+            return s
+          })
+        } else {
+          // No match at all — replace first pending step or append
+          const pendingIdx = steps.findIndex(s => s.status === 'pending')
+          if (pendingIdx >= 0) {
+            steps = steps.map((s, i) => i === pendingIdx
+              ? { ...s, id: startId, name: startName, role: startRole, status: 'running' as const, execution_mode: startMode }
+              : s)
+          } else {
+            steps = [...steps, { id: startId, name: startName, role: startRole, status: 'running' as const, duration_ms: null, tokens_used: null, execution_mode: startMode, verify_passed: null }]
+          }
+        }
         break
       }
 
-      case 'verify_gate_result':
-        if (phase !== 'demo') phase = 'verifying'
-        steps = steps.map(s => s.id === (kind.step_id as string) ? { ...s, verify_passed: kind.overall_passed as boolean } : s)
+      case 'step_completed': {
+        const compId = kind.step_id as string
+        const compName = kind.step_name as string
+        const compMatch = steps.some(s => s.id === compId)
+        steps = steps.map(s => {
+          if (compMatch ? s.id === compId : s.name === compName)
+            return { ...s, id: compId,
+              status: (kind.success ? 'passed' : 'failed') as StepRow['status'],
+              duration_ms: kind.duration_ms as number, tokens_used: kind.tokens_used as number,
+            }
+          return s
+        })
         break
+      }
+
+      case 'verify_gate_result': {
+        if (phase !== 'demo') phase = 'verifying'
+        const verId = kind.step_id as string
+        const verName = kind.step_name as string
+        const verMatch = steps.some(s => s.id === verId)
+        steps = steps.map(s => {
+          if (verMatch ? s.id === verId : s.name === verName)
+            return { ...s, id: verId, verify_passed: kind.overall_passed as boolean }
+          return s
+        })
+        break
+      }
 
       case 'progress': {
         const snap = kind.budget as BudgetSnapshot | undefined
