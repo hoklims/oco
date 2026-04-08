@@ -102,26 +102,85 @@ oco.emit_events({ session_id: "<id>", events: [
 
 **Build candidates realistically**: "minimal" should have fewer steps/verification, "thorough" should have more. The winner's steps become your `plan_generated.steps`. All step names must be specific to the user's actual task.
 
-## Step 4: Execute — emit step_started BEFORE, step_completed AFTER each step
+## Step 4: Execute — PARALLEL when possible, SEQUENTIAL when dependent
 
-For **each step** in the plan, using the **exact same ID and name** from `plan_generated`:
+Walk the plan DAG in topological order. At each level, find all steps whose `depends_on` are ALL completed. Execute those steps **in parallel** using the Agent tool.
+
+### 4a. Detect parallel groups
+
+From `plan_generated.steps`, compute ready steps: steps whose `depends_on` are all completed (or empty). If multiple steps are ready simultaneously, they form a **parallel group**.
+
+Example DAG with depends_on:
+```
+Step A (depends: [])      ← ready immediately
+Step B (depends: [])      ← ready immediately  → parallel group [A, B]
+Step C (depends: [A])     ← ready after A
+Step D (depends: [A, B])  ← ready after A AND B
+```
+
+### 4b. Execute a parallel group (2+ ready steps)
+
+**Emit step_started for ALL parallel steps at once:**
+```
+oco.emit_events({ session_id: "<id>", events: [
+  { "type": "step_started", "step_id": "<id-A>", "step_name": "<name-A>", "role": "implementer", "execution_mode": "subagent" },
+  { "type": "step_started", "step_id": "<id-B>", "step_name": "<name-B>", "role": "implementer", "execution_mode": "subagent" }
+] })
+```
+
+**Spawn one Agent per step in a SINGLE message** (this makes them run concurrently):
+```
+Agent({ description: "Step A: <name>", prompt: "<full context + instructions for step A>" })
+Agent({ description: "Step B: <name>", prompt: "<full context + instructions for step B>" })
+```
+
+Each agent prompt MUST include:
+- The workspace path
+- What files to create/modify
+- Enough context about the codebase (types, conventions) to work independently
+- The acceptance criteria for the step
+
+**After ALL agents return**, emit step_completed for each:
+```
+oco.emit_events({ session_id: "<id>", events: [
+  { "type": "step_completed", "step_id": "<id-A>", "step_name": "<name-A>", "success": true, "duration_ms": <ms>, "tokens_used": <est>, "detail_ref": null },
+  { "type": "step_completed", "step_id": "<id-B>", "step_name": "<name-B>", "success": true, "duration_ms": <ms>, "tokens_used": <est>, "detail_ref": null },
+  { "type": "progress", "completed": <N>, "total": <total_steps>, "active_steps": [], "budget": {"tokens_used":<N>,"tokens_remaining":<N>,"tool_calls_used":<N>,"tool_calls_remaining":<N>,"retrievals_used":0,"verify_cycles_used":<N>,"elapsed_secs":<N>} }
+] })
+```
+
+### 4c. Execute a single step (1 ready step, or step is simple)
+
+For sequential steps or when only 1 step is ready:
 
 **Before starting work:**
 ```
 oco.emit_events({ session_id: "<id>", events: [
-  { "type": "step_started", "step_id": "<step-uuid-1>", "step_name": "<SAME name as plan>", "role": "implementer", "execution_mode": "inline" }
+  { "type": "step_started", "step_id": "<step-uuid>", "step_name": "<name>", "role": "implementer", "execution_mode": "inline" }
 ] })
 ```
 
-**Do the actual work** (Edit/Write/Bash tools).
+**Do the actual work** directly (Edit/Write/Bash tools).
 
-**After completing the step:**
+**After completing:**
 ```
 oco.emit_events({ session_id: "<id>", events: [
-  { "type": "step_completed", "step_id": "<step-uuid-1>", "step_name": "<SAME name as plan>", "success": true, "duration_ms": <actual_ms>, "tokens_used": <estimated>, "detail_ref": null },
+  { "type": "step_completed", "step_id": "<step-uuid>", "step_name": "<name>", "success": true, "duration_ms": <actual_ms>, "tokens_used": <estimated>, "detail_ref": null },
   { "type": "progress", "completed": <N>, "total": <total_steps>, "active_steps": [], "budget": {"tokens_used":<N>,"tokens_remaining":<N>,"tool_calls_used":<N>,"tool_calls_remaining":<N>,"retrievals_used":0,"verify_cycles_used":<N>,"elapsed_secs":<N>} }
 ] })
 ```
+
+### 4d. When to parallelize vs not
+
+**DO parallelize** when:
+- 2+ steps have all dependencies met simultaneously
+- Steps create/modify DIFFERENT files (no file conflicts)
+- Steps are substantial enough to justify agent spawn overhead
+
+**Do NOT parallelize** when:
+- Steps edit the SAME file
+- One step needs the output of another (even if not in depends_on)
+- Steps are trivial (< 20 lines of code) — just do them inline sequentially
 
 ## Step 5: Verify — emit verify_gate_result
 
@@ -145,6 +204,7 @@ oco.emit_events({ session_id: "<id>", events: [
 
 - **Always open dashboard first** — Step 1 is non-negotiable
 - **Plan = execution contract** — `plan_generated.steps` must list the steps you will actually execute, with the exact IDs and names you will use in `step_started`/`step_completed`. If they don't match, the DAG nodes won't animate.
+- **Parallelize independent steps** — When 2+ steps have all dependencies met, execute them concurrently via Agent tool. Emit all step_started events together, spawn agents in one message, emit step_completed after all return.
 - **Emit events AFTER each phase completes** — with real timing data
 - **plan_exploration + plan_generated in one call** — triggers the PlanExplorer → PlanMap animation sequence
 - **Measure real durations** — `duration_ms` should reflect actual work time
