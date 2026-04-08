@@ -1,0 +1,235 @@
+{
+  "../../node_modules/.pnpm/@sveltejs+kit@2.55.0_@sveltejs+vite-plugin-svelte@5.1.1_svelte@5.55.1_vite@6.4.1_@types+node@_ptbwuzf7iwdjktbsjvp46kjsjq/node_modules/@sveltejs/kit/src/runtime/app/server/remote/index.js": {
+    "file": "remote-entry.js",
+    "name": "remote-entry",
+    "src": "../../node_modules/.pnpm/@sveltejs+kit@2.55.0_@sveltejs+vite-plugin-svelte@5.1.1_svelte@5.55.1_vite@6.4.1_@types+node@_ptbwuzf7iwdjktbsjvp46kjsjq/node_modules/@sveltejs/kit/src/runtime/app/server/remote/index.js",
+    "isEntry": true,
+    "imports": [
+      "_shared.js",
+      "_utils.js",
+      "_environment.js"
+    ]
+  },
+  "../../node_modules/.pnpm/@sveltejs+kit@2.55.0_@sveltejs+vite-plugin-svelte@5.1.1_svelte@5.55.1_vite@6.4.1_@types+node@_ptbwuzf7iwdjktbsjvp46kjsjq/node_modules/@sveltejs/kit/src/runtime/components/svelte-5/error.svelte": {
+    "file": "entries/fallbacks/error.svelte.js",
+    "name": "entries/fallbacks/error.svelte",
+    "src": "../../node_modules/.pnpm/@sveltejs+kit@2.55.0_@sveltejs+vite-plugin-svelte@5.1.1_svelte@5.55.1_vite@6.4.1_@types+node@_ptbwuzf7iwdjktbsjvp46kjsjq/node_modules/@sveltejs/kit/src/runtime/components/svelte-5/error.svelte",
+    "isEntry": true,
+    "imports": [
+      "_index.js",
+      "_state.svelte.js",
+      "_client.js"
+    ]
+  },
+  "../../node_modules/.pnpm/@sveltejs+kit@2.55.0_@sveltejs+vite-plugin-svelte@5.1.1_svelte@5.55.1_vite@6.4.1_@types+node@_ptbwuzf7iwdjktbsjvp46kjsjq/node_modules/@sveltejs/kit/src/runtime/server/index.js": {
+    "file": "index.js",
+    "name": "index",
+    "src": "../../node_modules/.pnpm/@sveltejs+kit@2.55.0_@sveltejs+vite-plugin-svelte@5.1.1_svelte@5.55.1_vite@6.4.1_@types+node@_ptbwuzf7iwdjktbsjvp46kjsjq/node_modules/@sveltejs/kit/src/runtime/server/index.js",
+    "isEntry": true,
+    "imports": [
+      "_utils.js",
+      "_environment.js",
+      "_shared.js",
+      "_index.js",
+      "_exports.js",
+      "_utils2.js",
+      "_index2.js",
+      "_internal.js"
+    ]
+  },
+  ".svelte-kit/generated/server/internal.js": {
+    "file": "internal.js",
+    "name": "internal",
+    "src": ".svelte-kit/generated/server/internal.js",
+    "isEntry": true,
+    "imports": [
+      "_root.js",
+      "_environment.js",
+      "_internal.js"
+    ]
+  },
+  "_api.js": {
+    "file": "chunks/api.js",
+    "name": "api",
+    "imports": [
+      "_context.js"
+    ]
+  },
+  "_client.js": {
+    "file": "chunks/client.js",
+    "name": "client",
+    "imports": [
+      "_exports.js",
+      "_utils2.js",
+      "_index2.js",
+      "_root.js",
+      "_state.svelte.js"
+    ]
+  },
+  "_context.js": {
+    "file": "chunks/context.js",
+    "name": "context",
+    "imports": [
+      "_index.js",
+      "_index2.js"
+    ]
+  },
+  "_createQuery.js": {
+    "file": "chunks/createQuery.js",
+    "name": "createQuery",
+    "imports": [
+      "_context.js",
+      "_query.js",
+      "_index2.js",
+      "_api.js"
+    ]
+  },
+  "_environment.js": {
+    "file": "chunks/environment.js",
+    "name": "environment"
+  },
+  "_exports.js": {
+    "file": "chunks/exports.js",
+    "name": "exports"
+  },
+  "_index.js": {
+    "file": "chunks/index.js",
+    "name": "index",
+    "imports": [
+      "_utils.js"
+    ]
+  },
+  "_index2.js": {
+    "file": "chunks/index2.js",
+    "name": "index",
+    "imports": [
+      "_index.js"
+    ]
+  },
+  "_internal.js": {
+    "file": "chunks/internal.js",
+    "name": "internal",
+    "imports": [
+      "_root.js",
+      "_environment.js"
+    ]
+  },
+  "_mutation.js": {
+    "file": "chunks/mutation.js",
+    "name": "mutation",
+    "imports": [
+      "_context.js"
+    ]
+  },
+  "_query.js": {
+    "file": "chunks/query.js",
+    "name": "query",
+    "imports": [
+      "_context.js"
+    ]
+  },
+  "_root.js": {
+    "file": "chunks/root.js",
+    "name": "root",
+    "imports": [
+      "_index.js"
+    ]
+  },
+  "_shared.js": {
+    "file": "chunks/shared.js",
+    "name": "shared",
+    "imports": [
+      "_utils2.js",
+      "_utils.js"
+    ]
+  },
+  "_state.svelte.js": {
+    "file": "chunks/state.svelte.js",
+    "name": "state.svelte",
+    "imports": [
+      "_index.js",
+      "_exports.js",
+      "_root.js"
+    ]
+  },
+  "_user.js": {
+    "file": "chunks/user.js",
+    "name": "user",
+    "imports": [
+      "_index2.js",
+      "_mutation.js",
+      "_context.js",
+      "_api.js"
+    ]
+  },
+  "_utils.js": {
+    "file": "chunks/utils.js",
+    "name": "utils"
+  },
+  "_utils2.js": {
+    "file": "chunks/utils2.js",
+    "name": "utils"
+  },
+  "src/routes/+layout.svelte": {
+    "file": "entries/pages/_layout.svelte.js",
+    "name": "entries/pages/_layout.svelte",
+    "src": "src/routes/+layout.svelte",
+    "isEntry": true,
+    "imports": [
+      "_context.js",
+      "_query.js",
+      "_mutation.js",
+      "_index.js"
+    ]
+  },
+  "src/routes/+page.svelte": {
+    "file": "entries/pages/_page.svelte.js",
+    "name": "entries/pages/_page.svelte",
+    "src": "src/routes/+page.svelte",
+    "isEntry": true,
+    "imports": [
+      "_index.js",
+      "_api.js",
+      "_createQuery.js"
+    ]
+  },
+  "src/routes/dashboard/+page.svelte": {
+    "file": "entries/pages/dashboard/_page.svelte.js",
+    "name": "entries/pages/dashboard/_page.svelte",
+    "src": "src/routes/dashboard/+page.svelte",
+    "isEntry": true,
+    "imports": [
+      "_index.js",
+      "_api.js",
+      "_exports.js",
+      "_utils2.js",
+      "_root.js",
+      "_state.svelte.js",
+      "_createQuery.js"
+    ]
+  },
+  "src/routes/login/+page.svelte": {
+    "file": "entries/pages/login/_page.svelte.js",
+    "name": "entries/pages/login/_page.svelte",
+    "src": "src/routes/login/+page.svelte",
+    "isEntry": true,
+    "imports": [
+      "_index.js",
+      "_user.js",
+      "_api.js",
+      "_client.js"
+    ]
+  },
+  "src/routes/register/+page.svelte": {
+    "file": "entries/pages/register/_page.svelte.js",
+    "name": "entries/pages/register/_page.svelte",
+    "src": "src/routes/register/+page.svelte",
+    "isEntry": true,
+    "imports": [
+      "_index.js",
+      "_user.js",
+      "_api.js",
+      "_client.js"
+    ]
+  }
+}

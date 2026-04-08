@@ -276,15 +276,16 @@
             depends_on: ((s.depends_on as string[]) ?? []).map(id => idToName.get(id) ?? id),
           }))
 
-          // Loser: synthetic linear chain (we only have metadata)
+          // Loser: use real step names if provided, otherwise synthetic fallback
           const loserStepCount = (loserCandidate.step_count as number) ?? 3
           const loserTokens = (loserCandidate.estimated_tokens as number) ?? 15000
+          const loserNames = (loserCandidate.step_names as string[]) ?? []
           const loserSteps = Array.from({ length: loserStepCount }, (_, i) => ({
-            name: i === 0 ? 'Analyze & plan' : i === loserStepCount - 1 ? 'Quick verify' : `Implement (${i})`,
-            role: i === 0 ? 'architect' : i === loserStepCount - 1 ? 'tester' : 'implementer',
+            name: loserNames[i] ?? (i === 0 ? 'Analyze & plan' : i === loserStepCount - 1 ? 'Verify' : `Step ${i}`),
+            role: i === 0 ? 'architect' : i === loserStepCount - 1 ? 'verifier' : 'implementer',
             verify: i === loserStepCount - 1,
             tokens: Math.round(loserTokens / loserStepCount),
-            depends_on: i === 0 ? [] : [i === 1 ? 'Analyze & plan' : `Implement (${i - 1})`],
+            depends_on: i === 0 ? [] : [loserNames[i - 1] ?? (i === 1 ? 'Analyze & plan' : `Step ${i - 1}`)],
           }))
 
           // Derive scoring breakdown from event metadata.

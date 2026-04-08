@@ -191,6 +191,10 @@ pub struct PlanCandidateSummary {
     pub parallel_groups: usize,
     pub score: f64,
     pub winner: bool,
+    /// Step names for this candidate (used by dashboard PlanExplorer).
+    /// When provided, the dashboard shows real step names instead of synthetic placeholders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub step_names: Vec<String>,
     /// Tokens consumed by the LLM to generate this candidate plan.
     #[serde(default)]
     pub planning_tokens: u64,

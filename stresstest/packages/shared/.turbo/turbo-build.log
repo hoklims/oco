@@ -1,0 +1,4 @@
+
+> @repo/shared@0.0.0 build H:\bac_à_guigui_v2\supertools\stresstest\packages\shared
+> tsc --project tsconfig.json
+

@@ -1,0 +1,4 @@
+
+> @repo/api@0.0.0 build H:\bac_à_guigui_v2\supertools\stresstest\apps\api
+> tsc --project tsconfig.json
+

@@ -923,6 +923,7 @@ impl OrchestrationLoop {
                                 parallel_groups: c.plan.parallel_groups().len(),
                                 score: c.score,
                                 winner: c.winner,
+                                step_names: c.plan.steps.iter().map(|s| s.name.clone()).collect(),
                                 planning_tokens: c.tokens_used,
                             })
                             .collect();

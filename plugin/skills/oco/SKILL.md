@@ -51,27 +51,59 @@ oco.emit_events({ session_id: "<id>", events: [
 ] })
 ```
 
-## Step 3: Plan — emit plan_exploration THEN plan_generated
+## Step 3: Plan — genuinely explore TWO strategies, pick the best
 
-**CRITICAL**: Emit both events in a **single** `emit_events` call. The dashboard plays the PlanExplorer animation from `plan_exploration`, then reveals the PlanMap from `plan_generated`.
+You MUST design **two genuinely different plans** for the task, compare them, and pick the winner. This is NOT cosmetic — each plan must be a real strategy you could execute.
 
-**Before emitting**: decide your real execution steps. Give each a stable UUID (use crypto.randomUUID() format). These are the steps you WILL execute in Step 4.
-
-**FORBIDDEN step names** (these are from the demo and MUST NOT appear in real runs):
+**FORBIDDEN step names** (demo placeholders — NEVER use):
 - "Search OSS solutions", "Search research papers", "Synthesize findings"
 - "Design JWT schema", "Implement middleware", "Implement refresh"
 - "Integration tests", "Analyze & design", "Quick smoke test"
-- Any JWT/auth-related name unless the user's actual task is about JWT/auth
+
+### 3a. Design two real plans
+
+Think through two approaches with **structural differences**, not just different names:
+
+| Dimension | Plan A | Plan B |
+|-----------|--------|--------|
+| Granularity | Fewer large steps | More focused steps |
+| Verification | Verify at end only | Verify after risky steps |
+| Parallelism | Sequential chain | DAG with independent branches |
+| Scope | Strict minimum | Include edge cases, validation |
+
+Give each plan a short strategy name that describes the approach (e.g. "monolith", "modular", "incremental", "full-coverage"). Do NOT use "speed"/"safety"/"minimal"/"thorough" — be specific to the task.
+
+For each plan, compute:
+- `step_count` — number of steps
+- `estimated_tokens` — total estimated token cost
+- `verify_count` — number of steps with `verify_after: true`
+- `parallel_groups` — number of parallelizable batches in the DAG
+
+### 3b. Score and pick the winner
+
+Score each plan 0.0–1.0 based on:
+- **Risk coverage** — does it verify after the riskiest steps?
+- **Cost efficiency** — tokens spent vs value delivered
+- **Parallelism** — can steps run concurrently?
+- **Completeness** — does it cover the full task?
+
+The winner is the plan with the higher score. **The minimal plan CAN win** — for simple tasks, fewer steps with targeted verification is genuinely better than over-engineering.
+
+### 3c. Build the winning plan's steps
+
+For the winner, create full step definitions with UUIDs, real names, depends_on DAG, roles, and execution modes. These are the steps you WILL execute in Step 4.
+
+### 3d. Emit both events in a SINGLE call
 
 ```
 oco.emit_events({ session_id: "<id>", events: [
   {
     "type": "plan_exploration",
     "candidates": [
-      { "strategy": "minimal", "step_count": <N>, "estimated_tokens": <T>, "verify_count": <V>, "parallel_groups": <P>, "score": <0.0-1.0>, "winner": false },
-      { "strategy": "thorough", "step_count": <N>, "estimated_tokens": <T>, "verify_count": <V>, "parallel_groups": <P>, "score": <0.0-1.0>, "winner": true }
+      { "strategy": "<loser-strategy-name>", "step_count": <N>, "estimated_tokens": <T>, "verify_count": <V>, "parallel_groups": <P>, "score": <0.0-1.0>, "winner": false, "step_names": ["<loser step 1 name>", "<loser step 2 name>", "..."] },
+      { "strategy": "<winner-strategy-name>", "step_count": <N>, "estimated_tokens": <T>, "verify_count": <V>, "parallel_groups": <P>, "score": <0.0-1.0>, "winner": true, "step_names": ["<winner step 1 name>", "<winner step 2 name>", "..."] }
     ],
-    "winner_strategy": "thorough",
+    "winner_strategy": "<winner-strategy-name>",
     "winner_score": <score>
   },
   {
@@ -81,14 +113,14 @@ oco.emit_events({ session_id: "<id>", events: [
     "parallel_group_count": <P>,
     "critical_path_length": <C>,
     "estimated_total_tokens": <T>,
-    "strategy": "Orchestrated",
+    "strategy": "Competitive (<winner-strategy-name> won)",
     "team": null,
     "steps": [
       {
         "id": "<random-uuid-for-this-step>",
-        "name": "<YOUR real step — e.g. 'Add validation to UserService.create'>",
+        "name": "<task-specific step name>",
         "description": "<what this step accomplishes>",
-        "role": "implementer",
+        "role": "implementer|verifier|investigator",
         "execution_mode": "inline",
         "depends_on": [],
         "verify_after": false,
@@ -99,8 +131,6 @@ oco.emit_events({ session_id: "<id>", events: [
   }
 ] })
 ```
-
-**Build candidates realistically**: "minimal" should have fewer steps/verification, "thorough" should have more. The winner's steps become your `plan_generated.steps`. All step names must be specific to the user's actual task.
 
 ## Step 4: Execute — PARALLEL when possible, SEQUENTIAL when dependent
 
