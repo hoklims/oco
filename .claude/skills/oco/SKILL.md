@@ -25,7 +25,7 @@ The dashboard renders a DAG of nodes from `plan_generated`. Each node tracks sta
 2. **Then emit `plan_generated` with those exact steps** (names, IDs, count)
 3. **Then execute each step using the same IDs and names**
 
-Never emit a template/example plan. The plan must reflect your actual execution strategy.
+**NEVER copy example step names.** Names like "Search OSS solutions", "Design JWT schema", "Implement middleware", "Integration tests" are DEMO PLACEHOLDERS — do NOT use them. Every step name must describe YOUR actual task. For example, if the user asks to add auth, your steps might be "Analyze existing auth code", "Add JWT middleware to routes", etc. — specific to the codebase.
 
 ## Step 1: Open Dashboard (MANDATORY)
 
@@ -55,22 +55,28 @@ oco.emit_events({ session_id: "<id>", events: [
 
 **CRITICAL**: Emit both events in a **single** `emit_events` call. The dashboard plays the PlanExplorer animation from `plan_exploration`, then reveals the PlanMap from `plan_generated`.
 
-**Before emitting**: decide your real execution steps. Give each a stable UUID. These are the steps you WILL execute in Step 4.
+**Before emitting**: decide your real execution steps. Give each a stable UUID (use crypto.randomUUID() format). These are the steps you WILL execute in Step 4.
+
+**FORBIDDEN step names** (these are from the demo and MUST NOT appear in real runs):
+- "Search OSS solutions", "Search research papers", "Synthesize findings"
+- "Design JWT schema", "Implement middleware", "Implement refresh"
+- "Integration tests", "Analyze & design", "Quick smoke test"
+- Any JWT/auth-related name unless the user's actual task is about JWT/auth
 
 ```
 oco.emit_events({ session_id: "<id>", events: [
   {
     "type": "plan_exploration",
     "candidates": [
-      { "strategy": "speed", "step_count": <N>, "estimated_tokens": <T>, "verify_count": <V>, "parallel_groups": <P>, "score": <0.0-1.0>, "winner": false },
-      { "strategy": "safety", "step_count": <N>, "estimated_tokens": <T>, "verify_count": <V>, "parallel_groups": <P>, "score": <0.0-1.0>, "winner": true }
+      { "strategy": "minimal", "step_count": <N>, "estimated_tokens": <T>, "verify_count": <V>, "parallel_groups": <P>, "score": <0.0-1.0>, "winner": false },
+      { "strategy": "thorough", "step_count": <N>, "estimated_tokens": <T>, "verify_count": <V>, "parallel_groups": <P>, "score": <0.0-1.0>, "winner": true }
     ],
-    "winner_strategy": "safety",
+    "winner_strategy": "thorough",
     "winner_score": <score>
   },
   {
     "type": "plan_generated",
-    "plan_id": "<uuid>",
+    "plan_id": "<random-uuid>",
     "step_count": <N>,
     "parallel_group_count": <P>,
     "critical_path_length": <C>,
@@ -79,10 +85,10 @@ oco.emit_events({ session_id: "<id>", events: [
     "team": null,
     "steps": [
       {
-        "id": "<step-uuid-1>",
-        "name": "<REAL step name — what you will actually do>",
+        "id": "<random-uuid-for-this-step>",
+        "name": "<YOUR real step — e.g. 'Add validation to UserService.create'>",
         "description": "<what this step accomplishes>",
-        "role": "implementer|verifier|investigator",
+        "role": "implementer",
         "execution_mode": "inline",
         "depends_on": [],
         "verify_after": false,
@@ -94,7 +100,7 @@ oco.emit_events({ session_id: "<id>", events: [
 ] })
 ```
 
-**Build candidates realistically**: "speed" should have fewer steps/verification, "safety" should have more. The winner's steps become your `plan_generated.steps`.
+**Build candidates realistically**: "minimal" should have fewer steps/verification, "thorough" should have more. The winner's steps become your `plan_generated.steps`. All step names must be specific to the user's actual task.
 
 ## Step 4: Execute — emit step_started BEFORE, step_completed AFTER each step
 

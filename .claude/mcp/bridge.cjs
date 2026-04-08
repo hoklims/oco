@@ -369,7 +369,9 @@ const TOOLS = [
       "(same JSON schema as SSE payloads). Call after each phase completes with ALL the events for that phase. " +
       "Event types: run_started, plan_generated (with steps[]), step_started, step_completed (with duration_ms, success), " +
       "progress (with completed/total/budget), verify_gate_result, run_stopped, flat_step_completed. " +
-      "See the demo data for the exact field shapes. Events are appended to the SSE stream in order.",
+      "CRITICAL: step names and IDs in plan_generated MUST match exactly what you use in step_started/step_completed. " +
+      "NEVER use example/placeholder names like 'Search OSS solutions' or 'Design JWT schema' — use YOUR real step names. " +
+      "Events are appended to the SSE stream in order.",
     inputSchema: {
       type: "object",
       properties: {
