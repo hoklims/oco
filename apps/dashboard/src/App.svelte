@@ -69,6 +69,13 @@
   let selectedStep = $derived(selectedStepId != null ? steps.find(s => s.id === selectedStepId) ?? null : null)
   let phaseMeta = $derived(PHASE_META[phase])
 
+  // Transition from 'planning' to 'executing' when exploration animation completes
+  $effect(() => {
+    if (explorationPhase === 'done' && phase === 'planning') {
+      phase = 'executing'
+    }
+  })
+
   // Ordered phase list for the stepper
   const PHASE_ORDER: Phase[] = ['connecting', 'waiting', 'classifying', 'planning', 'executing', 'verifying', 'complete']
   let phaseIndex = $derived(PHASE_ORDER.indexOf(phase))
@@ -329,10 +336,9 @@
         if (!explorationPlans) {
           if (phase !== 'demo') phase = 'executing'
           if (explorationPhase === 'idle') explorationPhase = 'done'
-        } else if (phase !== 'demo') {
-          // Delay executing phase until exploration animation finishes
-          setTimeout(() => { if (phase === 'planning') phase = 'executing' }, 5500)
         }
+        // When explorationPlans IS set, phase transitions to 'executing'
+        // reactively when explorationPhase reaches 'done' (see $effect below).
         break
       }
 
@@ -583,7 +589,7 @@
         {#if explorationPlans}
           <PlanExplorer phase={explorationPhase} plans={explorationPlans} />
         {/if}
-        {#if explorationPhase === 'done' || steps.length > 0}
+        {#if explorationPhase === 'done' || (steps.length > 0 && !explorationPlans)}
           <div class="absolute inset-0 z-10 plan-map-enter">
             <PlanMap {steps} selectedId={selectedStepId} onSelect={selectStep} {thoughts} {stepSummaries} {teamInfo} {teammateMessages} {subPlanState} />
           </div>

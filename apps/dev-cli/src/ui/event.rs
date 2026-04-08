@@ -5,11 +5,11 @@ use uuid::Uuid;
 /// Summary of a step for DAG display in the plan overview.
 #[derive(Debug, Clone)]
 pub struct UiStepSummary {
-    pub id: Uuid,
+    pub id: String,
     pub name: String,
     pub role: String,
     pub execution_mode: String,
-    pub depends_on: Vec<Uuid>,
+    pub depends_on: Vec<String>,
     pub verify_after: bool,
     pub estimated_tokens: u32,
     pub preferred_model: Option<String>,

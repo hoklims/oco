@@ -768,7 +768,7 @@ async fn cmd_run(
                     steps: steps
                         .iter()
                         .map(|s| UiStepSummary {
-                            id: s.id,
+                            id: s.id.clone(),
                             name: s.name.clone(),
                             role: s.role.clone(),
                             execution_mode: s.execution_mode.clone(),

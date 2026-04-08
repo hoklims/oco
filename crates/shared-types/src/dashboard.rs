@@ -99,7 +99,7 @@ pub enum DashboardEventKind {
 
     /// A new execution plan was generated (or regenerated after replan).
     PlanGenerated {
-        plan_id: Uuid,
+        plan_id: String,
         step_count: usize,
         parallel_group_count: usize,
         critical_path_length: u32,
@@ -111,7 +111,7 @@ pub enum DashboardEventKind {
 
     /// A plan step started executing.
     StepStarted {
-        step_id: Uuid,
+        step_id: String,
         step_name: String,
         role: String,
         execution_mode: String,
@@ -119,7 +119,7 @@ pub enum DashboardEventKind {
 
     /// A plan step completed.
     StepCompleted {
-        step_id: Uuid,
+        step_id: String,
         step_name: String,
         success: bool,
         duration_ms: u64,
@@ -151,7 +151,7 @@ pub enum DashboardEventKind {
     // ── Verification ─────────────────────────────────────────
     /// Verify gate evaluated after a step.
     VerifyGateResult {
-        step_id: Uuid,
+        step_id: String,
         step_name: String,
         checks: Vec<CheckResult>,
         overall_passed: bool,
@@ -185,20 +185,20 @@ pub enum DashboardEventKind {
     // ── Sub-plans (ADR-008) ────────────────────────────────────
     /// A sub-plan started executing.
     SubPlanStarted {
-        parent_step_id: Uuid,
+        parent_step_id: String,
         parent_step_name: String,
         sub_steps: Vec<SubStepSummary>,
     },
     /// Sub-step status changed.
     SubStepProgress {
-        parent_step_id: Uuid,
-        sub_step_id: Uuid,
+        parent_step_id: String,
+        sub_step_id: String,
         sub_step_name: String,
         status: String,
     },
     /// A sub-plan completed.
     SubPlanCompleted {
-        parent_step_id: Uuid,
+        parent_step_id: String,
         parent_step_name: String,
         success: bool,
     },
@@ -206,8 +206,8 @@ pub enum DashboardEventKind {
     // ── Teammate communication ───────────────────────────────
     /// A teammate sent a message to another.
     TeammateMessage {
-        from_step_id: Uuid,
-        to_step_id: Uuid,
+        from_step_id: String,
+        to_step_id: String,
         from_name: String,
         to_name: String,
         summary: String,
@@ -221,14 +221,14 @@ pub enum DashboardEventKind {
 /// Summary of a sub-step in a sub-plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubStepSummary {
-    pub id: Uuid,
+    pub id: String,
     pub name: String,
 }
 
 /// A currently-active step (for progress display).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveStep {
-    pub step_id: Uuid,
+    pub step_id: String,
     pub step_name: String,
 }
 
@@ -295,7 +295,7 @@ impl DashboardEventKind {
                 team,
                 steps,
             } => DashboardEventKind::PlanGenerated {
-                plan_id: *plan_id,
+                plan_id: plan_id.to_string(),
                 step_count: *step_count,
                 parallel_group_count: *parallel_group_count,
                 critical_path_length: *critical_path_length,
@@ -310,7 +310,7 @@ impl DashboardEventKind {
                 role,
                 execution_mode,
             } => DashboardEventKind::StepStarted {
-                step_id: *step_id,
+                step_id: step_id.to_string(),
                 step_name: step_name.clone(),
                 role: role.clone(),
                 execution_mode: execution_mode.clone(),
@@ -322,7 +322,7 @@ impl DashboardEventKind {
                 duration_ms,
                 tokens_used,
             } => DashboardEventKind::StepCompleted {
-                step_id: *step_id,
+                step_id: step_id.to_string(),
                 step_name: step_name.clone(),
                 success: *success,
                 duration_ms: *duration_ms,
@@ -342,7 +342,7 @@ impl DashboardEventKind {
                 active_steps: active_steps
                     .iter()
                     .map(|(id, name)| ActiveStep {
-                        step_id: *id,
+                        step_id: id.to_string(),
                         step_name: name.clone(),
                     })
                     .collect(),
@@ -363,7 +363,7 @@ impl DashboardEventKind {
                 overall_passed,
                 replan_triggered,
             } => DashboardEventKind::VerifyGateResult {
-                step_id: *step_id,
+                step_id: step_id.to_string(),
                 step_name: step_name.clone(),
                 checks: checks.clone(),
                 overall_passed: *overall_passed,
@@ -421,12 +421,12 @@ impl DashboardEventKind {
                 parent_step_name,
                 sub_steps,
             } => DashboardEventKind::SubPlanStarted {
-                parent_step_id: *parent_step_id,
+                parent_step_id: parent_step_id.to_string(),
                 parent_step_name: parent_step_name.clone(),
                 sub_steps: sub_steps
                     .iter()
                     .map(|(id, name)| SubStepSummary {
-                        id: *id,
+                        id: id.to_string(),
                         name: name.clone(),
                     })
                     .collect(),
@@ -437,8 +437,8 @@ impl DashboardEventKind {
                 sub_step_name,
                 status,
             } => DashboardEventKind::SubStepProgress {
-                parent_step_id: *parent_step_id,
-                sub_step_id: *sub_step_id,
+                parent_step_id: parent_step_id.to_string(),
+                sub_step_id: sub_step_id.to_string(),
                 sub_step_name: sub_step_name.clone(),
                 status: status.clone(),
             },
@@ -447,7 +447,7 @@ impl DashboardEventKind {
                 parent_step_name,
                 success,
             } => DashboardEventKind::SubPlanCompleted {
-                parent_step_id: *parent_step_id,
+                parent_step_id: parent_step_id.to_string(),
                 parent_step_name: parent_step_name.clone(),
                 success: *success,
             },
@@ -458,8 +458,8 @@ impl DashboardEventKind {
                 to_name,
                 summary,
             } => DashboardEventKind::TeammateMessage {
-                from_step_id: *from_step_id,
-                to_step_id: *to_step_id,
+                from_step_id: from_step_id.to_string(),
+                to_step_id: to_step_id.to_string(),
                 from_name: from_name.clone(),
                 to_name: to_name.clone(),
                 summary: summary.clone(),

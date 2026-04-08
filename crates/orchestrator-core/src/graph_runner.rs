@@ -854,12 +854,12 @@ impl GraphRunner {
                 .iter()
                 .filter(|s| s.status != StepStatus::Replanned)
                 .map(|s| StepSummary {
-                    id: s.id,
+                    id: s.id.to_string(),
                     name: s.name.clone(),
                     description: s.description.clone(),
                     role: s.agent_role.name.clone(),
                     execution_mode: execution_mode_str(s),
-                    depends_on: s.depends_on.clone(),
+                    depends_on: s.depends_on.iter().map(|id| id.to_string()).collect(),
                     verify_after: s.verify_after,
                     estimated_tokens: s.estimated_tokens,
                     preferred_model: s.agent_role.preferred_model.clone(),

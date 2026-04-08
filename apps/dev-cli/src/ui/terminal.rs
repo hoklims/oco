@@ -387,8 +387,8 @@ impl Renderer for TerminalRenderer {
                 ));
 
                 // Build step index for dep name lookup
-                let step_names: std::collections::HashMap<uuid::Uuid, &str> =
-                    steps.iter().map(|s| (s.id, s.name.as_str())).collect();
+                let step_names: std::collections::HashMap<&str, &str> =
+                    steps.iter().map(|s| (s.id.as_str(), s.name.as_str())).collect();
 
                 // Render each step with deps
                 for (i, step) in steps.iter().enumerate() {
@@ -397,7 +397,7 @@ impl Renderer for TerminalRenderer {
                     let dep_names: Vec<&str> = step
                         .depends_on
                         .iter()
-                        .filter_map(|d| step_names.get(d).copied())
+                        .filter_map(|d| step_names.get(d.as_str()).copied())
                         .collect();
                     let dep_str = if dep_names.is_empty() {
                         String::new()

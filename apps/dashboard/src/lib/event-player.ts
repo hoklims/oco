@@ -163,6 +163,7 @@ export function createEventPlayer(callbacks: EventPlayerCallbacks): EventPlayer 
   let stopped = false
   let timeoutId: ReturnType<typeof setTimeout> | null = null
   let dynamicDuration = 0 // Set by plan_exploration for dynamic timing
+  let lastExplorationKind: Record<string, unknown> | null = null // Store plan_exploration data for timing
 
   function scheduleNext() {
     if (stopped || playing) return
@@ -180,6 +181,11 @@ export function createEventPlayer(callbacks: EventPlayerCallbacks): EventPlayer 
       return
     }
 
+    // Store plan_exploration data for exploration timing calculation
+    if (eventType === 'plan_exploration') {
+      lastExplorationKind = kind
+    }
+
     // Extra pause before phase transitions
     const prePause = PHASE_EVENTS.has(eventType) ? PHASE_TRANSITION_PAUSE : 0
 
@@ -188,14 +194,17 @@ export function createEventPlayer(callbacks: EventPlayerCallbacks): EventPlayer 
 
       // Trigger PlanExplorer animation on plan_generated (not plan_exploration),
       // because explorationPlans is built in plan_generated where real step names are available.
+      // Use stored plan_exploration data for timing (it has the candidates with step_count).
       if (eventType === 'plan_generated' && callbacks.onExploration) {
-        const timing = explorationDuration(kind)
+        const timingSource = lastExplorationKind ?? kind
+        const timing = explorationDuration(timingSource)
         callbacks.onExploration('generating')
         setTimeout(() => { if (!stopped) callbacks.onExploration?.('comparing') }, timing.comparingAt)
         setTimeout(() => { if (!stopped) callbacks.onExploration?.('scoring') }, timing.scoringAt)
         setTimeout(() => { if (!stopped) callbacks.onExploration?.('selecting') }, timing.selectingAt)
         setTimeout(() => { if (!stopped) callbacks.onExploration?.('done') }, timing.doneAt)
         dynamicDuration = timing.total
+        lastExplorationKind = null
       }
 
       // Emit the event to state

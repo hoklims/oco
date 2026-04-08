@@ -149,14 +149,17 @@ pub struct InterventionSummary {
 // ── Live orchestration events ─────────────────────────────
 
 /// Summary of a single step for plan overview display.
+///
+/// Uses `String` for IDs (not `Uuid`) so external event injection (MCP bridge)
+/// can send arbitrary ID formats without deserialization failures.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepSummary {
-    pub id: Uuid,
+    pub id: String,
     pub name: String,
     pub description: String,
     pub role: String,
     pub execution_mode: String,
-    pub depends_on: Vec<Uuid>,
+    pub depends_on: Vec<String>,
     pub verify_after: bool,
     pub estimated_tokens: u32,
     pub preferred_model: Option<String>,
